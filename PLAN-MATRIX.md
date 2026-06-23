@@ -26,9 +26,17 @@ A few things to know up front:
   calls/min. Every paid tier is effectively unlimited. The actual gates
   are real-time data, deep history, options/crypto access, and WebSocket
   streaming.
-- **Bulk historical work is cheap.** Flat-file S3 access is included in
-  every paid plan. The skills that touch years of data use those instead
-  of hammering REST.
+- **Bulk historical work is cheap, with a caveat.** Massive's blog
+  states flat-file S3 access is included in every paid plan. Verified
+  2026-06-23: a Stocks Business key returned `403 Forbidden` on every
+  flat-files request (list, head, get) despite the same key serving
+  REST, options chains, and Benzinga endpoints. The factor-research
+  skill demonstrates the fallback: `/v2/aggs/grouped/locale/us/market/stocks/{date}`
+  returns ~10,000 US stocks per call, which is equivalent throughput
+  to flat-files via REST. If your key is one of the affected accounts,
+  the skills marked "Flat files" below auto-fall-back to the grouped
+  aggregates endpoint with no functional difference for end-of-day
+  workflows.
 
 ## The skill matrix
 
