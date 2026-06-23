@@ -1,5 +1,7 @@
 # finance-playbook
 
+![finance-playbook](./assets/og.png)
+
 Claude Code skills for grounded market data workflows. Ground your Claude
 sessions in real numbers. Or build your own UI on top. Same skill, both
 surfaces.

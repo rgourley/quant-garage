@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>finance-playbook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: rgb(0, 0, 0);
+    --bg-chrome: rgb(20, 20, 22);
+    --bg-panel: rgb(8, 8, 10);
+    --bg-elev: rgb(16, 16, 18);
+    --fg: rgb(240, 240, 245);
+    --fg2: rgb(180, 180, 192);
+    --fg3: rgb(130, 130, 140);
+    --amber: rgb(255, 176, 0);
+    --amber-bright: rgb(255, 200, 60);
+    --amber-dim: rgba(255, 176, 0, 0.55);
+    --amber-line: rgba(255, 176, 0, 0.28);
+    --line: rgba(255, 255, 255, 0.08);
+    --positive: rgb(0, 230, 110);
+    --negative: rgb(255, 60, 60);
+    --cyan: rgb(0, 210, 255);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 1200px;
+    height: 630px;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: "JetBrains Mono", "SF Mono", "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
+    font-feature-settings: "tnum" 1, "zero" 1;
+    overflow: hidden;
+  }
+  .container {
+    width: 1200px;
+    height: 630px;
+    display: grid;
+    grid-template-rows: 38px 1fr 28px;
+  }
+  /* Command bar */
+  .cmdbar {
+    background: rgba(255, 176, 0, 0.04);
+    border-bottom: 1px solid var(--amber-line);
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 12px;
+  }
+  .cmdbar-input {
+    flex: 1;
+    border: 1px solid var(--amber);
+    background: rgba(0, 0, 0, 0.5);
+    padding: 5px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 12px;
+  }
+  .prompt { color: var(--amber); font-weight: 700; }
+  .cmd-text { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
+  .cmd-placeholder { color: var(--amber-dim); margin-left: auto; font-weight: 400; font-size: 11px; }
+  .go { color: var(--amber); font-weight: 700; font-size: 11px; }
+  /* Main content */
+  .main {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    height: 100%;
+    border-bottom: 1px solid var(--amber-line);
+  }
+  .pane {
+    padding: 32px 36px;
+    border-right: 1px solid var(--amber-line);
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+  }
+  .pane:last-child { border-right: none; }
+  .section-label {
+    color: var(--amber);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.12em;
+  }
+  /* Left pane: project identity */
+  .title {
+    font-size: 76px;
+    font-weight: 800;
+    line-height: 0.95;
+    color: var(--fg);
+    letter-spacing: -0.02em;
+    margin-top: 4px;
+  }
+  .title-line2 {
+    color: var(--amber);
+  }
+  .tagline {
+    font-size: 16px;
+    color: var(--fg2);
+    line-height: 1.4;
+    margin-top: 12px;
+    max-width: 460px;
+    font-weight: 500;
+  }
+  .meta {
+    margin-top: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--fg3);
+    line-height: 1.5;
+  }
+  .meta-row { display: flex; gap: 10px; }
+  .meta-key { color: var(--amber-dim); width: 90px; font-weight: 700; letter-spacing: 0.08em; }
+  .meta-val { color: var(--fg); font-weight: 500; }
+  /* Right pane: sample output */
+  .sample-title {
+    font-size: 16px;
+    font-weight: 700;
+    color: var(--fg);
+    letter-spacing: 0.02em;
+  }
+  .sample-sub {
+    font-size: 11px;
+    color: var(--fg3);
+    margin-top: 2px;
+  }
+  .take-box {
+    border: 1px solid var(--amber-line);
+    background: rgba(255, 176, 0, 0.03);
+    padding: 12px 14px;
+    margin-top: 4px;
+  }
+  .take-label {
+    font-size: 10px;
+    color: var(--amber);
+    letter-spacing: 0.15em;
+    font-weight: 700;
+    margin-bottom: 4px;
+  }
+  .take-text {
+    font-size: 14px;
+    color: var(--fg);
+    font-weight: 500;
+    line-height: 1.4;
+  }
+  .table {
+    margin-top: 4px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    row-gap: 7px;
+    column-gap: 18px;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .row-label {
+    color: var(--fg2);
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    font-size: 11px;
+    font-weight: 700;
+  }
+  .row-value {
+    color: var(--fg);
+    font-weight: 500;
+    text-align: right;
+  }
+  .row-value.pos { color: var(--positive); }
+  .row-value.neg { color: var(--negative); }
+  .row-value.amber { color: var(--amber); font-weight: 700; }
+  /* Status bar */
+  .status {
+    background: var(--bg-elev);
+    border-top: none;
+    display: flex;
+    align-items: center;
+    padding: 0 14px;
+    gap: 20px;
+    font-size: 10px;
+    color: var(--fg3);
+    letter-spacing: 0.06em;
+    font-weight: 500;
+  }
+  .status .left { color: var(--amber-dim); font-weight: 700; }
+  .status .right { margin-left: auto; display: flex; gap: 18px; }
+  .status .dot { display: inline-block; width: 7px; height: 7px; background: var(--positive); border-radius: 50%; margin-right: 6px; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="cmdbar">
+    <div class="cmdbar-input">
+      <span class="prompt">&gt;</span>
+      <span class="cmd-text">FINANCE-PLAYBOOK SKILL EARNINGS-DRILLDOWN NVDA</span>
+      <span class="cmd-placeholder">Type any function or topic</span>
+      <span class="go">&lt;GO&gt;</span>
+    </div>
+  </div>
+
+  <div class="main">
+
+    <div class="pane">
+      <div class="section-label">[1] PROJECT</div>
+      <div class="title">
+        finance-<br>
+        <span class="title-line2">playbook</span>
+      </div>
+      <div class="tagline">
+        Claude Code skills for grounded market data workflows. Stop guessing prices. Every number traces back to a live call with a timestamp.
+      </div>
+      <div class="meta">
+        <div class="meta-row"><span class="meta-key">REPO</span><span class="meta-val">github.com/rgourley/finance-playbook</span></div>
+        <div class="meta-row"><span class="meta-key">LICENSE</span><span class="meta-val">MIT</span></div>
+        <div class="meta-row"><span class="meta-key">SKILLS</span><span class="meta-val">5 built · 9 designed</span></div>
+        <div class="meta-row"><span class="meta-key">BACKEND</span><span class="meta-val">Massive API · SEC EDGAR</span></div>
+      </div>
+    </div>
+
+    <div class="pane">
+      <div class="section-label">[2] OUTPUT · EARNINGS PREVIEW · NVDA Q2 2026</div>
+      <div>
+        <div class="sample-title">NVDA · Next Print 2026-08-19 AMC</div>
+        <div class="sample-sub">Tier B · SEC EDGAR + Stocks Starter</div>
+      </div>
+      <div class="take-box">
+        <div class="take-label">[ TAKE ]</div>
+        <div class="take-text">
+          Straddle prices 6.6pp above 8q realized. Premium sellers have a setup.
+        </div>
+      </div>
+      <div class="table">
+        <div class="row-label">IMPLIED MOVE</div><div class="row-value">±10.3%</div>
+        <div class="row-label">REALIZED 8Q AVG</div><div class="row-value">±3.7%</div>
+        <div class="row-label">MISPRICING</div><div class="row-value amber">+6.6pp</div>
+        <div class="row-label">IV30</div><div class="row-value">37.3</div>
+        <div class="row-label">PEAD ON NEG</div><div class="row-value neg">−7.5%</div>
+        <div class="row-label">TOP PEER β</div><div class="row-value">MU 0.71 · AVGO 0.62</div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="status">
+    <span class="left">FINANCE-PLAYBOOK v0.1</span>
+    <span>5 SKILLS</span>
+    <span>4 OUTPUT MODES</span>
+    <span>MIT LICENSE</span>
+    <span class="right">
+      <span><span class="dot"></span>FEED OK</span>
+      <span>BUILT 2026-06-23</span>
+      <span style="color: var(--amber)">@rgourley</span>
+    </span>
+  </div>
+
+</div>
+</body>
+</html>
