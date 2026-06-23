@@ -12,7 +12,12 @@ tick_history: no
 endpoints:
   - GET /v3/reference/splits
   - GET /v3/reference/dividends
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{spin_date}/{spin_date} (spinoffs only)
 notes: |
   Runs on free Basic tier. Above ~50 rows, the 5/min rate limit on free
-  makes processing slow but not blocked. Any paid tier removes the limit.
+  makes processing slow but not blocked. Any paid tier removes the
+  limit. There is no dedicated spinoffs endpoint as of June 2026; the
+  skill reads spinoff entries from an operator-supplied spinoffs.json
+  override file and uses the aggs endpoint only to compute first-session
+  cost-basis allocation. See references/spinoffs-methodology.md.
 fallbacks: []

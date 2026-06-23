@@ -11,4 +11,5 @@ __pycache__/
 venv/
 examples/*-real-output*
 examples/*-tier-b-output*
+examples/*-output.md
 examples/scratch/

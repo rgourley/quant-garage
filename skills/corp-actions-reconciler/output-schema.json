@@ -37,33 +37,41 @@
         "properties": {
           "ticker": {
             "type": "string",
-            "description": "Stock ticker symbol"
+            "description": "Stock ticker symbol (parent ticker for spinoffs)"
           },
           "kind": {
             "type": "string",
-            "enum": ["split", "reverse_split", "stock_dividend", "spinoff", "cash_dividend_basis"],
-            "description": "Type of corporate action that caused the break"
+            "enum": ["split", "reverse_split", "stock_dividend", "spinoff", "cash_dividend_basis", "spinoff_new_position", "cash_in_lieu_expected"],
+            "description": "Type of corporate action that caused the break. spinoff = adjustment to the parent position; spinoff_new_position = the new subsidiary position created by the spin."
           },
           "recorded_as_of": {
             "type": "string",
             "format": "date",
             "description": "Date the input position was recorded as of"
           },
-          "expected_shares": {
-            "type": "number",
-            "description": "Share count after applying all corporate actions"
-          },
           "current_shares": {
             "type": "number",
             "description": "Share count in the input file"
+          },
+          "expected_shares": {
+            "type": "number",
+            "description": "Share count after applying all corporate actions"
           },
           "delta_shares": {
             "type": "number",
             "description": "expected_shares - current_shares (positive = under-allocated)"
           },
+          "current_cost_basis": {
+            "type": ["number", "null"],
+            "description": "Per-share cost basis from the input file (null if input had no cost basis)"
+          },
           "expected_cost_basis": {
             "type": ["number", "null"],
-            "description": "Cost basis adjusted for the action (null if input had no cost basis)"
+            "description": "Per-share cost basis adjusted for the action (null if input had no cost basis)"
+          },
+          "cash_in_lieu_expected": {
+            "type": "boolean",
+            "description": "True when applying the action results in a fractional share that brokers typically pay out as cash-in-lieu"
           },
           "action": {
             "type": "object",
@@ -72,11 +80,11 @@
               "ex_date": {
                 "type": "string",
                 "format": "date",
-                "description": "Ex-date of the corporate action"
+                "description": "Ex-date of the corporate action (Massive's execution_date for splits, ex_dividend_date for dividends)"
               },
               "ratio": {
                 "type": "string",
-                "description": "For splits/reverse splits, e.g. '2-for-1' or '1-for-10'"
+                "description": "For splits/reverse splits, e.g. '4-for-1' or '1-for-8'. For spinoffs, '{Y} shares per {X} share'."
               },
               "split_to": {
                 "type": "number",
@@ -93,6 +101,23 @@
               "currency": {
                 "type": "string",
                 "description": "ISO 4217 currency code (default USD)"
+              },
+              "spinoff_ticker": {
+                "type": "string",
+                "description": "For spinoffs, the ticker of the new subsidiary security"
+              },
+              "spin_ratio_y_per_x": {
+                "type": "number",
+                "description": "For spinoffs, subsidiary shares received per parent share held"
+              },
+              "alloc_method": {
+                "type": "string",
+                "enum": ["first_session_market_cap", "form_8937", "pre_announcement_avg", "manual"],
+                "description": "For spinoffs, how the cost-basis allocation was computed"
+              },
+              "parent_alloc_pct": {
+                "type": "number",
+                "description": "For spinoffs, fraction of original basis retained by the parent position (0.0 to 1.0)"
               }
             }
           },

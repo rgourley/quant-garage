@@ -62,21 +62,47 @@ Same compute, two consumption surfaces.
 ## How it works
 
 1. For each row in the input CSV, call the splits and dividends
-   endpoints with `ticker` and `ex_date >= as_of_date`.
+   endpoints with `ticker` and `execution_date > as_of_date`
+   (splits) and `ex_dividend_date > as_of_date` (dividends).
 2. Apply each split's `split_to / split_from` ratio to the recorded
-   share count.
-3. Subtract paid dividends from cost basis (if cost-basis tracking is on).
-4. Compare projected share count to the recorded current share count.
-5. Emit any mismatch as a BREAK with citation.
+   share count, in chronological order. Cost basis moves inversely.
+3. Walk dividend records: cash dividends are informational by default;
+   special-cash, return-of-capital, and stock dividends adjust basis or
+   share count per the [dividends methodology](./references/dividends-methodology.md).
+4. Read spinoff entries from a `spinoffs.json` overrides file (no
+   dedicated Massive spinoffs endpoint as of June 2026); adjust the
+   parent position's basis and create a new position for the
+   subsidiary at the issuer's allocation. See [spinoffs methodology](./references/spinoffs-methodology.md).
+5. Compare projected share count and cost basis to the recorded values
+   in the input file.
+6. Emit any mismatch as a BREAK with citation.
+
+The four methodology references are the IP. Read them in this order if
+you're extending the skill:
+
+1. [`splits-methodology.md`](./references/splits-methodology.md): forward
+   and reverse splits, compounding, fractional results.
+2. [`dividends-methodology.md`](./references/dividends-methodology.md):
+   cash, special, RoC, stock dividends, timing rule.
+3. [`spinoffs-methodology.md`](./references/spinoffs-methodology.md):
+   parent basis allocation, new-position creation, Massive endpoint
+   gaps and override file format.
+4. [`edge-cases.md`](./references/edge-cases.md): CIL, ADR/ordinary
+   mapping, reverse-split delisting watch, symbol changes,
+   same-day actions, FX.
 
 ## Endpoints used
 
 - `GET /v3/reference/splits` (paginated; one call per ticker)
 - `GET /v3/reference/dividends` (paginated; one call per ticker)
+- `GET /v2/aggs/ticker/{ticker}/range/1/day/{spin_date}/{spin_date}`
+  (only when computing first-session cost-basis allocation for a spinoff)
 
-Both are included in the free Basic tier. Rate-limited to 5 calls/min on
-free, so a CSV with more than ~50 rows will take a few minutes on a free
-key. Any paid tier eliminates the wait.
+The splits and dividends endpoints are included in the free Basic
+tier. Rate-limited to 5 calls/min on free, so a CSV with more than ~50
+rows will take a few minutes on a free key. Any paid tier eliminates
+the wait. The aggs call for spinoff basis allocation also runs on
+Basic.
 
 ## Example
 
@@ -100,10 +126,13 @@ the moment they're found instead of waiting for the full report.
 
 ## Doesn't handle (yet)
 
-- Spinoffs with non-standard share ratios
-- Tender offers
-- Currency-redenominated cost basis
-- Non-US securities
+- Tender offers and exchange offers
+- Mergers (cash, stock, and mixed consideration)
+- Rights offerings (subscription rights)
+- Currency-redenominated cost basis (FX conversion of basis is the
+  operator's settlement-system problem; see edge-cases.md)
+- ADR ratio changes that the splits endpoint misses (workaround:
+  manual entry in `spinoffs.json`)
 
 Add these in a PR if you need them. The patterns are straightforward
-extensions of the existing splits/dividends logic.
+extensions of the existing splits/dividends/spinoffs logic.

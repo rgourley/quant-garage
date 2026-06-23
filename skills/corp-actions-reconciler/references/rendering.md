@@ -41,6 +41,13 @@ Where `direction` is:
 - `"under-allocated"` if `delta_shares > 0`
 - `"over-allocated"` if `delta_shares < 0`
 
+When `expected_cost_basis` is non-null and differs from
+`current_cost_basis`, append a cost-basis line under Expected:
+
+```
+  Basis:       ${expected_cost_basis}/sh (was ${current_cost_basis}/sh)
+```
+
 ## Kind-specific formatting
 
 Different `kind` values render the `Action:` line differently:
@@ -50,8 +57,35 @@ Different `kind` values render the `Action:` line differently:
 | `split` | `{ratio} split, ex-date {ex_date}` |
 | `reverse_split` | `{ratio} reverse split, ex-date {ex_date}` |
 | `stock_dividend` | `{amount}% stock dividend, ex-date {ex_date}` |
-| `spinoff` | `Spinoff to {spinoff_ticker}, ex-date {ex_date}` |
+| `spinoff` | `Spinoff of {spinoff_ticker} at {spin_ratio_y_per_x} per share, ex-date {ex_date}` |
+| `spinoff_new_position` | `New position from {parent_ticker} spinoff, ex-date {ex_date}` |
 | `cash_dividend_basis` | `Cash dividend ${amount}/share, ex-date {ex_date}` |
+| `cash_in_lieu_expected` | `Fractional from {ratio} split, ex-date {ex_date}: broker CIL expected` |
+
+For `spinoff` kind, render the parent-position basis adjustment with an
+extra line so the operator sees the cost-basis change isn't a math
+error:
+
+```
+BREAK {index}: {ticker} (parent)
+  Recorded:    {current_shares} shares as of {recorded_as_of}
+  Action:      Spinoff of {spinoff_ticker} at {spin_ratio_y_per_x} per share, ex-date {ex_date}
+  Expected:    {expected_shares} shares (no change), basis ${expected_cost_basis} (was ${current_cost_basis})
+  Source:      {source.endpoint}
+  Verified:    {source.fetched_at}
+```
+
+For `spinoff_new_position` kind, render as a missing position rather
+than a share-count delta:
+
+```
+BREAK {index}: {ticker} (new position from {parent_ticker} spin)
+  Recorded:    not in input file
+  Action:      Spinoff distribution, ex-date {ex_date}
+  Expected:    {expected_shares} shares, basis ${expected_cost_basis}/share
+  Source:      {source.endpoint}
+  Verified:    {source.fetched_at}
+```
 
 ## Footer
 
