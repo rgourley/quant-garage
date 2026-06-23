@@ -1,0 +1,259 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pitch-comps output",
+  "description": "Canonical structured output for the pitch-comps skill. Layer 1 (the data); Layer 2 (rendered comp table) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "tier",
+    "mode",
+    "run_at",
+    "subject",
+    "peers",
+    "peer_selection",
+    "summary",
+    "regression_adjusted",
+    "read",
+    "sources"
+  ],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=paid Stocks Starter+ (unlimited REST, full peer fanout); B=free Basic (rate-limited, curated override only)."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats applicable to the chosen tier."
+    },
+    "mode": {
+      "type": "string",
+      "const": "table",
+      "description": "Always 'table' for this skill."
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the comp set was built."
+    },
+    "subject": {
+      "type": "object",
+      "required": ["ticker", "name", "market_cap", "enterprise_value", "multiples", "metrics"],
+      "properties": {
+        "ticker": { "type": "string" },
+        "name": { "type": "string" },
+        "market_cap": { "type": ["number", "null"], "description": "USD." },
+        "enterprise_value": {
+          "type": ["number", "null"],
+          "description": "USD. EV = market_cap + long_term_debt (cash not subtracted; see references/multiples-methodology.md for the simplification)."
+        },
+        "price": { "type": ["number", "null"], "description": "Current share price." },
+        "sector": { "type": ["string", "null"] },
+        "multiples": { "$ref": "#/$defs/multiples" },
+        "metrics": { "$ref": "#/$defs/metrics" }
+      }
+    },
+    "peers": {
+      "type": "array",
+      "description": "Peer companies, ordered as the curated map / correlation rank returns them.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "name", "market_cap", "enterprise_value", "multiples", "metrics"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "name": { "type": "string" },
+          "market_cap": { "type": ["number", "null"] },
+          "enterprise_value": { "type": ["number", "null"] },
+          "price": { "type": ["number", "null"] },
+          "sector": { "type": ["string", "null"] },
+          "multiples": { "$ref": "#/$defs/multiples" },
+          "metrics": { "$ref": "#/$defs/metrics" },
+          "data_status": {
+            "type": "string",
+            "enum": ["full", "partial", "empty"],
+            "description": "full = all multiples computed; partial = some nulls (e.g. negative EBITDA → no EV/EBITDA); empty = financials endpoint returned nothing (often foreign issuer ADRs)."
+          }
+        }
+      }
+    },
+    "peer_selection": {
+      "type": "object",
+      "required": ["method", "n_peers"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["curated_override", "correlation", "sic_fallback"],
+          "description": "How the peer set was chosen. See references/peer-selection.md."
+        },
+        "n_peers": {
+          "type": "integer",
+          "description": "Total peers in the set (data status notwithstanding)."
+        },
+        "n_peers_with_full_multiples": {
+          "type": "integer",
+          "description": "Peers that contributed to summary stats and the regression (data_status == 'full' or 'partial' with at least one multiple)."
+        },
+        "candidates_considered": {
+          "type": "integer",
+          "description": "Total names evaluated before the final peer set was chosen (only meaningful for correlation / SIC methods)."
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "description": "Median / mean / 25th / 75th percentile per multiple, computed across peers only (subject excluded). Nulls dropped, not imputed.",
+      "properties": {
+        "ev_sales": { "$ref": "#/$defs/summary_block" },
+        "ev_ebitda": { "$ref": "#/$defs/summary_block" },
+        "p_e": { "$ref": "#/$defs/summary_block" },
+        "revenue_growth_ttm": { "$ref": "#/$defs/summary_block" },
+        "ebitda_margin": { "$ref": "#/$defs/summary_block" }
+      }
+    },
+    "regression_adjusted": {
+      "type": "object",
+      "description": "For each multiple, fit `multiple ~ revenue_growth_ttm + ebitda_margin` across peers, predict the subject's implied multiple, and compare to the actual. See references/regression-adjustment.md.",
+      "required": ["controls", "results"],
+      "properties": {
+        "controls": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Regressors used, in order. Default: ['revenue_growth_ttm', 'ebitda_margin']."
+        },
+        "n_peers_used": {
+          "type": "integer",
+          "description": "Peers that had non-null values for all controls AND for the dependent multiple. Drives degrees of freedom."
+        },
+        "low_n_warning": {
+          "type": "boolean",
+          "description": "True when n_peers_used < 8; regression is degrees-of-freedom-light and the renderer should flag this."
+        },
+        "results": {
+          "type": "object",
+          "properties": {
+            "ev_sales": { "$ref": "#/$defs/regression_result" },
+            "ev_ebitda": { "$ref": "#/$defs/regression_result" },
+            "p_e": { "$ref": "#/$defs/regression_result" }
+          }
+        }
+      }
+    },
+    "read": {
+      "type": "string",
+      "description": "One-sentence banker take, generated from the regression-adjusted multiples. Banker-tone, no hedge words."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit.",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "multiples": {
+      "type": "object",
+      "description": "Trading multiples for one name. Null where the inputs aren't available or the multiple is meaningless (e.g. negative EBITDA).",
+      "properties": {
+        "ev_sales": {
+          "type": ["number", "null"],
+          "description": "Enterprise value / TTM revenue."
+        },
+        "ev_ebitda": {
+          "type": ["number", "null"],
+          "description": "Enterprise value / TTM EBITDA. EBITDA = operating_income + D&A. When D&A is null in the financials endpoint (common for software comps), EBITDA falls back to operating_income; the multiple is closer to EV/EBIT in that case. See references/multiples-methodology.md."
+        },
+        "p_e": {
+          "type": ["number", "null"],
+          "description": "Price / TTM diluted EPS. Null when EPS is negative or unavailable."
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "description": "Underlying metrics used to compute the multiples and feed the regression.",
+      "properties": {
+        "revenue_ttm": {
+          "type": ["number", "null"],
+          "description": "Sum of revenues from the most recent 4 quarters that reported revenue. USD."
+        },
+        "revenue_prior_ttm": {
+          "type": ["number", "null"],
+          "description": "Sum of revenues from quarters 5-8. Used for the growth calculation."
+        },
+        "revenue_growth_ttm": {
+          "type": ["number", "null"],
+          "description": "(revenue_ttm / revenue_prior_ttm) - 1. Decimal (0.11 = +11%)."
+        },
+        "operating_income_ttm": {
+          "type": ["number", "null"],
+          "description": "Sum of operating income for the TTM."
+        },
+        "depreciation_amortization_ttm": {
+          "type": ["number", "null"],
+          "description": "TTM D&A from the income statement. Often null for software comps in Massive's endpoint."
+        },
+        "ebitda_ttm": {
+          "type": ["number", "null"],
+          "description": "operating_income_ttm + depreciation_amortization_ttm. Falls back to operating_income_ttm when D&A is null."
+        },
+        "ebitda_margin": {
+          "type": ["number", "null"],
+          "description": "ebitda_ttm / revenue_ttm. Decimal (0.38 = 38%)."
+        },
+        "diluted_eps_ttm": {
+          "type": ["number", "null"],
+          "description": "Sum of diluted EPS over the TTM. Null when any quarter is null."
+        },
+        "long_term_debt": {
+          "type": ["number", "null"],
+          "description": "Most recent reported long_term_debt. USD."
+        }
+      }
+    },
+    "summary_block": {
+      "type": "object",
+      "description": "Summary stats for one multiple across the peer set.",
+      "properties": {
+        "median": { "type": ["number", "null"] },
+        "mean": { "type": ["number", "null"] },
+        "p25": { "type": ["number", "null"] },
+        "p75": { "type": ["number", "null"] },
+        "n": { "type": "integer", "description": "Number of non-null peer values that fed the summary." }
+      }
+    },
+    "regression_result": {
+      "type": "object",
+      "description": "Per-multiple regression output.",
+      "properties": {
+        "implied": {
+          "type": ["number", "null"],
+          "description": "Predicted multiple for the subject, given its growth and margin and the peer-fit coefficients."
+        },
+        "actual": {
+          "type": ["number", "null"],
+          "description": "Subject's actual multiple."
+        },
+        "discount_or_premium": {
+          "type": ["number", "null"],
+          "description": "(actual / implied) - 1. Negative = subject trades at a discount to peers on this multiple after controlling for growth and margin; positive = premium."
+        },
+        "coefficients": {
+          "type": "object",
+          "description": "Fit coefficients on the controls, intercept included.",
+          "additionalProperties": { "type": "number" }
+        },
+        "r_squared": {
+          "type": ["number", "null"],
+          "description": "Goodness of fit. With n<8 peers this is often artificially high; treat as descriptive."
+        }
+      }
+    }
+  }
+}

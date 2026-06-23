@@ -1,0 +1,64 @@
+name: pitch-comps
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [full_peer_fanout, sub_thirty_second_runtime, correlation_peer_fallback]
+  B:
+    label: "Free Basic (rate-limited, runs slowly)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime, curated_override_only]
+    loses: [correlation_peer_fallback, sub_thirty_second_runtime]
+endpoints:
+  - GET /v3/reference/tickers/{ticker}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /vX/reference/financials
+  - GET /v2/aggs/ticker/{ticker}/range/1/day
+notes: |
+  Second table-mode skill in the suite. Inherits the canonical table
+  rendering rules from universe-builder (see
+  skills/universe-builder/references/rendering.md) with comp-set-specific
+  overrides in this skill's references/rendering.md: subject row at top,
+  divider, peers, divider, summary stats, optional regression block,
+  mandatory one-sentence read.
+
+  Peer selection is the same three-layer waterfall as
+  earnings-drilldown's references/peer-reaction.md: curated override map
+  for top names (where SIC misclassifies), correlation-based for
+  uncurated names, SIC fallback as the last resort. The two skills
+  share the same override map by reference; updates should land in
+  both.
+
+  Real-data gotchas documented inline in the references and the SKILL.md
+  "doesn't handle (yet)" section:
+    - D&A is null for software peers in Massive's financials endpoint.
+      "EV/EBITDA" in v1 is operating-income-based when D&A isn't
+      available, labeled so consumers know.
+    - Cash and short-term investments are not exposed as named fields
+      on the balance sheet endpoint. EV = market_cap + long_term_debt,
+      with documented fallback to market_cap when LTD is also null.
+    - Foreign issuer ADRs (SAP, ASML) often have empty financials in
+      Massive's endpoint. They render with null multiples and don't
+      contribute to summary stats or the regression.
+
+  The regression-adjusted multiples view fits multiple ~ growth +
+  ebitda_margin with numpy least-squares. With n_peers < 8 the degrees
+  of freedom get tight; the schema records n_peers and the renderer
+  flags the caveat.
+fallbacks:
+  - earnings-drilldown
+  - factor-research
