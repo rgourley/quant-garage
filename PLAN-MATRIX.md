@@ -51,8 +51,9 @@ A few things to know up front:
 | `backtest-data-prep` | Flat files | Stocks Starter | The primary flat-files workflow |
 | `best-ex-check` (historical) | Flat files | Stocks Starter | NBBO from quote files |
 | `best-ex-check` (live) | WebSocket | Stocks Advanced | Real-time NBBO stream |
-| `options-flow` (scan) | REST | Stocks Starter + Options Developer | Real-time options included |
-| `options-flow` (live stream) | WebSocket | Options Developer | OPRA WebSocket feed |
+| `options-flow` (scan, delayed) | REST | Stocks Starter + Options Developer | 15-min delayed tape; methodology identical to real-time |
+| `options-flow` (scan, real-time) | REST | Stocks Business + Options Business | Sub-second sweep detection on the live tape |
+| `options-flow` (live stream) | WebSocket | Options Business | OPRA WebSocket feed |
 | `portfolio-mark` (delayed) | REST | Stocks Starter (+ Crypto Starter) | 15-min marks |
 | `portfolio-mark` (live) | WebSocket | Stocks Advanced (+ Crypto Developer) | WS stream + fallback chain |
 
@@ -79,9 +80,16 @@ without touching a higher tier.
 REST. Useful when you want recent-window detail without setting up the
 flat-files batch.
 
-**Options Developer.** Adds real-time options chain with greeks and the
-OPRA WebSocket feed. Unlocks `options-flow` and the IV mode of
-`earnings-drilldown`.
+**Options Developer.** Adds the options chain with greeks and trade /
+quote tick history. Tape is 15-min delayed on Developer; identical
+methodology applies but `options-flow` runs on stale prints. Sufficient
+for end-of-day review and methodology validation; insufficient for
+intraday actionability.
+
+**Options Business.** Adds real-time options chain, real-time trades
+and quotes, and the OPRA WebSocket feed. This is the tier `options-flow`
+needs for sub-second sweep detection on the live tape. Also unlocks the
+real-time IV side of `earnings-drilldown`.
 
 **Crypto Starter or Developer.** Unlocks `crypto-vol-scanner` and the
 crypto leg of `portfolio-mark`.

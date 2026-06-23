@@ -1,0 +1,194 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "options-flow output",
+  "description": "Canonical structured output for the options-flow skill. Layer 1 (the data); Layer 2 (rendered stream) is described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "scan_params", "prints", "sources", "run_at"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B", "C"],
+      "description": "Data fidelity: A=real-time (Options Business), B=15-min delayed (Options Developer), C=free Basic (not supported)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats when tier < A. Empty array on Tier A."
+    },
+    "mode": {
+      "type": "string",
+      "const": "stream",
+      "description": "Always 'stream' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the scan was run"
+    },
+    "scan_params": {
+      "type": "object",
+      "required": ["watchlist", "max_prints"],
+      "properties": {
+        "watchlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tickers scanned"
+        },
+        "max_prints": {
+          "type": "integer",
+          "description": "Cap on prints emitted (default 20 for scanability)"
+        },
+        "min_volume_to_avg_ratio": {
+          "type": "number",
+          "description": "Minimum vol/30d-avg ratio to qualify as unusual (default 3.0)"
+        },
+        "min_premium_usd": {
+          "type": "number",
+          "description": "Minimum dollar premium to surface (default 100000)"
+        },
+        "expiry_window_days": {
+          "type": "integer",
+          "description": "Max days to expiry to include (default 60)"
+        },
+        "strike_band_pct": {
+          "type": "number",
+          "description": "Strike band as fraction of spot (default 0.10 = ±10%)"
+        }
+      }
+    },
+    "prints": {
+      "type": "array",
+      "description": "Top notable prints ranked by unusual activity score, descending",
+      "items": {
+        "type": "object",
+        "required": [
+          "ticker",
+          "contract",
+          "kind",
+          "premium_total_usd",
+          "volume",
+          "volume_to_avg_ratio",
+          "volume_to_oi_ratio",
+          "price_vs_nbbo",
+          "inferred_direction",
+          "spot_at_print"
+        ],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Underlying stock ticker"
+          },
+          "contract": {
+            "type": "object",
+            "required": ["expiry", "strike", "type", "occ_ticker"],
+            "properties": {
+              "expiry": { "type": "string", "format": "date" },
+              "strike": { "type": "number" },
+              "type": { "type": "string", "enum": ["call", "put"] },
+              "occ_ticker": {
+                "type": "string",
+                "description": "Full Massive OCC ticker, e.g. O:TSLA260718C00310000"
+              }
+            }
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["sweep", "block", "other"],
+            "description": "sweep = multi-exchange ISO print (condition 219); block = single large print above ticker-specific threshold; other = qualifying but neither"
+          },
+          "premium_total_usd": {
+            "type": "number",
+            "description": "Dollar premium of the qualifying activity: sum(size * price * 100) across contributing trades, or day volume * avg trade price * 100"
+          },
+          "volume": {
+            "type": "integer",
+            "description": "Total contracts traded today on this contract"
+          },
+          "volume_to_avg_ratio": {
+            "type": "number",
+            "description": "Today's volume divided by 30-day average daily volume. Threshold for 'unusual' is 3.0 by default."
+          },
+          "volume_to_oi_ratio": {
+            "type": "number",
+            "description": "Today's volume divided by open interest at session start. >1.0 = volume exceeds existing OI (likely opening new interest). <0.5 = likely closing existing positions."
+          },
+          "price_vs_nbbo": {
+            "type": "string",
+            "enum": ["above_ask", "at_ask", "at_mid", "at_bid", "below_bid", "unknown"],
+            "description": "Where the print landed relative to the NBBO at trade time. above_ask = aggressive buy, below_bid = aggressive sell, at_mid = negotiated"
+          },
+          "inferred_direction": {
+            "type": "string",
+            "enum": ["bullish", "bearish", "neutral", "unknown"],
+            "description": "Trader read: call + above_ask = bullish; put + above_ask = bearish; at_mid = neutral. The methodology pages explain why these tags are appropriate at the per-print level even though the take should avoid 'bullish/bearish'."
+          },
+          "spot_at_print": {
+            "type": "number",
+            "description": "Underlying spot price at the time of the print"
+          },
+          "iv_at_print": {
+            "type": ["number", "null"],
+            "description": "Implied volatility on the contract at the snapshot time (annualized fraction, e.g. 0.62 = 62%)"
+          },
+          "oi_pre_trade": {
+            "type": ["integer", "null"],
+            "description": "Open interest at session start, before any of today's prints"
+          },
+          "oi_position_signal": {
+            "type": "string",
+            "enum": ["opening", "closing", "mixed", "unknown"],
+            "description": "Reading of opening vs closing based on volume_to_oi_ratio. opening if vol/OI > 1.0; closing if < 0.5; mixed otherwise."
+          },
+          "related_prints": {
+            "type": "array",
+            "description": "Same-strike or same-expiry prints from the past N days, for clustering context. Renders as ↳ continuation lines.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "date": { "type": "string", "format": "date" },
+                "volume": { "type": "integer" },
+                "note": { "type": "string" }
+              }
+            }
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Sip timestamp of the print (UTC). For day-aggregated prints (Tier B), the end-of-day timestamp."
+          },
+          "exchange": {
+            "type": ["integer", "null"],
+            "description": "Massive exchange ID where the print landed. Null for day-aggregated prints."
+          },
+          "score": {
+            "type": "number",
+            "description": "Internal ranking score combining vol/avg, vol/OI, and premium. Higher = more unusual."
+          }
+        }
+      }
+    },
+    "skipped_tickers": {
+      "type": "array",
+      "description": "Tickers in the watchlist that produced no qualifying prints",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

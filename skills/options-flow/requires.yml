@@ -1,0 +1,51 @@
+name: options-flow
+kind: skill
+interface: rest
+output_mode: stream
+foundations:
+  - massive-api-patterns
+requires:
+  - product: options
+    tier: developer
+  - product: stocks
+    tier: starter
+realtime: preferred
+tick_history: yes
+tiers:
+  A:
+    label: "Real-time (Options Business)"
+    needs:
+      - product: options
+        tier: business
+      - product: stocks
+        tier: business
+    enables: [realtime_tape, fresh_iv, fresh_oi, sub_second_sweep_detection]
+  B:
+    label: "15-min delayed (Options Developer)"
+    needs:
+      - product: options
+        tier: developer
+      - product: stocks
+        tier: starter
+    enables: [eod_review, postmortems, methodology_validation]
+    loses: [intraday_actionability]
+  C:
+    label: "Free Basic (not supported)"
+    needs:
+      - product: stocks
+        tier: basic
+    loses: [options_snapshot, options_trades, everything]
+endpoints:
+  - GET /v3/snapshot/options/{ticker}
+  - GET /v3/trades/{occ_ticker}
+  - GET /v2/aggs/ticker/{occ_ticker}/range/1/day/{from}/{to}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+notes: |
+  First stream-mode skill in the suite. Rendering rules in
+  references/rendering.md become the template for future stream skills
+  (news-scanner, crypto-vol-scanner). Sweep detection relies on Massive's
+  trade conditions field: condition 219 = Intermarket Sweep Order.
+  Block classification uses a size threshold tuned per ticker because
+  SPY's "block" is 500+ contracts while AAPL's is 200+.
+fallbacks:
+  - news-scanner
