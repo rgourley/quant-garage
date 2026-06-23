@@ -1,0 +1,50 @@
+name: universe-builder
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Paid Stocks (Starter+)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [full_candidate_pool, unlimited_rest, two_minute_runtime]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime, curated_seed_pool]
+    loses: [full_universe_scan]
+endpoints:
+  - GET /v3/reference/tickers
+  - GET /v3/reference/tickers/{ticker}
+  - GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+  - GET /vX/reference/financials
+  - GET /v3/reference/options/contracts
+notes: |
+  First table-mode skill in the suite. Rendering rules in
+  references/rendering.md become the template for future table skills
+  (factor-research, pitch-comps). The free-tier on-ramp: every other
+  skill in the matrix that operates on a universe should start from
+  the output of this one.
+
+  Real-data gotcha: Massive's financials endpoint does not break out
+  CapEx separately, so the "FCF yield" factor is implemented as
+  operating cash flow yield. Documented in
+  references/filtering-methodology.md. True FCF requires parsing the
+  raw XBRL filing.
+
+  Options ADV is optional: skipped when Options Developer is not in
+  the user's plan. The composite z-score normalizes per surviving
+  universe, so dropping a factor changes the rank ordering but not
+  the methodology.
+fallbacks:
+  - factor-research

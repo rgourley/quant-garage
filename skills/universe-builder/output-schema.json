@@ -1,0 +1,236 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "universe-builder output",
+  "description": "Canonical structured output for the universe-builder skill. Layer 1 (the data); Layer 2 (rendered table) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "tier",
+    "mode",
+    "run_at",
+    "filter_chain",
+    "universe_size_start",
+    "universe_size_end",
+    "results",
+    "concentration",
+    "survivorship",
+    "sources"
+  ],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=paid Stocks Starter+ (unlimited REST, full candidate pool); B=free Basic (rate-limited, curated seed pool)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats applicable to the chosen tier"
+    },
+    "mode": {
+      "type": "string",
+      "const": "table",
+      "description": "Always 'table' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the screen was run"
+    },
+    "scan_params": {
+      "type": "object",
+      "description": "Inputs that produced this run, for reproducibility",
+      "properties": {
+        "candidate_pool": {
+          "type": "string",
+          "description": "How the candidate pool was constructed (e.g. 'curated_top_100_mcap', 'reference_tickers_paginated')"
+        },
+        "candidate_pool_size": {
+          "type": "integer",
+          "description": "Total names in the candidate pool before any filter"
+        },
+        "composite_weights": {
+          "type": "object",
+          "description": "Per-factor weights for the composite z-score (sum to 1.0)",
+          "additionalProperties": { "type": "number" }
+        },
+        "top_n_for_concentration": {
+          "type": "integer",
+          "description": "How many top names by composite z-score to scan for sector concentration (default 20)"
+        }
+      }
+    },
+    "filter_chain": {
+      "type": "array",
+      "description": "Ordered list of filters applied. Each step records its predicate and survivor count.",
+      "items": {
+        "type": "object",
+        "required": ["name", "predicate", "survivors_count", "cumulative_count"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short identifier for the filter step, e.g. 'min_market_cap'"
+          },
+          "predicate": {
+            "type": "string",
+            "description": "Human-readable predicate, e.g. 'market_cap >= $10B'"
+          },
+          "survivors_count": {
+            "type": "integer",
+            "description": "Names that survived THIS step (independent count). Used for diagnostics; not the cumulative figure."
+          },
+          "cumulative_count": {
+            "type": "integer",
+            "description": "Names remaining after applying THIS step AND every prior step in the chain. This is the value the survival funnel renders."
+          }
+        }
+      }
+    },
+    "universe_size_start": {
+      "type": "integer",
+      "description": "Candidate pool size at the start of the filter chain"
+    },
+    "universe_size_end": {
+      "type": "integer",
+      "description": "Names remaining after the full filter chain"
+    },
+    "results": {
+      "type": "array",
+      "description": "Final ranked universe, ordered by composite_zscore descending",
+      "items": {
+        "type": "object",
+        "required": [
+          "rank",
+          "ticker",
+          "name",
+          "market_cap",
+          "sector",
+          "factors",
+          "composite_zscore"
+        ],
+        "properties": {
+          "rank": {
+            "type": "integer",
+            "description": "1-indexed rank within the surviving universe"
+          },
+          "ticker": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string",
+            "description": "Company name from Massive's ticker details endpoint"
+          },
+          "market_cap": {
+            "type": "number",
+            "description": "Market cap in USD"
+          },
+          "sector": {
+            "type": "string",
+            "description": "Sector derived from SIC code (e.g. 'Semiconductors', 'Software', 'Healthcare')"
+          },
+          "industry": {
+            "type": ["string", "null"],
+            "description": "Industry description from Massive's SIC mapping; null when the SIC isn't classified"
+          },
+          "factors": {
+            "type": "object",
+            "description": "Per-factor values used in the filter chain and composite. Keys present depend on which filters were applied.",
+            "properties": {
+              "mom_3m": {
+                "type": ["number", "null"],
+                "description": "3-month price momentum (close-to-close, ~63 trading days)"
+              },
+              "mom_6m": {
+                "type": ["number", "null"],
+                "description": "6-month price momentum, when included in the chain"
+              },
+              "ocf_yield": {
+                "type": ["number", "null"],
+                "description": "Operating cash flow yield (TTM operating CF / market cap). Used as the most-defensible FCF-yield substitute given Massive's financials endpoint does not break out CapEx. See references/filtering-methodology.md."
+              },
+              "opt_adv_contracts": {
+                "type": ["number", "null"],
+                "description": "Average daily options contracts traded, when Options Developer is in the plan"
+              }
+            },
+            "additionalProperties": true
+          },
+          "factor_zscores": {
+            "type": "object",
+            "description": "Per-factor z-scores computed within the surviving universe. Signs are factor-direction-aware (higher is always better after sign correction).",
+            "additionalProperties": { "type": "number" }
+          },
+          "composite_zscore": {
+            "type": "number",
+            "description": "Weighted average of factor_zscores. Drives the final rank."
+          }
+        }
+      }
+    },
+    "concentration": {
+      "type": "array",
+      "description": "Sector / industry concentration findings in the top-N by composite z-score. Empty array when nothing exceeds the 2σ threshold.",
+      "items": {
+        "type": "object",
+        "required": ["dimension", "value", "count_in_topn", "expected_count", "std_devs_overweight"],
+        "properties": {
+          "dimension": {
+            "type": "string",
+            "enum": ["sector", "industry"]
+          },
+          "value": {
+            "type": "string",
+            "description": "The sector or industry value being flagged, e.g. 'Semiconductors'"
+          },
+          "count_in_topn": {
+            "type": "integer",
+            "description": "Number of top-N names that belong to this group"
+          },
+          "expected_count": {
+            "type": "number",
+            "description": "Expected count under the starting universe's group weight"
+          },
+          "std_devs_overweight": {
+            "type": "number",
+            "description": "How many standard deviations the observed count exceeds the expected count. Positive = overweight; negative = underweight."
+          },
+          "top_n": {
+            "type": "integer",
+            "description": "Size of the top-N pool the count was measured against (typically 20)"
+          }
+        }
+      }
+    },
+    "survivorship": {
+      "type": "object",
+      "required": ["mode", "delisted_in_window"],
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": ["clean", "biased", "unknown"],
+          "description": "clean = delisted names retained for the lookback window. biased = current snapshot only (survivorship-biased). unknown = the skill couldn't determine the input cohort."
+        },
+        "delisted_in_window": {
+          "type": "integer",
+          "description": "Count of names that were active at the lookback start but are now inactive. Zero when the screen is current-only."
+        },
+        "note": {
+          "type": "string",
+          "description": "Human-readable explanation of the survivorship treatment"
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
