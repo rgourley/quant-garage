@@ -1,0 +1,221 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "earnings-drilldown output",
+  "description": "Canonical structured output for the earnings-drilldown skill. Layer 1 (the data); Layer 2 (rendered note) is described in references/rendering.md.",
+  "type": "object",
+  "required": ["ticker", "print", "take", "print_history", "sources", "mode", "tier"],
+  "properties": {
+    "ticker": {
+      "type": "string",
+      "description": "Stock ticker symbol"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["lite", "full"],
+      "description": "lite skips implied_vs_realized; full includes all analyses"
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B", "C"],
+      "description": "Data fidelity: A=Benzinga+Stocks (full), B=Stocks-only (8-K proxy, reaction-sign bucketing), C=Free Basic (throttled)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats when tier < A. Empty array on Tier A."
+    },
+    "print": {
+      "type": "object",
+      "required": ["date", "session"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "session": {
+          "type": "string",
+          "enum": ["BMO", "AMC", "DMH", "unknown"],
+          "description": "Before market open, after market close, during market hours, or unknown"
+        },
+        "consensus_eps": { "type": ["number", "null"] },
+        "consensus_revenue": { "type": ["number", "null"] }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "One-sentence trade-relevant conclusion, surfaced from the strongest signal in the analyses"
+    },
+    "implied_vs_realized": {
+      "type": ["object", "null"],
+      "description": "Null in lite mode. Populated in full mode.",
+      "required": ["straddle_pct", "implied_move_pct", "realized_avg_pct", "n_quarters", "iv30", "iv30_percentile_ttm", "mispricing_pct"],
+      "properties": {
+        "straddle_pct": {
+          "type": "number",
+          "description": "Raw front-week ATM straddle as decimal of spot. Provided for users who want the unadjusted number."
+        },
+        "implied_move_pct": {
+          "type": "number",
+          "description": "Industry-standard implied move = straddle_pct * 0.85 (CBOE/ORATS convention adjusting for convexity). This is the field to compare against realized_avg_pct."
+        },
+        "realized_avg_pct": {
+          "type": "number",
+          "description": "Average absolute next-day return over the last N prints"
+        },
+        "realized_median_pct": { "type": "number" },
+        "n_quarters": {
+          "type": "integer",
+          "description": "Sample size for realized average"
+        },
+        "iv30": {
+          "type": "number",
+          "description": "30-day implied volatility, annualized percentage"
+        },
+        "iv30_percentile_ttm": {
+          "type": "number",
+          "description": "Percentile of IV30 vs trailing twelve months (0.0 to 1.0)"
+        },
+        "mispricing_pct": {
+          "type": "number",
+          "description": "(implied - realized) / realized. Negative means implied below realized (cheap straddle). When abs > 1.0, the rendering layer switches to mispricing_pp for clarity."
+        },
+        "mispricing_pp": {
+          "type": "number",
+          "description": "Absolute percentage-point gap: implied - realized. Used in the rendered take when mispricing_pct exceeds ±100% (small realized denominator)."
+        },
+        "realized_16q_avg_pct": {
+          "type": ["number", "null"],
+          "description": "Optional 16-quarter realized average. Populated when the 16q figure differs materially from 8q (regime shift detection)."
+        },
+        "regime_shift_flag": {
+          "type": ["boolean", "null"],
+          "description": "True when |realized_16q_avg_pct - realized_avg_pct| > 0.01 (1pp). Signals that 8q may not represent the regime the options are pricing."
+        },
+        "closest_analog": {
+          "type": ["object", "null"],
+          "properties": {
+            "period": { "type": "string" },
+            "iv30_at_analog": { "type": "number" },
+            "realized_at_analog_pct": { "type": "number" }
+          }
+        }
+      }
+    },
+    "print_history": {
+      "type": "object",
+      "required": ["n_quarters", "beats", "avg_surprise_eps_pct", "method_mix"],
+      "properties": {
+        "n_quarters": { "type": "integer" },
+        "beats": { "type": "integer" },
+        "avg_surprise_eps_pct": { "type": "number" },
+        "avg_surprise_revenue_pct": { "type": ["number", "null"] },
+        "largest_beat": {
+          "type": "object",
+          "properties": {
+            "period": { "type": "string" },
+            "surprise_pct": { "type": "number" }
+          }
+        },
+        "largest_miss": {
+          "type": "object",
+          "properties": {
+            "period": { "type": "string" },
+            "surprise_pct": { "type": "number" }
+          }
+        },
+        "best_reaction": {
+          "type": "object",
+          "properties": {
+            "period": { "type": "string" },
+            "next_day_return_pct": { "type": "number" }
+          }
+        },
+        "worst_reaction": {
+          "type": "object",
+          "properties": {
+            "period": { "type": "string" },
+            "next_day_return_pct": { "type": "number" }
+          }
+        },
+        "method_mix": {
+          "type": "object",
+          "description": "Count of prints by eps_method (gaap vs adjusted) from Benzinga. Surfaces method-switches that would make comparisons inconsistent.",
+          "properties": {
+            "gaap": { "type": "integer" },
+            "adjusted": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "post_earnings_drift": {
+      "type": ["object", "null"],
+      "description": "T+1 to T+5 abnormal returns conditional on beat vs miss. Null if sample insufficient (n < 4).",
+      "properties": {
+        "on_beats": {
+          "type": "object",
+          "properties": {
+            "n": { "type": "integer" },
+            "avg_t5_return_pct": { "type": "number" },
+            "t_stat": { "type": "number" },
+            "significant": { "type": "boolean", "description": "True if |t_stat| > 2.0" }
+          }
+        },
+        "on_misses": {
+          "type": "object",
+          "properties": {
+            "n": { "type": "integer" },
+            "avg_t5_return_pct": { "type": "number" },
+            "t_stat": { "type": "number" },
+            "significant": { "type": "boolean" }
+          }
+        }
+      }
+    },
+    "peer_reaction": {
+      "type": ["object", "null"],
+      "description": "How sector peers traded same-day on this ticker's past prints. Null if no peers or insufficient sample.",
+      "properties": {
+        "peer_selection_method": {
+          "type": "string",
+          "enum": ["curated_override", "correlation", "etf_holdings", "sic_fallback"],
+          "description": "Which method picked these peers. curated_override is primary for top-25 mega-caps; sic_fallback is last resort and noisier."
+        },
+        "peers_used": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "The actual peer ticker list used in this analysis"
+        },
+        "sector": { "type": "string" },
+        "n_peers": { "type": "integer" },
+        "n_cycles": { "type": "integer" },
+        "avg_peer_return_on_beat_pct": { "type": "number" },
+        "avg_peer_return_on_miss_pct": { "type": "number" },
+        "top_peers": {
+          "type": "array",
+          "description": "Peers with highest print-day beta to this ticker",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ticker": { "type": "string" },
+              "beta": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "catalysts": {
+      "type": "array",
+      "description": "Curated watch items for the print, sourced from prior call commentary and the last 10-Q",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string", "description": "What this call provided (e.g. 'IV30 history', 'EPS actuals')" }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,10 @@
+name: massive-api-patterns
+kind: foundation
+interface: rest
+requires:
+  - product: stocks
+    tier: basic
+notes: |
+  Foundation skill. Doesn't make API calls on its own; declares the
+  patterns every REST-using skill follows. Works on the free Basic tier
+  because the patterns themselves don't gate on plan.

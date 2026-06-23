@@ -1,0 +1,14 @@
+node_modules/
+.DS_Store
+.env
+.env.*
+*.log
+dist/
+build/
+__pycache__/
+*.pyc
+.venv/
+venv/
+examples/*-real-output*
+examples/*-tier-b-output*
+examples/scratch/

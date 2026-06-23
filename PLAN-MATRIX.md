@@ -1,0 +1,104 @@
+# Plan Matrix
+
+What your Massive key unlocks, skill by skill.
+
+*Verified 2026-06-23 against [pricing](https://massive.com/pricing),
+[rate-limit FAQ](https://massive.com/knowledge-base/article/what-is-the-request-limit-for-massives-restful-apis),
+and the [flat files included blog post](https://massive.com/blog/flat-files).
+Re-verify before each release.*
+
+## How to read this
+
+You don't need to memorize Massive's tier ladder. Find the skill you want
+to run, check the "min asset access" column, and that's what your key
+needs to cover.
+
+A few things to know up front:
+
+- **Asset classes are separate purchases.** A stocks plan doesn't include
+  options. Options access is a separate add-on.
+- **Benzinga products are separate add-ons.** News, Earnings, Analyst
+  Ratings, Bulls/Bears Say, Analyst Insights each cost ~$99/m on top of
+  your asset-class plan. Skills marked with **Benzinga Earnings** above
+  need that add-on for press release dates and consensus EPS; without
+  it, the underlying beat/miss math is wrong.
+- **Rate limits aren't the gate on paid plans.** Free Basic is 5
+  calls/min. Every paid tier is effectively unlimited. The actual gates
+  are real-time data, deep history, options/crypto access, and WebSocket
+  streaming.
+- **Bulk historical work is cheap.** Flat-file S3 access is included in
+  every paid plan. The skills that touch years of data use those instead
+  of hammering REST.
+
+## The skill matrix
+
+| Skill | Interface | Min asset access | What it adds |
+|---|---|---|---|
+| `universe-builder` | REST | Stocks Basic | Run on a free key, end-of-day only |
+| `corp-actions-reconciler` | REST | Stocks Basic | Runs on free, light API use |
+| `news-scanner` | REST | Stocks Basic | News + sentiment included with stocks |
+| `t+1-settlement-prep` | REST | Stocks Basic | Logic-heavy, light API |
+| `factor-research` (lite) | REST | Stocks Basic | Single factor on free; multi-factor needs paid |
+| `factor-research` (full) | Flat files | Stocks Starter | Bulk daily aggregates, no rate-limit pain |
+| `pitch-comps` | REST | Stocks Starter | Fundamentals + delayed price |
+| `valuation-sanity-check` | REST | Stocks Starter | Current price + financials |
+| `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |
+| `earnings-drilldown` (lite, Tier A) | REST | Stocks Starter + Benzinga Earnings | Adds consensus EPS, surprise %, beat/miss bucketing |
+| `earnings-drilldown` (full, Tier A) | REST | Stocks Starter + Options Developer + Benzinga Earnings | Full fidelity: implied vs realized + beat/miss |
+| `crypto-vol-scanner` | REST | Crypto Starter | Crypto Developer for real-time |
+| `event-study` (recent) | REST | Stocks Developer | Tick aggregates around recent events |
+| `event-study` (historical) | Flat files | Stocks Starter | Bulk pull years of events |
+| `backtest-data-prep` | Flat files | Stocks Starter | The primary flat-files workflow |
+| `best-ex-check` (historical) | Flat files | Stocks Starter | NBBO from quote files |
+| `best-ex-check` (live) | WebSocket | Stocks Advanced | Real-time NBBO stream |
+| `options-flow` (scan) | REST | Stocks Starter + Options Developer | Real-time options included |
+| `options-flow` (live stream) | WebSocket | Options Developer | OPRA WebSocket feed |
+| `portfolio-mark` (delayed) | REST | Stocks Starter (+ Crypto Starter) | 15-min marks |
+| `portfolio-mark` (live) | WebSocket | Stocks Advanced (+ Crypto Developer) | WS stream + fallback chain |
+
+## What you get at each step
+
+**Free Basic key.** Five skills run end to end:
+
+- `universe-builder`
+- `corp-actions-reconciler`
+- `news-scanner`
+- `t+1-settlement-prep`
+- `factor-research` (lite mode)
+
+The 5/min rate cap will throttle fan-out workflows. Single-name lookups
+and small screens are fine. Enough to demo the suite and decide whether
+the paid step is worth it.
+
+**Any paid stocks plan.** Adds unlimited REST calls and the entire flat-
+files S3 bucket. `backtest-data-prep`, full `factor-research`, historical
+`event-study`, and historical `best-ex-check` all become accessible
+without touching a higher tier.
+
+**Stocks Developer.** Adds ten years of tick-level trades and quotes via
+REST. Useful when you want recent-window detail without setting up the
+flat-files batch.
+
+**Options Developer.** Adds real-time options chain with greeks and the
+OPRA WebSocket feed. Unlocks `options-flow` and the IV mode of
+`earnings-drilldown`.
+
+**Crypto Starter or Developer.** Unlocks `crypto-vol-scanner` and the
+crypto leg of `portfolio-mark`.
+
+**Stocks Advanced.** Adds real-time stocks and WebSocket streaming for
+live `portfolio-mark` and live `best-ex-check`.
+
+## On Massive's "FMV"
+
+Massive sells a proprietary FMV (Fair Market Value) metric, available
+only on the Business plan. The skills in this repo use a generic
+snapshot → lastTrade → prevDay fallback chain that works on any paid
+plan. They're not the same thing, and these skills won't unlock the
+paid FMV metric.
+
+## Verifying
+
+Run `npm run audit:requires` to check every skill's `requires.yml`
+against the endpoints it actually calls. Drift fails the build. Pricing
+and tier names should be re-verified before each release.

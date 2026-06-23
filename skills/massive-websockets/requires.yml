@@ -1,0 +1,18 @@
+name: massive-websockets
+kind: foundation
+interface: websocket
+requires:
+  - product: stocks
+    tier: advanced
+    when: stocks
+  - product: options
+    tier: developer
+    when: options
+  - product: crypto
+    tier: developer
+    when: crypto
+realtime: required
+notes: |
+  Foundation skill. Streaming requires a real-time tier for the asset
+  class you subscribe to. Stocks gates at Advanced; options and crypto
+  gate at their respective Developer tiers.

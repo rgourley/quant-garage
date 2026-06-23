@@ -1,0 +1,157 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "corp-actions-reconciler output",
+  "description": "Canonical output of the corp-actions-reconciler skill. Layer 1 (structured) consumed by UIs and downstream agents. Claude Code rendering described in references/rendering.md.",
+  "type": "object",
+  "required": ["summary", "breaks", "passes", "sources"],
+  "properties": {
+    "summary": {
+      "type": "object",
+      "required": ["positions_checked", "breaks_found", "as_of"],
+      "properties": {
+        "positions_checked": {
+          "type": "integer",
+          "description": "Total rows in the input position file"
+        },
+        "breaks_found": {
+          "type": "integer",
+          "description": "Rows that failed reconciliation"
+        },
+        "passes_count": {
+          "type": "integer",
+          "description": "Rows that passed reconciliation"
+        },
+        "as_of": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the reconciliation was run"
+        }
+      }
+    },
+    "breaks": {
+      "type": "array",
+      "description": "Position rows where the recorded share count or cost basis doesn't match the expected post-action state",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "kind", "recorded_as_of", "expected_shares", "current_shares", "action", "source"],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Stock ticker symbol"
+          },
+          "kind": {
+            "type": "string",
+            "enum": ["split", "reverse_split", "stock_dividend", "spinoff", "cash_dividend_basis"],
+            "description": "Type of corporate action that caused the break"
+          },
+          "recorded_as_of": {
+            "type": "string",
+            "format": "date",
+            "description": "Date the input position was recorded as of"
+          },
+          "expected_shares": {
+            "type": "number",
+            "description": "Share count after applying all corporate actions"
+          },
+          "current_shares": {
+            "type": "number",
+            "description": "Share count in the input file"
+          },
+          "delta_shares": {
+            "type": "number",
+            "description": "expected_shares - current_shares (positive = under-allocated)"
+          },
+          "expected_cost_basis": {
+            "type": ["number", "null"],
+            "description": "Cost basis adjusted for the action (null if input had no cost basis)"
+          },
+          "action": {
+            "type": "object",
+            "required": ["ex_date"],
+            "properties": {
+              "ex_date": {
+                "type": "string",
+                "format": "date",
+                "description": "Ex-date of the corporate action"
+              },
+              "ratio": {
+                "type": "string",
+                "description": "For splits/reverse splits, e.g. '2-for-1' or '1-for-10'"
+              },
+              "split_to": {
+                "type": "number",
+                "description": "Numerator of the split ratio"
+              },
+              "split_from": {
+                "type": "number",
+                "description": "Denominator of the split ratio"
+              },
+              "amount": {
+                "type": "number",
+                "description": "For dividends, cash amount per share"
+              },
+              "currency": {
+                "type": "string",
+                "description": "ISO 4217 currency code (default USD)"
+              }
+            }
+          },
+          "source": {
+            "type": "object",
+            "required": ["endpoint", "fetched_at"],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "description": "Massive API endpoint that produced this corporate action record"
+              },
+              "fetched_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "passes": {
+      "type": "array",
+      "description": "Position rows that reconciled cleanly. Empty by default in exception-report mode; populated when invoked with full=true",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "current_shares"],
+        "properties": {
+          "ticker": {
+            "type": "string"
+          },
+          "current_shares": {
+            "type": "number"
+          },
+          "actions_applied": {
+            "type": "integer",
+            "description": "Count of corporate actions applied to reach the current share count"
+          }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during reconciliation, for audit trail",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ticker": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

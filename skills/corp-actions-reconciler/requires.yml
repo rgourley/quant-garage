@@ -1,0 +1,18 @@
+name: corp-actions-reconciler
+kind: skill
+interface: rest
+output_mode: exception-report
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v3/reference/splits
+  - GET /v3/reference/dividends
+notes: |
+  Runs on free Basic tier. Above ~50 rows, the 5/min rate limit on free
+  makes processing slow but not blocked. Any paid tier removes the limit.
+fallbacks: []

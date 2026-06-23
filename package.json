@@ -1,0 +1,16 @@
+{
+  "name": "finance-playbook",
+  "version": "0.1.0",
+  "description": "Claude Code skills for grounded market data workflows on the Massive API",
+  "type": "module",
+  "license": "MIT",
+  "scripts": {
+    "audit:requires": "node scripts/audit-requires.mjs"
+  },
+  "dependencies": {
+    "yaml": "^2.5.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

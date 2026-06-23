@@ -1,0 +1,55 @@
+name: earnings-drilldown
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Full fidelity (with Benzinga)"
+    needs:
+      - product: stocks
+        tier: starter
+      - product: benzinga_earnings
+        tier: addon
+    enables: [true_print_date, consensus_eps, surprise_pct, beat_miss_bucketing]
+  B:
+    label: "Degraded (stocks only)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [implied_vs_realized, reaction_sign_bucketing]
+    loses: [consensus_eps, beat_miss_bucketing, surprise_pct]
+modes:
+  lite:
+    needs:
+      - product: stocks
+        tier: starter
+    skips: [implied_vs_realized]
+  full:
+    needs:
+      - product: stocks
+        tier: starter
+      - product: options
+        tier: developer
+    includes_all: true
+endpoints:
+  - GET /benzinga/v1/earnings (Tier A only)
+  - GET /v1/reference/sec/filings (Tier B fallback for print date)
+  - GET /vX/reference/financials (Tier B for EPS actuals)
+  - GET /v2/aggs/ticker/{ticker}/range/{multiplier}/{timespan}/{from}/{to}
+  - GET /v2/aggs/ticker/SPY/range/{multiplier}/{timespan}/{from}/{to}
+  - GET /v3/snapshot/options/{ticker} (full mode only)
+  - GET /v3/reference/tickers/{ticker}
+notes: |
+  Tier A is Benzinga-powered (full fidelity beat/miss). Tier B falls
+  back to SEC 8-K + Massive financials for stocks-only keys, swapping
+  beat/miss bucketing for reaction-sign bucketing. Mode (lite vs full)
+  is independent of tier; mode controls options analysis.
+fallbacks:
+  - event-study

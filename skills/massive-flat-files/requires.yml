@@ -1,0 +1,10 @@
+name: massive-flat-files
+kind: foundation
+interface: flat-files
+requires:
+  - product: any
+    tier: starter
+notes: |
+  Foundation skill. Flat files are included in every paid plan at no
+  extra charge. Skills that depend on this work on Stocks Starter or
+  equivalent first paid tier of their asset class.
