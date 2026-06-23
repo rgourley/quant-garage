@@ -22,6 +22,27 @@ The S3 bucket lives at `s3://flatfiles/`. Auth uses your Massive API key
 as the S3 access key (the secret key is the same value). Endpoint is
 `https://files.polygon.io` (legacy hostname, still works).
 
+**Entitlement gotcha (verified 2026-06-23):** flat-files access is not
+automatically included with every paid plan despite what the marketing
+page implies. Test runs from a Stocks Business + Options Business +
+Benzinga add-on key returned `403 Forbidden` on every list, head, and
+get operation against the bucket. The same key happily serves
+`/v3/reference/tickers`, `/v2/aggs/grouped/...`, snapshots, and
+options chains over REST. Verify flat-files entitlement on your key
+before building a workflow on it: hit
+`s3.head_object(Bucket='flatfiles', Key='us_stocks_sip/day_aggs_v1/2026/06/2026-06-19.csv.gz')`
+in a quick `boto3` probe; a 403 means the key is not provisioned for
+the bucket and you need to contact support or use the REST fallback.
+
+**REST fallback for day aggregates:** when flat-files are unavailable,
+`GET /v2/aggs/grouped/locale/us/market/stocks/{date}?adjusted=true`
+returns all US-listed stocks for that date in one call (~10,000 rows).
+Throughput is equivalent to one S3 day-bucket per trading day, just
+running over REST instead of S3. The schema is `T` / `c` / `v` / `o` /
+`h` / `l` / `vw` / `n` (capitalized fields) versus the flat-file
+schema of `ticker` / `close` / `volume` / etc (lowercase); your loader
+should normalize.
+
 ```bash
 aws configure set aws_access_key_id ${MASSIVE_API_KEY} --profile massive
 aws configure set aws_secret_access_key ${MASSIVE_API_KEY} --profile massive

@@ -1,0 +1,229 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "factor-research output",
+  "description": "Canonical structured output for the factor-research skill. Layer 1 (the data); Layer 2 (rendered factor research table) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "tier",
+    "mode",
+    "run_at",
+    "universe_definition",
+    "window_start",
+    "window_end",
+    "factors",
+    "factor_correlation_matrix",
+    "take",
+    "sources"
+  ],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=paid Stocks Starter+ (flat files + unlimited REST); B=free Basic (single-factor demo, no flat files, no multi-year window)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats applicable to the chosen tier"
+    },
+    "mode": {
+      "type": "string",
+      "const": "table",
+      "description": "Always 'table' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the backtest was run"
+    },
+    "universe_definition": {
+      "type": "object",
+      "required": ["label", "size", "survivorship_mode"],
+      "description": "How the universe was constructed. Made explicit so consumers can reason about survivorship.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Human-readable description, e.g. 'top 500 by current market cap, US common stock'"
+        },
+        "size": {
+          "type": "integer",
+          "description": "Number of names in the universe (post continuous-trading filter)"
+        },
+        "survivorship_mode": {
+          "type": "string",
+          "enum": ["clean", "biased", "unknown"],
+          "description": "clean = point-in-time universe reconstructed per period. biased = current-snapshot membership (overstates IC because winners are over-represented). unknown = couldn't determine."
+        },
+        "survivorship_note": {
+          "type": "string",
+          "description": "Human-readable explanation of the survivorship treatment"
+        }
+      }
+    },
+    "window_start": {
+      "type": "string",
+      "format": "date",
+      "description": "First trading day in the backtest window"
+    },
+    "window_end": {
+      "type": "string",
+      "format": "date",
+      "description": "Last trading day in the backtest window"
+    },
+    "n_months": {
+      "type": "integer",
+      "description": "Number of monthly rebalance periods in the window"
+    },
+    "factors": {
+      "type": "array",
+      "description": "Per-factor results. One entry per factor evaluated.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "definition",
+          "n_observations",
+          "ic_1m",
+          "ic_3m",
+          "ic_6m",
+          "ic_12m",
+          "ic_tstat_1m",
+          "decile_spread_1m",
+          "decile_spread_3m",
+          "decile_spread_12m",
+          "hit_rate_12m",
+          "top_5_current",
+          "bottom_5_current"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Short display name, e.g. 'Momentum (12-1M)'"
+          },
+          "definition": {
+            "type": "string",
+            "description": "Plain-English formula, e.g. '12M return minus most recent 1M (academic-standard mom)'"
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["higher_is_better", "lower_is_better"],
+            "description": "Direction expected by theory. Used to sign the IC. (e.g. low-vol: lower vol is better, so the factor is 1/realized_vol_252d and direction is 'higher_is_better' after the inverse transform.)"
+          },
+          "n_observations": {
+            "type": "integer",
+            "description": "Total ticker-months in the factor sample (universe x months with non-null factor and forward return)"
+          },
+          "ic_1m": {
+            "type": ["number", "null"],
+            "description": "Mean monthly Spearman IC at 1-month forward horizon. Positive means higher factor scores predict higher forward returns."
+          },
+          "ic_3m": {
+            "type": ["number", "null"],
+            "description": "Mean monthly Spearman IC at 3-month forward horizon"
+          },
+          "ic_6m": {
+            "type": ["number", "null"],
+            "description": "Mean monthly Spearman IC at 6-month forward horizon"
+          },
+          "ic_12m": {
+            "type": ["number", "null"],
+            "description": "Mean monthly Spearman IC at 12-month forward horizon"
+          },
+          "ic_se_1m": {
+            "type": ["number", "null"],
+            "description": "Standard error of the 1M IC across monthly observations"
+          },
+          "ic_tstat_1m": {
+            "type": ["number", "null"],
+            "description": "t-stat of the 1M IC = mean_IC / IC_se * sqrt(n_months). |t-stat| >= 2 is the conventional bar for statistical significance."
+          },
+          "decile_spread_1m": {
+            "type": ["number", "null"],
+            "description": "Annualized return spread D10 - D1 at 1M forward horizon (decile-portfolio equal-weighted within each decile, monthly rebalance)"
+          },
+          "decile_spread_3m": {
+            "type": ["number", "null"],
+            "description": "Annualized return spread D10 - D1 at 3M forward horizon"
+          },
+          "decile_spread_12m": {
+            "type": ["number", "null"],
+            "description": "Annualized return spread D10 - D1 at 12M forward horizon"
+          },
+          "hit_rate_12m": {
+            "type": ["number", "null"],
+            "description": "Fraction of 12M-forward periods where D10 beats D1. Range 0-1."
+          },
+          "top_5_current": {
+            "type": "array",
+            "description": "Top 5 names in the highest decile (D10) at the end of the window. Used for the current decile membership block.",
+            "items": {
+              "type": "object",
+              "required": ["ticker", "value"],
+              "properties": {
+                "ticker": { "type": "string" },
+                "name": { "type": ["string", "null"] },
+                "value": { "type": ["number", "null"], "description": "Raw factor value (e.g. +178% momentum, P/B 0.4x as 0.4)" },
+                "value_display": { "type": ["string", "null"], "description": "Pre-formatted display, e.g. '+178%' or 'P/B 0.4x'" }
+              }
+            }
+          },
+          "bottom_5_current": {
+            "type": "array",
+            "description": "Bottom 5 names in the lowest decile (D1) at the end of the window",
+            "items": {
+              "type": "object",
+              "required": ["ticker", "value"],
+              "properties": {
+                "ticker": { "type": "string" },
+                "name": { "type": ["string", "null"] },
+                "value": { "type": ["number", "null"] },
+                "value_display": { "type": ["string", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "factor_correlation_matrix": {
+      "type": "object",
+      "description": "Cross-factor correlation built on rank SIGNALS (not factor returns). Symmetric, diagonal = 1.00.",
+      "required": ["factor_names", "matrix"],
+      "properties": {
+        "factor_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Row/column ordering for the matrix"
+        },
+        "matrix": {
+          "type": "array",
+          "description": "N x N matrix where matrix[i][j] is the correlation between factor i and factor j signals",
+          "items": {
+            "type": "array",
+            "items": { "type": "number" }
+          }
+        }
+      }
+    },
+    "factor_returns_sector_neutral": {
+      "type": ["object", "null"],
+      "description": "Reserved for the sector-neutral version of the factor returns. v1 emits null; documented in SKILL.md as a clean PR extension."
+    },
+    "take": {
+      "type": "string",
+      "description": "One-paragraph PM-relevant interpretation: which factor is working, which isn't, and the sleeve-construction implication."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All endpoints called during the run, with fetched-at timestamps for audit",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

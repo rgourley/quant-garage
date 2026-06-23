@@ -13,3 +13,4 @@ examples/*-real-output*
 examples/*-tier-b-output*
 examples/*-output.md
 examples/scratch/
+examples/.cache/

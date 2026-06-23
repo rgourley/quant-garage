@@ -1,0 +1,57 @@
+name: factor-research
+kind: skill
+interface: flat-files
+output_mode: table
+foundations:
+  - massive-flat-files
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Paid Stocks (Starter+) with flat-files"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [universe_wide_backtest, multi_year_window, four_factor_ic]
+  B:
+    label: "Free Basic"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_single_factor_small_universe]
+    loses: [flat_files, universe_wide_backtest, multi_year_window]
+endpoints:
+  - GET s3://flatfiles/us_stocks_sip/day_aggs_v1/{yyyy}/{mm}/{yyyy-mm-dd}.csv.gz
+  - GET /v3/reference/tickers/{ticker}
+  - GET /vX/reference/financials
+  - GET /v3/snapshot/locale/us/markets/stocks/tickers
+notes: |
+  First skill in the suite to exercise the flat-files foundation. The
+  universe-wide daily-aggregate pull (top 500 names x 5 years) is
+  ~80,000 ticker-days. Via REST that's 80k+ calls; via flat-files
+  it's one day-bucket per trading day = ~1,260 files, parallelizable
+  across S3 with no rate limit. The REST path is left here only for
+  fundamentals (per-ticker financials), which flat-files don't expose.
+
+  Real-data gotcha (verified 2026-06-23): the bucket prefix is
+  `us_stocks_sip/day_aggs_v1/YYYY/MM/YYYY-MM-DD.csv.gz`, but the day
+  files use lowercase column names (`ticker`, `volume`, `open`,
+  `close`, `high`, `low`, `window_start`, `transactions`), not the
+  REST capitalized `T`, `c`, `v`. Documented in
+  massive-flat-files/SKILL.md.
+
+  Survivorship caveat: default universe is "top 500 by current
+  market cap." That's forward-looking biased for a backtest (NVDA
+  wasn't a top-500 name in 2021). For a true point-in-time backtest
+  you reconstruct the top-500 each month. The skill labels its
+  universe as `current_top500_survivorship_biased` so consumers know.
+
+  Universe and window are reproducibility parameters in the JSON, so
+  re-running this skill across regimes (2007-2009 vs 2021-2026) is a
+  one-flag change, not a fork.
+fallbacks:
+  - universe-builder
