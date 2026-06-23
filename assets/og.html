@@ -71,11 +71,11 @@
     border-bottom: 1px solid var(--amber-line);
   }
   .pane {
-    padding: 32px 36px;
+    padding: 22px 32px 18px 32px;
     border-right: 1px solid var(--amber-line);
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 12px;
   }
   .pane:last-child { border-right: none; }
   .section-label {
@@ -86,7 +86,7 @@
   }
   /* Left pane: project identity */
   .title {
-    font-size: 76px;
+    font-size: 68px;
     font-weight: 800;
     line-height: 0.95;
     color: var(--fg);
@@ -181,8 +181,8 @@
     grid-template-columns: repeat(8, 1fr);
     gap: 8px;
     align-items: end;
-    height: 92px;
-    padding: 0 2px 22px 2px;
+    height: 70px;
+    padding: 0 2px 20px 2px;
     border-bottom: 1px solid var(--amber-line);
   }
   .chart-axis {
@@ -226,6 +226,42 @@
   }
   .bar-neg::after { color: var(--negative); }
   .bar-pos::after { color: var(--positive); }
+  /* Built skills list */
+  .built-wrap {
+    margin-top: 12px;
+  }
+  .built-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 10px;
+  }
+  .built-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    column-gap: 14px;
+    align-items: center;
+    padding: 2px 8px;
+    background: rgba(255, 176, 0, 0.025);
+    border-left: 2px solid var(--positive);
+  }
+  .built-name {
+    color: var(--fg);
+    font-weight: 700;
+    letter-spacing: 0.04em;
+  }
+  .built-mode {
+    color: var(--amber);
+    font-weight: 700;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+  .built-tier {
+    color: var(--fg3);
+    font-weight: 500;
+    font-size: 10px;
+    letter-spacing: 0.06em;
+  }
   /* Status bar */
   .status {
     background: var(--bg-elev);
@@ -306,6 +342,17 @@
           <div class="bar bar-neg worst" style="--h: 100%;" data-q="Q4'25" data-v="−8.5%"></div>
           <div class="bar bar-pos best" style="--h: 38%;"  data-q="Q1'26" data-v="+3.2%"></div>
           <div class="bar bar-pos" style="--h: 16%;"  data-q="Q2'26" data-v="+1.4%"></div>
+        </div>
+      </div>
+
+      <div class="built-wrap">
+        <div class="section-label" style="margin-bottom: 6px;">[4] BUILT · 5 OF 14 SKILLS</div>
+        <div class="built-list">
+          <div class="built-row"><span class="built-name">EARNINGS-DRILLDOWN</span><span class="built-mode">NOTE</span><span class="built-tier">STARTER + BENZ</span></div>
+          <div class="built-row"><span class="built-name">CORP-ACTIONS-RECONCILER</span><span class="built-mode">EXCEPTION</span><span class="built-tier">BASIC · FREE</span></div>
+          <div class="built-row"><span class="built-name">OPTIONS-FLOW</span><span class="built-mode">STREAM</span><span class="built-tier">OPT DEVELOPER</span></div>
+          <div class="built-row"><span class="built-name">UNIVERSE-BUILDER</span><span class="built-mode">TABLE</span><span class="built-tier">BASIC · FREE</span></div>
+          <div class="built-row"><span class="built-name">PITCH-COMPS</span><span class="built-mode">TABLE</span><span class="built-tier">STARTER</span></div>
         </div>
       </div>
     </div>
