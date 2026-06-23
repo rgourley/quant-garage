@@ -171,6 +171,61 @@
   .row-value.pos { color: var(--positive); }
   .row-value.neg { color: var(--negative); }
   .row-value.amber { color: var(--amber); font-weight: 700; }
+  /* Chart */
+  .chart-wrap {
+    margin-top: 6px;
+  }
+  .chart {
+    position: relative;
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    gap: 8px;
+    align-items: end;
+    height: 92px;
+    padding: 0 2px 22px 2px;
+    border-bottom: 1px solid var(--amber-line);
+  }
+  .chart-axis {
+    position: absolute;
+    left: 0; right: 0; bottom: 22px;
+    border-bottom: 1px dashed rgba(255, 176, 0, 0.18);
+    height: 0;
+  }
+  .bar {
+    position: relative;
+    height: calc(var(--h) * 0.7);
+    min-height: 4px;
+    border-radius: 1px;
+  }
+  .bar-neg { background: var(--negative); }
+  .bar-pos { background: var(--positive); }
+  .bar.worst { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4); }
+  .bar.best { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4); }
+  .bar::before {
+    content: attr(data-q);
+    position: absolute;
+    bottom: -16px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    color: var(--fg3);
+    letter-spacing: 0.04em;
+    font-weight: 700;
+    white-space: nowrap;
+  }
+  .bar::after {
+    content: attr(data-v);
+    position: absolute;
+    top: -14px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .bar-neg::after { color: var(--negative); }
+  .bar-pos::after { color: var(--positive); }
   /* Status bar */
   .status {
     background: var(--bg-elev);
@@ -237,8 +292,21 @@
         <div class="row-label">REALIZED 8Q AVG</div><div class="row-value">±3.7%</div>
         <div class="row-label">MISPRICING</div><div class="row-value amber">+6.6pp</div>
         <div class="row-label">IV30</div><div class="row-value">37.3</div>
-        <div class="row-label">PEAD ON NEG</div><div class="row-value neg">−7.5%</div>
-        <div class="row-label">TOP PEER β</div><div class="row-value">MU 0.71 · AVGO 0.62</div>
+      </div>
+
+      <div class="chart-wrap">
+        <div class="section-label" style="margin-bottom: 8px;">[3] REACTION HISTORY · 8Q · NEXT-DAY %</div>
+        <div class="chart">
+          <div class="chart-axis"></div>
+          <div class="bar bar-neg" style="--h: 25%;"  data-q="Q3'24" data-v="−2.1%"></div>
+          <div class="bar bar-neg" style="--h: 40%;"  data-q="Q4'24" data-v="−3.4%"></div>
+          <div class="bar bar-neg" style="--h: 21%;"  data-q="Q1'25" data-v="−1.8%"></div>
+          <div class="bar bar-neg" style="--h: 61%;"  data-q="Q2'25" data-v="−5.2%"></div>
+          <div class="bar bar-neg" style="--h: 71%;"  data-q="Q3'25" data-v="−6.0%"></div>
+          <div class="bar bar-neg worst" style="--h: 100%;" data-q="Q4'25" data-v="−8.5%"></div>
+          <div class="bar bar-pos best" style="--h: 38%;"  data-q="Q1'26" data-v="+3.2%"></div>
+          <div class="bar bar-pos" style="--h: 16%;"  data-q="Q2'26" data-v="+1.4%"></div>
+        </div>
       </div>
     </div>
 
