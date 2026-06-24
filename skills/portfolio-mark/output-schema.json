@@ -1,0 +1,200 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "portfolio-mark output",
+  "description": "Canonical output of the portfolio-mark skill. Layer 1 (structured) consumed by UIs, dashboards, and downstream agents. Claude Code rendering described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "marked_at", "positions", "flagged", "book_value_usd", "sources"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=live (WebSocket stream from Stocks Business or Advanced), B=delayed (REST snapshot, 15-min lag on Starter/Developer)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats. Includes any subscribe-time channel downgrade (T → AM), market-hours observations, and stale-fallback notes."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["delayed", "live"],
+      "description": "Run mode. delayed = one-shot REST snapshot per symbol; live = WebSocket stream for --listen seconds."
+    },
+    "marked_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the mark was produced. For live mode this is the end of the listen window."
+    },
+    "reference_time": {
+      "type": "string",
+      "format": "date-time",
+      "description": "The clock the confidence model compares each per-position as_of against. Usually marked_at, but can be overridden for postmortems."
+    },
+    "listen_window_seconds": {
+      "type": ["integer", "null"],
+      "description": "Length of the live-mode listen window in seconds. Null in delayed mode."
+    },
+    "positions": {
+      "type": "array",
+      "description": "One entry per CSV row, in input order",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "shares", "mark_price", "mark_source", "confidence", "as_of_et"],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Stock ticker symbol"
+          },
+          "shares": {
+            "type": "number",
+            "description": "Share count. Negative for short positions."
+          },
+          "mark_price": {
+            "type": ["number", "null"],
+            "description": "Per-share mark in USD. Null only when no fallback in the chain produced a value (very rare; the prevDay.c step should always succeed for live tickers)."
+          },
+          "mark_source": {
+            "type": "string",
+            "enum": [
+              "stream.T",
+              "stream.AM",
+              "stream.FMV",
+              "snapshot.last.price",
+              "snapshot.lastTrade.p",
+              "snapshot.min.c",
+              "snapshot.day.c",
+              "snapshot.prevDay.c"
+            ],
+            "description": "Which step in the fallback chain produced the mark. stream.* values appear only in live mode; for live-mode symbols that received no ticks during the listen window, the source is the snapshot.* step that backfilled."
+          },
+          "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "Mark confidence per references/confidence-scoring.md. high = top-decile ADV + recent trade + tight spread; medium = mid ADV + within 5min + spread 10-50bps; low = thin ADV or stale (5min+) or spread >50bps."
+          },
+          "as_of_et": {
+            "type": "string",
+            "description": "Eastern time of the mark in HH:MM:SS format (or YYYY-MM-DD HH:MM:SS if the mark is older than today)."
+          },
+          "as_of_utc": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "Full UTC timestamp of the mark, for downstream UI use"
+          },
+          "bid": {
+            "type": ["number", "null"],
+            "description": "Best bid at mark time, when available from the snapshot"
+          },
+          "ask": {
+            "type": ["number", "null"],
+            "description": "Best ask at mark time, when available from the snapshot"
+          },
+          "spread_bps": {
+            "type": ["number", "null"],
+            "description": "Bid-ask spread in basis points: (ask - bid) / mid * 10000. Null when bid or ask missing."
+          },
+          "cost_basis": {
+            "type": ["number", "null"],
+            "description": "Per-share cost basis from the input CSV. Null when input had no cost_basis column."
+          },
+          "unrealized_pnl_usd": {
+            "type": ["number", "null"],
+            "description": "(mark_price - cost_basis) * shares. Sign flips naturally for negative shares (short positions). Null when cost_basis is null."
+          },
+          "market_value_usd": {
+            "type": ["number", "null"],
+            "description": "shares * mark_price. Negative for shorts (the position is a liability)."
+          },
+          "tick_count": {
+            "type": ["integer", "null"],
+            "description": "Number of stream events observed for this symbol during the listen window. Null in delayed mode. Zero is a signal: the symbol was subscribed but never ticked, so the mark fell back to REST snapshot."
+          }
+        }
+      }
+    },
+    "flagged": {
+      "type": "array",
+      "description": "Positions whose confidence is medium or low. The exception block. UI dashboards typically render these with a warning color.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "confidence", "reason_codes", "detail_text", "source_endpoint"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "mark_price": { "type": ["number", "null"] },
+          "confidence": {
+            "type": "string",
+            "enum": ["medium", "low"]
+          },
+          "reason_codes": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "stale_mark",
+                "wide_spread",
+                "thin_quote",
+                "low_adv",
+                "fallback_chain_step_3_or_later",
+                "no_ticks_in_window",
+                "stream_downgrade",
+                "prev_day_only"
+              ]
+            },
+            "description": "Machine-readable reason tags. Each maps to a detail_text line in the rendered output."
+          },
+          "detail_text": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Human-readable explanation lines. One bullet per detail line in the rendered FLAGGED block."
+          },
+          "source_endpoint": {
+            "type": "string",
+            "description": "REST endpoint or WSS channel that produced the mark, for audit trail"
+          }
+        }
+      }
+    },
+    "book_value_usd": {
+      "type": "number",
+      "description": "Sum of (shares * mark_price) across all marked positions. Negative-share positions reduce book value. Excludes positions where mark_price came back null."
+    },
+    "unrealized_pnl_usd": {
+      "type": ["number", "null"],
+      "description": "Sum of unrealized_pnl_usd across positions that had a cost_basis. Null when no position in the input carried a cost_basis."
+    },
+    "last_update_lag_seconds": {
+      "type": ["integer", "null"],
+      "description": "Seconds between reference_time and the most recent per-position as_of. Indicates how fresh the book-level mark is."
+    },
+    "live_tape": {
+      "type": ["array", "null"],
+      "description": "Optional, live mode only. The last few stream events per ticker, ordered most-recent-first. Renders as the 'Live tape' trailer in Layer 2.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "trade_price", "trade_time_et"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "channel": {
+            "type": "string",
+            "enum": ["T", "AM", "FMV"]
+          },
+          "trade_price": { "type": "number" },
+          "trade_size": { "type": ["integer", "null"] },
+          "trade_time_et": { "type": "string" }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

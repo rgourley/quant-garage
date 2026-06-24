@@ -1,0 +1,47 @@
+name: portfolio-mark
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+  - massive-websockets
+requires:
+  - product: stocks
+    tier: starter
+realtime: preferred
+tick_history: no
+tiers:
+  delayed:
+    label: "Delayed REST snapshots (Stocks Starter or higher)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [eod_reporting, weekly_statements, batch_marking]
+    loses: [intraday_tape, sub_minute_recency]
+  live:
+    label: "Live WebSocket stream (Stocks Advanced or Business)"
+    needs:
+      - product: stocks
+        tier: advanced
+    enables: [intraday_marks, live_tape, sub_minute_recency]
+    loses: []
+endpoints:
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /v3/reference/tickers/{ticker}
+  - WSS wss://business.polygon.io/stocks (FMV, AM, T channels)
+notes: |
+  First skill in the suite that exercises the massive-websockets
+  foundation. Delayed mode is the default; live mode requires either
+  Stocks Advanced (for T.{ticker} ticks) or Stocks Business (for the
+  FMV.{ticker} and AM.{ticker} fallback channels).
+
+  Entitlement gotcha verified 2026-06-23 on a Stocks Business +
+  Options Business + Benzinga key: T.{ticker} returns "not authorized"
+  even on Business plan despite the published channel matrix. The
+  cause is a separate real-time data agreement that must be signed in
+  the Massive dashboard. AM.{ticker} and FMV.{ticker} are available
+  immediately. The skill auto-falls-back to AM at subscribe time and
+  notes the downgrade in the rendered output. See
+  skills/massive-websockets/SKILL.md "Entitlement and the not_authorized
+  case" for the full pattern.
+fallbacks: []
