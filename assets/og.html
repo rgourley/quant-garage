@@ -231,20 +231,23 @@
     margin-top: 12px;
   }
   .built-list {
-    display: flex;
-    flex-direction: column;
-    gap: 2px;
-    font-size: 10px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    column-gap: 10px;
+    row-gap: 2px;
+    font-size: 9.5px;
   }
   .built-row {
     display: grid;
-    grid-template-columns: 1fr auto auto;
-    column-gap: 14px;
+    grid-template-columns: 1fr auto;
+    column-gap: 8px;
     align-items: center;
-    padding: 2px 8px;
+    padding: 2px 7px;
     background: rgba(255, 176, 0, 0.025);
     border-left: 2px solid var(--positive);
+    min-width: 0;
   }
+  .built-tier { display: none; }
   .built-name {
     color: var(--fg);
     font-weight: 700;
@@ -301,12 +304,12 @@
         <span class="title-line2">playbook</span>
       </div>
       <div class="tagline">
-        Claude Code skills for grounded market data workflows. Stop guessing prices. Every number traces back to a live call with a timestamp.
+        Quant and equity research workflows packaged as Claude skills. The analyst methodology is the product: t-stats, IC + decay, regression-adjusted multiples, peer baskets that mean something.
       </div>
       <div class="meta">
         <div class="meta-row"><span class="meta-key">REPO</span><span class="meta-val">github.com/rgourley/finance-playbook</span></div>
         <div class="meta-row"><span class="meta-key">LICENSE</span><span class="meta-val">MIT</span></div>
-        <div class="meta-row"><span class="meta-key">SKILLS</span><span class="meta-val">5 built · 9 designed</span></div>
+        <div class="meta-row"><span class="meta-key">SKILLS</span><span class="meta-val">8 built · 6 designed</span></div>
         <div class="meta-row"><span class="meta-key">BACKEND</span><span class="meta-val">Massive API · SEC EDGAR</span></div>
       </div>
     </div>
@@ -346,13 +349,16 @@
       </div>
 
       <div class="built-wrap">
-        <div class="section-label" style="margin-bottom: 6px;">[4] BUILT · 5 OF 14 SKILLS</div>
+        <div class="section-label" style="margin-bottom: 6px;">[4] BUILT · 8 OF 14 SKILLS</div>
         <div class="built-list">
-          <div class="built-row"><span class="built-name">EARNINGS-DRILLDOWN</span><span class="built-mode">NOTE</span><span class="built-tier">STARTER + BENZ</span></div>
-          <div class="built-row"><span class="built-name">CORP-ACTIONS-RECONCILER</span><span class="built-mode">EXCEPTION</span><span class="built-tier">BASIC · FREE</span></div>
-          <div class="built-row"><span class="built-name">OPTIONS-FLOW</span><span class="built-mode">STREAM</span><span class="built-tier">OPT DEVELOPER</span></div>
-          <div class="built-row"><span class="built-name">UNIVERSE-BUILDER</span><span class="built-mode">TABLE</span><span class="built-tier">BASIC · FREE</span></div>
+          <div class="built-row"><span class="built-name">EARNINGS-DRILLDOWN</span><span class="built-mode">NOTE</span><span class="built-tier">STARTER</span></div>
+          <div class="built-row"><span class="built-name">FACTOR-RESEARCH</span><span class="built-mode">TABLE</span><span class="built-tier">STARTER</span></div>
           <div class="built-row"><span class="built-name">PITCH-COMPS</span><span class="built-mode">TABLE</span><span class="built-tier">STARTER</span></div>
+          <div class="built-row"><span class="built-name">OPTIONS-FLOW</span><span class="built-mode">STREAM</span><span class="built-tier">OPT DEV</span></div>
+          <div class="built-row"><span class="built-name">NEWS-SCANNER</span><span class="built-mode">STREAM</span><span class="built-tier">BASIC + BENZ</span></div>
+          <div class="built-row"><span class="built-name">PORTFOLIO-MARK</span><span class="built-mode">HYBRID</span><span class="built-tier">STARTER · WS</span></div>
+          <div class="built-row"><span class="built-name">UNIVERSE-BUILDER</span><span class="built-mode">TABLE</span><span class="built-tier">BASIC · FREE</span></div>
+          <div class="built-row"><span class="built-name">CORP-ACTIONS-RECONCILER</span><span class="built-mode">EXCEPTION</span><span class="built-tier">BASIC · FREE</span></div>
         </div>
       </div>
     </div>
@@ -361,7 +367,7 @@
 
   <div class="status">
     <span class="left">FINANCE-PLAYBOOK v0.1</span>
-    <span>5 SKILLS</span>
+    <span>8 SKILLS</span>
     <span>4 OUTPUT MODES</span>
     <span>MIT LICENSE</span>
     <span class="right">

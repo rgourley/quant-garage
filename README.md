@@ -2,48 +2,74 @@
 
 ![finance-playbook](./assets/og.png)
 
-Claude Code skills for grounded market data workflows. Ground your Claude
-sessions in real numbers. Or build your own UI on top. Same skill, both
-surfaces.
+**Quant and equity research workflows packaged as Claude skills. The
+analyst methodology is the product.**
+
+Anyone can pull a stock price. The hard part is the analysis on top:
+implied-vs-realized move with the right historical analog, post-earnings
+drift with SPY-adjusted t-stats, factor IC and decay curves, regression-
+adjusted comp multiples, news-sentiment-reaction divergence detection,
+peer baskets that mean something (NVDA → AMD/AVGO/TSM, not SIC's IBM/HPE).
+
+Each skill encodes a workflow a real analyst, trader, or PM already runs
+manually. The methodology references inside each skill (statistical
+methods, sample-size rules, base rates, edge cases) are where the IP
+lives. The Massive API just provides the inputs.
+
+**Use them two ways.** Drop into Claude Code to run a skill in chat
+("preview NVDA earnings", "reconcile my positions", "screen the universe
+for momentum"). Or call the same skill from your own code and parse the
+structured JSON for a dashboard, agent, notebook, or research pipeline.
+Every skill ships both: JSON payload + rendered note/table/stream from
+one analysis.
+
+Example: `earnings-drilldown` on NVDA, in real time, with the take + the
+supporting stats + the sample sizes:
 
 ```
-NVDA: Tier B Preview (run 2026-06-23 17:41 UTC)
-Next print (projected): 2026-08-19 AMC · Spot: $202.55
+NVDA: Q2 2026 Preview · Spot $202.55 · Next print 2026-08-19 AMC
 
-**Take:** Straddle prices 6.6pp above 8q realized (implied ±10.3%, realized ±3.7%).
+Take: Straddle prices 6.6pp above 8q realized (implied ±10.3%, realized ±3.7%).
 Premium sellers have a setup.
 
 Implied vs realized
-- Implied move (front straddle, 0.85-adj): ±10.3% (raw straddle ±12.1%)
-- Realized 8q avg: ±3.7%
-- IV30 (proxy from ATM avg): 37.3
+- Implied move (0.85-adj):  ±10.3% (raw straddle ±12.1%)
+- Realized 8q avg:          ±3.7%
+- IV30:                     37.3
 
-Post-earnings drift (T+1 to T+5)
+Post-earnings drift (T+1 to T+5, SPY-adjusted)
 - After negative reactions: −7.5% avg (n=6, significant)
 
 Cross-asset
-- Top peer betas: MU β=0.71, AVGO β=0.62, TSM β=0.54
+- Top peer betas: MU 0.71, AVGO 0.62, TSM 0.54
 ```
 
-That's what `earnings-drilldown` returns for NVDA today. Every number traces
-back to a `api.polygon.io` call with a timestamp. Built on the Massive API
-(formerly Polygon.io) for the data; the operator value is the same regardless
-of provider: verified answers instead of plausible ones.
+Every number traces back to a `api.polygon.io` call with a timestamp.
+Built on the Massive API (formerly Polygon.io) for data + SEC EDGAR
+for free fallbacks where they work.
 
 ## Status
 
-This is an early public release. One skill (`earnings-drilldown`) is built
-end-to-end, verified against real AAPL and NVDA data, and produces both
-JSON (canonical) and rendered (note-mode) outputs. Three foundation skills
-(`massive-api-patterns`, `massive-flat-files`, `massive-websockets`) capture
-the patterns the rest of the suite will inherit. Twelve more workflow
-skills are designed in this repo's matrix; contributions welcome.
+Eight workflow skills are built end-to-end, each verified against
+real Massive API data with both layers shipped (canonical JSON + rendered
+output). Three foundation skills capture the REST, flat-files, and
+WebSocket patterns the suite shares; all three foundations have been
+exercised against the live API, and two surfaced real entitlement gaps
+that are now documented as workarounds (see flat-files in factor-research
+and channel-entitlement in portfolio-mark). Six more workflow skills are
+designed but not yet implemented; contributions welcome.
 
-| Status | Skill |
-|---|---|
-| Built | `earnings-drilldown` (Tier A + Tier B), foundations |
-| Template stub | `corp-actions-reconciler` (docs + schema, no implementation yet) |
-| Designed, not yet implemented | The other 12 (see [PLAN-MATRIX.md](./PLAN-MATRIX.md)) |
+| Status | Skill | Validated against |
+|---|---|---|
+| Built | `earnings-drilldown` (Tier A + Tier B) | AAPL + NVDA live |
+| Built | `corp-actions-reconciler` | 4 real splits (AAPL/GOOGL/NVDA/TSLA) |
+| Built | `options-flow` | Live OPRA tape |
+| Built | `universe-builder` | Top-100 + concentration check |
+| Built | `pitch-comps` | CRM software comp set |
+| Built | `factor-research` | 5y × top-500, 4 factors |
+| Built | `news-scanner` | Today's NVDA/TSLA/AAPL news |
+| Built | `portfolio-mark` (delayed + live) | 7-position sample book, WebSocket validated |
+| Designed | The other 6 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -74,7 +100,7 @@ Each skill picks the right route for its job:
 You don't need to know which is which. The skill picks. You get the result
 plus a citation showing exactly where each number came from.
 
-## The planned skills
+## The skills
 
 See [PLAN-MATRIX.md](./PLAN-MATRIX.md) for the full matrix of which Massive
 plan each skill needs.
@@ -83,28 +109,28 @@ plan each skill needs.
 
 | Skill | What you can do with it | Status |
 |---|---|---|
-| [`universe-builder`](skills/universe-builder) | Filter the full US universe by liquidity, market cap, sector, or any combination | Designed |
-| [`factor-research`](skills/factor-research) | Run value, momentum, quality screens with the underlying datapoints attached | Designed |
+| [`universe-builder`](skills/universe-builder) | Filter the full US universe by liquidity, market cap, sector, or any combination | **Built** |
+| [`factor-research`](skills/factor-research) | Run value, momentum, quality screens with IC + decile spreads + concentration check | **Built** |
+| [`options-flow`](skills/options-flow) | Surface unusual activity, large prints, IV crush around catalysts | **Built** |
+| [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, novelty, and price action on the same surface | **Built** |
+| [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange volatility and volume anomalies in crypto | Designed |
 | [`event-study`](skills/event-study) | Pull price and volume behavior around earnings, FDA, M&A windows | Designed |
 | [`backtest-data-prep`](skills/backtest-data-prep) | Clean OHLCV with corporate-action adjustments and survivorship handling | Designed |
-| [`options-flow`](skills/options-flow) | Surface unusual activity, large prints, IV crush around catalysts | Designed |
-| [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange volatility and volume anomalies in crypto | Designed |
-| [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, and price action on the same surface | Designed |
 
 ### Banker workflows
 
 | Skill | What you can do with it | Status |
 |---|---|---|
-| [`earnings-drilldown`](skills/earnings-drilldown) | Brief a print with filings, estimates, price action, and IV crush in one pull | **Built (verified against real AAPL and NVDA data)** |
-| [`pitch-comps`](skills/pitch-comps) | Build a comp set with live EV/EBITDA, P/E, and growth, ready to drop in a deck | Designed |
+| [`earnings-drilldown`](skills/earnings-drilldown) | Brief a print with filings, estimates, price action, and IV crush in one pull | **Built** (AAPL + NVDA verified) |
+| [`pitch-comps`](skills/pitch-comps) | Build a comp set with live EV/EBITDA, P/E, growth, plus regression-adjusted multiples | **Built** (CRM verified) |
 | [`valuation-sanity-check`](skills/valuation-sanity-check) | Cross-check an analyst model against current marks before the meeting | Designed |
 
 ### Risk and operations
 
 | Skill | What you can do with it | Status |
 |---|---|---|
-| [`portfolio-mark`](skills/portfolio-mark) | Mark a book to last trade with a documented fallback chain | Designed |
-| [`corp-actions-reconciler`](skills/corp-actions-reconciler) | Catch splits, dividends, and spinoffs against a position file before they break P&L | Template stub |
+| [`portfolio-mark`](skills/portfolio-mark) | Mark a book to last trade with a documented fallback chain (delayed REST + live WebSocket) | **Built** |
+| [`corp-actions-reconciler`](skills/corp-actions-reconciler) | Catch splits, dividends, and spinoffs against a position file before they break P&L | **Built** |
 | [`best-ex-check`](skills/best-ex-check) | TCA an execution against NBBO at trade time | Designed |
 | [`t+1-settlement-prep`](skills/t+1-settlement-prep) | Walk a settlement calendar against a position file | Designed |
 
