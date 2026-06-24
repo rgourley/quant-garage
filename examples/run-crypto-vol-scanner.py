@@ -1,0 +1,664 @@
+#!/usr/bin/env python3
+"""
+Reference implementation of the crypto-vol-scanner skill.
+
+Scans a crypto universe (default top 10 by liquidity) over the last 24h
+and surfaces realized vol spikes, volume anomalies, cross-exchange
+basis divergence, and tail moves. Ranks by composite impact and emits
+two output layers:
+
+  Layer 1: canonical JSON matching skills/crypto-vol-scanner/output-schema.json
+  Layer 2: Bloomberg crypto desk / Cheddar-Flow-style rendered stream
+
+Usage:
+    python3 examples/run-crypto-vol-scanner.py
+    python3 examples/run-crypto-vol-scanner.py --universe BTC,ETH,SOL --hours 24 --top 10
+
+Reads MASSIVE_API_KEY from env, never from a file.
+Writes output to examples/crypto-vol-scanner-output.md (gitignored).
+"""
+import os
+import sys
+import json
+import math
+import argparse
+import urllib.request
+import urllib.error
+import urllib.parse
+from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+
+# -------- Args --------
+
+parser = argparse.ArgumentParser(description="crypto-vol-scanner runner")
+parser.add_argument(
+    "--universe",
+    default="BTC,ETH,SOL,XRP,ADA,DOGE,AVAX,LINK,DOT,MATIC",
+    help="Comma-separated base currencies. MATIC auto-substituted to POL.",
+)
+parser.add_argument("--hours", type=int, default=24, help="Lookback window in hours")
+parser.add_argument("--top", type=int, default=15, help="Max events to emit")
+args = parser.parse_args()
+
+# Resolve universe. MATIC -> POL (Polygon chain rebrand).
+TICKER_REWRITES = {"MATIC": "POL"}
+RAW_UNIVERSE = [t.upper().strip() for t in args.universe.split(",") if t.strip()]
+UNIVERSE = [TICKER_REWRITES.get(t, t) for t in RAW_UNIVERSE]
+TICKERS_RESOLVED = [f"X:{base}USD" for base in UNIVERSE]
+WINDOW_HOURS = args.hours
+TOP_N = args.top
+
+KEY = os.environ.get("MASSIVE_API_KEY")
+if not KEY:
+    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
+    sys.exit(1)
+
+BASE = "https://api.polygon.io"
+HEADERS = {"Authorization": f"Bearer {KEY}"}
+NOW_UTC = datetime.now(timezone.utc)
+
+# Thresholds (kept as constants; mirrored in scan_params)
+VOL_PERCENTILE_THRESHOLD = 0.90
+VOLUME_ANOMALY_THRESHOLD = 2.0
+MOVE_ZSCORE_THRESHOLD = 2.0
+BASIS_BPS_THRESHOLD = 20.0
+QUIET_VOL_PCT = 0.25
+QUIET_VOLUME_RATIO = 0.7
+
+EXCHANGE_NAMES = {1: "Coinbase", 2: "Bitfinex", 6: "Bitstamp", 10: "Binance", 23: "Kraken"}
+
+
+# -------- HTTP --------
+
+def fetch(path):
+    url = f"{BASE}{path}"
+    req = urllib.request.Request(url, headers=HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read()[:400].decode("utf-8", errors="replace")
+        raise RuntimeError(f"{e.code} on {path}: {body}")
+
+
+# -------- Math helpers --------
+
+def stdev(xs):
+    n = len(xs)
+    if n < 2:
+        return 0.0
+    m = sum(xs) / n
+    return math.sqrt(sum((x - m) ** 2 for x in xs) / n)
+
+
+def percentile(value, distribution):
+    """Fraction of distribution strictly less than value, in [0, 1]."""
+    if not distribution:
+        return 0.5
+    below = sum(1 for x in distribution if x < value)
+    return below / len(distribution)
+
+
+def humanize_usd(v):
+    if v is None:
+        return "n/a"
+    if v >= 1e9:
+        return f"${v/1e9:.1f}B"
+    if v >= 1e6:
+        return f"${v/1e6:.0f}M"
+    if v >= 1e3:
+        return f"${v/1e3:.0f}K"
+    return f"${v:.0f}"
+
+
+def ordinal(n):
+    """1 -> 1st, 2 -> 2nd, 3 -> 3rd, 22 -> 22nd, 11 -> 11th."""
+    n = int(n)
+    if 10 <= (n % 100) <= 20:
+        suf = "th"
+    else:
+        suf = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suf}"
+
+
+def humanize_price(p):
+    if p is None:
+        return "n/a"
+    if p >= 1000:
+        return f"${p:,.0f}"
+    if p >= 1:
+        return f"${p:.2f}"
+    return f"${p:.4f}"
+
+
+# -------- Step 1: bulk snapshot --------
+
+def fetch_bulk_snapshot(tickers):
+    qs = urllib.parse.quote(",".join(tickers), safe=":,")
+    path = f"/v2/snapshot/locale/global/markets/crypto/tickers?tickers={qs}"
+    doc = fetch(path)
+    by_ticker = {}
+    for t in doc.get("tickers") or []:
+        by_ticker[t.get("ticker")] = t
+    return by_ticker
+
+
+# -------- Step 2: daily aggs (TTM) for return distribution + volume baseline --------
+
+def fetch_daily_aggs(ticker, days_back=365):
+    frm = (NOW_UTC - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    to = NOW_UTC.strftime("%Y-%m-%d")
+    path = (
+        f"/v2/aggs/ticker/{ticker}/range/1/day/{frm}/{to}"
+        f"?adjusted=true&sort=asc&limit=5000"
+    )
+    try:
+        doc = fetch(path)
+    except RuntimeError as e:
+        print(f"  warn: daily aggs failed for {ticker}: {e}", file=sys.stderr)
+        return []
+    return doc.get("results") or []
+
+
+# -------- Step 3: hourly aggs for realized vol --------
+
+def fetch_hourly_aggs(ticker, days_back=32):
+    frm = (NOW_UTC - timedelta(days=days_back)).strftime("%Y-%m-%d")
+    to = NOW_UTC.strftime("%Y-%m-%d")
+    path = (
+        f"/v2/aggs/ticker/{ticker}/range/1/hour/{frm}/{to}"
+        f"?adjusted=true&sort=asc&limit=50000"
+    )
+    try:
+        doc = fetch(path)
+    except RuntimeError as e:
+        print(f"  warn: hourly aggs failed for {ticker}: {e}", file=sys.stderr)
+        return []
+    return doc.get("results") or []
+
+
+# -------- Step 4: per-exchange trades --------
+
+def fetch_recent_trades(ticker, limit=200):
+    path = f"/v3/trades/{ticker}?limit={limit}&order=desc"
+    try:
+        doc = fetch(path)
+    except RuntimeError as e:
+        print(f"  warn: trades fetch failed for {ticker}: {e}", file=sys.stderr)
+        return []
+    return doc.get("results") or []
+
+
+def per_exchange_basis(trades):
+    """Return (basis_bps, exchanges_compared, high_ex_name, low_ex_name)."""
+    if not trades:
+        return None, [], None, None
+    by_ex = defaultdict(list)
+    for t in trades:
+        x = t.get("exchange")
+        p = t.get("price")
+        if x is None or p is None:
+            continue
+        by_ex[x].append((t.get("participant_timestamp") or 0, p))
+    if len(by_ex) < 2:
+        # Only one exchange in the most-recent window; basis not measurable.
+        details = []
+        for x, ticks in by_ex.items():
+            ticks.sort(reverse=True)  # most recent first
+            details.append({
+                "exchange_id": x,
+                "exchange_name": EXCHANGE_NAMES.get(x, f"X{x}"),
+                "last_price": ticks[0][1],
+                "trade_count": len(ticks),
+            })
+        return None, details, None, None
+
+    last_prices = {}
+    for x, ticks in by_ex.items():
+        ticks.sort(reverse=True)
+        last_prices[x] = (ticks[0][1], len(ticks))
+
+    sorted_by_price = sorted(last_prices.items(), key=lambda kv: kv[1][0])
+    low_x, (low_p, _) = sorted_by_price[0]
+    high_x, (high_p, _) = sorted_by_price[-1]
+    mid = (low_p + high_p) / 2
+    basis_bps = ((high_p - low_p) / mid) * 10000 if mid > 0 else None
+
+    exchanges_compared = [
+        {
+            "exchange_id": x,
+            "exchange_name": EXCHANGE_NAMES.get(x, f"X{x}"),
+            "last_price": price,
+            "trade_count": count,
+        }
+        for x, (price, count) in sorted(last_prices.items())
+    ]
+    return basis_bps, exchanges_compared, EXCHANGE_NAMES.get(high_x, f"X{high_x}"), EXCHANGE_NAMES.get(low_x, f"X{low_x}")
+
+
+# -------- Realized vol --------
+
+def realized_vol_from_closes(closes, periods_per_year):
+    if len(closes) < 3:
+        return None
+    rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
+    if not rets:
+        return None
+    sigma = stdev(rets)
+    return sigma * math.sqrt(periods_per_year) * 100
+
+
+def rolling_realized_vol_distribution(hourly_aggs, window=24):
+    """Compute rolling-24h annualized realized vol every hour."""
+    closes = [b.get("c") for b in hourly_aggs if b.get("c")]
+    if len(closes) < window + 1:
+        return []
+    vols = []
+    for end in range(window, len(closes)):
+        window_closes = closes[end - window : end + 1]
+        v = realized_vol_from_closes(window_closes, 24 * 365)
+        if v is not None:
+            vols.append(v)
+    return vols
+
+
+# -------- Main scan --------
+
+print(f"Scanning {len(TICKERS_RESOLVED)} crypto tickers...", file=sys.stderr)
+
+# 1. Bulk snapshot
+print("  fetching bulk snapshot", file=sys.stderr)
+snapshots = fetch_bulk_snapshot(TICKERS_RESOLVED)
+print(f"  got {len(snapshots)} snapshots", file=sys.stderr)
+
+# Per-ticker compute
+events = []
+skipped = []
+
+for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
+    print(f"  processing {ticker}", file=sys.stderr)
+    snap = snapshots.get(ticker)
+    if not snap:
+        skipped.append({"ticker": ticker, "reason": "no snapshot"})
+        continue
+
+    last_trade = snap.get("lastTrade") or {}
+    day = snap.get("day") or {}
+    prev_day = snap.get("prevDay") or {}
+    minute = snap.get("min") or {}
+
+    # Spot via fallback chain
+    spot = None
+    spot_source = None
+    for field, src in [
+        ("p", "lastTrade.p"),
+    ]:
+        v = last_trade.get(field)
+        if v:
+            spot, spot_source = v, src
+            break
+    if spot is None:
+        for blk, src in [(minute, "min.c"), (day, "day.c"), (prev_day, "prevDay.c")]:
+            v = blk.get("c")
+            if v:
+                spot, spot_source = v, src
+                break
+
+    if spot is None or not prev_day.get("c"):
+        skipped.append({"ticker": ticker, "reason": "missing spot or prevDay close"})
+        continue
+
+    # 24h move (vs prevDay.c)
+    prev_close = prev_day.get("c")
+    move_24h_pct = (spot / prev_close) - 1
+    log_ret_24h = math.log(spot / prev_close) if prev_close > 0 else 0
+
+    # 2. Daily aggs for return distribution + volume baseline
+    daily = fetch_daily_aggs(ticker, days_back=60)
+    daily_closes = [b.get("c") for b in daily if b.get("c")]
+    daily_log_rets = []
+    for i in range(1, len(daily_closes)):
+        if daily_closes[i - 1] > 0:
+            daily_log_rets.append(math.log(daily_closes[i] / daily_closes[i - 1]))
+    # Take the last 30 daily returns for the σ
+    sigma_30d = stdev(daily_log_rets[-30:]) if len(daily_log_rets) >= 5 else 0
+    move_zscore = (log_ret_24h / sigma_30d) if sigma_30d > 0 else 0
+
+    # USD volume baseline: last 30 trading days, daily.v * daily.vw
+    daily_volumes_usd = []
+    for b in daily[-30:]:
+        v = b.get("v")
+        vw = b.get("vw") or b.get("c")
+        if v and vw:
+            daily_volumes_usd.append(v * vw)
+    volume_30d_avg = sum(daily_volumes_usd) / len(daily_volumes_usd) if daily_volumes_usd else None
+
+    # Current 24h USD volume from prevDay
+    prev_v = prev_day.get("v")
+    prev_vw = prev_day.get("vw") or prev_close
+    volume_24h_usd = (prev_v * prev_vw) if (prev_v and prev_vw) else None
+    volume_vs_avg_ratio = (volume_24h_usd / volume_30d_avg) if (volume_24h_usd and volume_30d_avg) else 1.0
+
+    # 3. Hourly aggs for realized vol
+    hourly = fetch_hourly_aggs(ticker, days_back=32)
+    hourly_closes = [b.get("c") for b in hourly if b.get("c")]
+    rv_24h = realized_vol_from_closes(hourly_closes[-25:], 24 * 365) if len(hourly_closes) >= 25 else None
+    rv_distribution_30d = rolling_realized_vol_distribution(hourly, window=24)
+    vol_percentile = percentile(rv_24h, rv_distribution_30d) if (rv_24h is not None and rv_distribution_30d) else 0.5
+    rv_avg_30d = sum(rv_distribution_30d) / len(rv_distribution_30d) if rv_distribution_30d else None
+    vol_vs_avg_ratio = (rv_24h / rv_avg_30d) if (rv_24h and rv_avg_30d) else 1.0
+
+    # 4. Per-exchange trades
+    trades = fetch_recent_trades(ticker, limit=200)
+    basis_bps, exchanges_compared, high_ex, low_ex = per_exchange_basis(trades)
+
+    # Signals fired
+    signals_fired = []
+    if vol_percentile >= VOL_PERCENTILE_THRESHOLD:
+        signals_fired.append("vol_spike")
+    if volume_vs_avg_ratio >= VOLUME_ANOMALY_THRESHOLD:
+        signals_fired.append("volume_anomaly")
+    if abs(move_zscore) >= MOVE_ZSCORE_THRESHOLD:
+        signals_fired.append("tail_move")
+    if basis_bps and basis_bps >= BASIS_BPS_THRESHOLD:
+        signals_fired.append("cross_exchange")
+    if vol_percentile <= QUIET_VOL_PCT and volume_vs_avg_ratio <= QUIET_VOLUME_RATIO:
+        signals_fired.append("quiet")
+
+    # Dominant signal type
+    if not signals_fired:
+        signal_type = "quiet" if vol_percentile < 0.5 else "tail_move"
+    elif len(signals_fired) == 1:
+        signal_type = signals_fired[0]
+    elif "quiet" in signals_fired and len(signals_fired) == 1:
+        signal_type = "quiet"
+    elif len([s for s in signals_fired if s != "quiet"]) >= 2:
+        signal_type = "combined"
+    else:
+        # Priority order
+        for s in ["vol_spike", "volume_anomaly", "tail_move", "cross_exchange"]:
+            if s in signals_fired:
+                signal_type = s
+                break
+        else:
+            signal_type = signals_fired[0]
+
+    # Composite score (max-of-normalized)
+    vol_score = max(0.0, (vol_percentile - 0.5) * 2) if vol_percentile is not None else 0
+    volume_score = max(0.0, math.log(max(volume_vs_avg_ratio, 1.0)) / math.log(5)) if volume_vs_avg_ratio else 0
+    move_score = min(1.0, abs(move_zscore) / 4.0)
+    basis_score = min(1.0, basis_bps / 50.0) if basis_bps else 0.0
+    composite_score = max(vol_score, volume_score, move_score, basis_score)
+
+    # Context line (one-line trader read)
+    context_line = None
+    if signal_type == "combined" and "vol_spike" in signals_fired and "volume_anomaly" in signals_fired:
+        context_line = f"vol AND volume both elevated; directional flow"
+    elif signal_type == "vol_spike" and rv_avg_30d:
+        context_line = f"30d realized {rv_avg_30d:.0f}%, current ~{vol_vs_avg_ratio:.1f}x baseline"
+    elif signal_type == "volume_anomaly":
+        context_line = f"{volume_vs_avg_ratio:.1f}x 30d avg volume; flow regime change"
+    elif signal_type == "cross_exchange" and high_ex and low_ex:
+        context_line = f"{high_ex} bid heavier than {low_ex}; persistent venue divergence"
+    elif signal_type == "tail_move":
+        context_line = f"{abs(move_zscore):.1f}σ move; check for catalyst"
+    elif signal_type == "quiet" and "quiet" in signals_fired:
+        context_line = "unusually quiet; calm-before-storm watch"
+    elif signal_type == "quiet":
+        # Below-median but didn't meet strict quiet rule; honest about it
+        context_line = f"sub-median activity; {ordinal(round(vol_percentile*100))}-%ile RV, {volume_vs_avg_ratio:.1f}x vol"
+
+    events.append({
+        "ticker": ticker,
+        "base_currency": base,
+        "quote_currency": "USD",
+        "signal_type": signal_type,
+        "signals_fired": signals_fired,
+        "spot": spot,
+        "spot_source": spot_source,
+        "move_24h_pct": round(move_24h_pct, 6),
+        "move_zscore": round(move_zscore, 3),
+        "realized_vol_24h_pct": round(rv_24h, 2) if rv_24h is not None else None,
+        "vol_percentile_30d": round(vol_percentile, 3),
+        "vol_vs_avg_ratio": round(vol_vs_avg_ratio, 3) if vol_vs_avg_ratio else None,
+        "volume_24h_usd": round(volume_24h_usd, 2) if volume_24h_usd else None,
+        "volume_vs_avg_ratio": round(volume_vs_avg_ratio, 3) if volume_vs_avg_ratio else None,
+        "basis_bps": round(basis_bps, 2) if basis_bps is not None else None,
+        "exchanges_compared": exchanges_compared,
+        "basis_high_exchange": high_ex,
+        "basis_low_exchange": low_ex,
+        "context_line": context_line,
+        "composite_score": round(composite_score, 4),
+    })
+
+# Sort by composite_score descending
+events.sort(key=lambda e: e["composite_score"], reverse=True)
+top_events = events[:TOP_N]
+
+# Summary
+signal_counts = defaultdict(int)
+for e in top_events:
+    signal_counts[e["signal_type"]] += 1
+rvs = [e["realized_vol_24h_pct"] for e in events if e["realized_vol_24h_pct"] is not None]
+median_rv = sorted(rvs)[len(rvs) // 2] if rvs else None
+
+# Take: 1-2 sentence crypto desk read
+strong_signals = [e for e in top_events if e["composite_score"] >= 0.4]
+if strong_signals:
+    top1 = strong_signals[0]
+    sign_text = "+" if top1["move_24h_pct"] >= 0 else ""
+    take_parts = [
+        f"{top1['base_currency']} leads with {top1['signal_type'].replace('_', ' ')}: "
+        f"{sign_text}{top1['move_24h_pct']*100:.1f}% on {ordinal(round(top1['vol_percentile_30d']*100))}-%ile realized vol"
+    ]
+    if len(strong_signals) > 1:
+        take_parts.append(
+            f"{len(strong_signals) - 1} other {'name shows' if len(strong_signals) == 2 else 'names show'} above-threshold anomalies"
+        )
+    if median_rv is not None:
+        regime = "elevated" if median_rv >= 60 else ("normal" if median_rv >= 40 else "quiet")
+        take_parts.append(f"universe median RV {median_rv:.0f}% ({regime} regime)")
+    take = ". ".join(take_parts) + "."
+elif median_rv is not None:
+    take = (
+        f"Quiet across the universe: no threshold breaches. "
+        f"Median RV {median_rv:.0f}%; watch for vol expansion."
+    )
+else:
+    take = "Universe quiet; no events crossed threshold."
+
+# Tier
+tier = "A"  # All paid keys return real-time crypto + tick trades
+tier_caveats = []
+
+payload = {
+    "tier": tier,
+    "tier_caveats": tier_caveats,
+    "mode": "stream",
+    "run_at": NOW_UTC.isoformat(),
+    "scan_params": {
+        "universe": RAW_UNIVERSE,
+        "tickers_resolved": TICKERS_RESOLVED,
+        "window_hours": WINDOW_HOURS,
+        "top_n": TOP_N,
+        "vol_spike_percentile_threshold": VOL_PERCENTILE_THRESHOLD,
+        "volume_anomaly_threshold": VOLUME_ANOMALY_THRESHOLD,
+        "move_zscore_threshold": MOVE_ZSCORE_THRESHOLD,
+        "basis_bps_threshold": BASIS_BPS_THRESHOLD,
+    },
+    "events": top_events,
+    "summary": {
+        "count": len(top_events),
+        "by_signal": dict(signal_counts),
+        "median_realized_vol_pct": round(median_rv, 2) if median_rv is not None else None,
+    },
+    "take": take,
+    "skipped_tickers": skipped,
+    "sources": [
+        {
+            "endpoint": "/v2/snapshot/locale/global/markets/crypto/tickers",
+            "fetched_at": NOW_UTC.isoformat(),
+            "context": "Bulk snapshot for the resolved universe",
+        },
+        {
+            "endpoint": "/v2/aggs/ticker/{X:BASEUSD}/range/1/day/{from}/{to}",
+            "fetched_at": NOW_UTC.isoformat(),
+            "context": "Daily aggregates per ticker for return distribution and volume baseline",
+        },
+        {
+            "endpoint": "/v2/aggs/ticker/{X:BASEUSD}/range/1/hour/{from}/{to}",
+            "fetched_at": NOW_UTC.isoformat(),
+            "context": "Hourly aggregates per ticker for current 24h realized vol and trailing 30d distribution",
+        },
+        {
+            "endpoint": "/v3/trades/{X:BASEUSD}?limit=200&order=desc",
+            "fetched_at": NOW_UTC.isoformat(),
+            "context": "Recent tick-level trades per ticker for cross-exchange basis",
+        },
+    ],
+}
+
+
+# -------- Render --------
+
+def render_block(e):
+    base = e["base_currency"]
+    quote = e["quote_currency"]
+    pair = f"{base}-{quote}"
+    sig = e["signal_type"]
+    tag_map = {
+        "vol_spike": "VOL SPIKE",
+        "volume_anomaly": "VOLUME ANOMALY",
+        "cross_exchange": "CROSS-EXCHANGE",
+        "tail_move": "TAIL MOVE",
+        "quiet": "QUIET",
+        "combined": "COMBINED",
+    }
+    tag = tag_map.get(sig, sig.upper())
+
+    # Signal-specific summary on line 1
+    rv = e["realized_vol_24h_pct"]
+    vol_pct = e["vol_percentile_30d"]
+    vol_ratio = e["vol_vs_avg_ratio"]
+    vol_24h_usd = e["volume_24h_usd"]
+    vol_ratio_v = e["volume_vs_avg_ratio"]
+    basis = e["basis_bps"]
+
+    if sig == "vol_spike":
+        summary = f"realized 24h: {rv:.0f}% ({ordinal(round(vol_pct*100))} %ile TTM, {vol_ratio:.1f}x avg)"
+    elif sig == "volume_anomaly":
+        summary = f"24h {humanize_usd(vol_24h_usd)} ({vol_ratio_v:.1f}x trailing 30d avg)"
+    elif sig == "cross_exchange":
+        high_ex = e["basis_high_exchange"]
+        low_ex = e["basis_low_exchange"]
+        ex_lookup = {ex["exchange_name"]: ex["last_price"] for ex in (e["exchanges_compared"] or [])}
+        high_p = ex_lookup.get(high_ex, 0)
+        low_p = ex_lookup.get(low_ex, 0)
+        summary = f"{high_ex} {humanize_price(high_p)} · {low_ex} {humanize_price(low_p)} ({basis:.0f}bps)"
+    elif sig == "tail_move":
+        pct_str = f"{e['move_24h_pct']*100:+.1f}%"
+        summary = f"{pct_str} 24h ({abs(e['move_zscore']):.1f}σ vs 30d)"
+    elif sig == "quiet":
+        if rv is not None:
+            summary = f"realized 24h: {rv:.0f}% ({ordinal(round(vol_pct*100))} %ile TTM)"
+        else:
+            summary = "realized 24h: n/a"
+    elif sig == "combined":
+        # Pick dominant non-quiet signal
+        primary = None
+        for s in ["vol_spike", "volume_anomaly", "tail_move", "cross_exchange"]:
+            if s in (e["signals_fired"] or []):
+                primary = s
+                break
+        if primary == "vol_spike":
+            primary_text = f"realized 24h: {rv:.0f}% ({ordinal(round(vol_pct*100))} %ile TTM, {vol_ratio:.1f}x avg)"
+        elif primary == "volume_anomaly":
+            primary_text = f"24h {humanize_usd(vol_24h_usd)} ({vol_ratio_v:.1f}x trailing 30d avg)"
+        elif primary == "tail_move":
+            primary_text = f"{e['move_24h_pct']*100:+.1f}% 24h ({abs(e['move_zscore']):.1f}σ)"
+        elif primary == "cross_exchange":
+            primary_text = f"basis {basis:.0f}bps {e['basis_high_exchange']}/{e['basis_low_exchange']}"
+        else:
+            primary_text = "multiple signals"
+        secondaries = [s for s in (e["signals_fired"] or []) if s != primary and s != "quiet"]
+        sec_texts = []
+        for s in secondaries:
+            if s == "volume_anomaly":
+                sec_texts.append(f"volume {vol_ratio_v:.1f}x avg")
+            elif s == "vol_spike":
+                sec_texts.append(f"RV {ordinal(round(vol_pct*100))} %ile")
+            elif s == "tail_move":
+                sec_texts.append(f"{abs(e['move_zscore']):.1f}σ move")
+            elif s == "cross_exchange":
+                sec_texts.append(f"basis {basis:.0f}bps")
+        summary = f"{primary_text}" + (f" · also {' + '.join(sec_texts)}" if sec_texts else "")
+    else:
+        summary = ""
+
+    line1 = f"{pair}  {tag}  {summary}"
+
+    # Line 2: spot · 24h move · 24h vol · realized vol
+    parts = [humanize_price(e["spot"])]
+    parts.append(f"24h move {e['move_24h_pct']*100:+.1f}% ({abs(e['move_zscore']):.1f}σ)")
+    if vol_24h_usd is not None:
+        parts.append(f"24h vol {humanize_usd(vol_24h_usd)} ({vol_ratio_v:.1f}x avg)")
+    if rv is not None:
+        parts.append(f"realized vol {rv:.0f}%")
+    line2 = " · ".join(parts)
+
+    block = [line1, line2]
+    if e["context_line"]:
+        block.append(f"↳ {e['context_line']}")
+    return "\n".join(block)
+
+
+lines = []
+header = (
+    f"{len(top_events)} events surfaced from {len(UNIVERSE)} names · "
+    f"window: last {WINDOW_HOURS}h · "
+    f"run {NOW_UTC.strftime('%Y-%m-%d %H:%M')} UTC"
+)
+lines.append(header)
+if tier == "B":
+    lines.append("Note: cross-exchange basis on Crypto Starter may reflect 15-min-delayed prints.")
+lines.append("")
+
+for e in top_events:
+    lines.append(render_block(e))
+    lines.append("")
+
+footer = f"End of stream. {len(top_events)} events across {len(UNIVERSE)} names."
+if median_rv is not None:
+    footer += f" Universe median RV: {median_rv:.0f}%."
+lines.append(footer)
+if skipped:
+    skip_str = ", ".join(s["ticker"] for s in skipped)
+    lines.append(f"Skipped: {skip_str}.")
+
+rendered = "\n".join(lines)
+
+
+# -------- Write output --------
+
+out_name = "crypto-vol-scanner-output.md"
+out_path = os.path.join(os.path.dirname(__file__), out_name)
+with open(out_path, "w") as f:
+    f.write("# crypto-vol-scanner run\n\n")
+    f.write(f"Generated: {NOW_UTC.isoformat()}\n")
+    f.write(f"Universe: {', '.join(RAW_UNIVERSE)}\n")
+    f.write(f"Window: last {WINDOW_HOURS}h\n")
+    f.write(f"Tier: {tier}\n\n")
+    f.write("## Take\n\n")
+    f.write(take + "\n\n")
+    f.write("## Layer 1: canonical JSON (live data)\n\n")
+    f.write("```json\n")
+    f.write(json.dumps(payload, indent=2, default=str))
+    f.write("\n```\n\n")
+    f.write("## Layer 2: rendered stream (live data)\n\n")
+    f.write("```\n")
+    f.write(rendered)
+    f.write("\n```\n")
+
+print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
+print(rendered)

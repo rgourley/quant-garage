@@ -1,0 +1,44 @@
+name: crypto-vol-scanner
+kind: skill
+interface: rest
+output_mode: stream
+foundations:
+  - massive-api-patterns
+requires:
+  - product: crypto
+    tier: starter
+realtime: preferred
+tick_history: yes
+tiers:
+  A:
+    label: "Real-time crypto (Currencies Business or Crypto Developer)"
+    needs:
+      - product: crypto
+        tier: developer
+    enables: [realtime_snapshot, tick_level_trades, cross_exchange_basis_live]
+  B:
+    label: "Crypto Starter"
+    needs:
+      - product: crypto
+        tier: starter
+    enables: [realtime_snapshot, daily_aggs, hourly_aggs]
+    loses: [sub_second_tick_freshness]
+endpoints:
+  - GET /v2/snapshot/locale/global/markets/crypto/tickers
+  - GET /v2/snapshot/locale/global/markets/crypto/tickers/{ticker}
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /v2/aggs/ticker/{ticker}/range/1/hour/{from}/{to}
+  - GET /v3/trades/{ticker}
+notes: |
+  First crypto skill in the suite, third asset class after stocks and
+  options. Stream-mode rendering inherits options-flow's three-line block
+  shape, adapted for the four crypto signal types: vol_spike,
+  volume_anomaly, cross_exchange, tail_move (plus quiet and combined
+  composite tags). The cross-exchange basis signal uses /v3/trades and
+  groups by exchange ID; Massive carries five crypto exchanges (Coinbase
+  1, Bitfinex 2, Bitstamp 6, Binance 10, Kraken 23). MATIC was renamed
+  to POL on the Polygon chain rebrand; the skill auto-substitutes
+  X:POLUSD when a caller asks for MATIC. Perp funding rates and
+  derivatives IV are not exposed by Massive REST and are deferred to v2.
+fallbacks:
+  - news-scanner

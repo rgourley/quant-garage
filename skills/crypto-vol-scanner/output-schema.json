@@ -1,0 +1,238 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "crypto-vol-scanner output",
+  "description": "Canonical structured output for the crypto-vol-scanner skill. Layer 1 (the data); Layer 2 (rendered stream) is described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "scan_params", "events", "summary", "sources", "run_at"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=real-time tick-level trades + snapshot, B=Crypto Starter (delayed tick freshness)"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats. Empty array on Tier A."
+    },
+    "mode": {
+      "type": "string",
+      "const": "stream",
+      "description": "Always 'stream' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the scan was run"
+    },
+    "scan_params": {
+      "type": "object",
+      "required": ["universe", "window_hours", "top_n"],
+      "properties": {
+        "universe": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Base currencies scanned (e.g. ['BTC', 'ETH', 'SOL'])"
+        },
+        "tickers_resolved": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Massive crypto tickers actually called (e.g. ['X:BTCUSD', 'X:ETHUSD']). MATIC auto-substituted to POL."
+        },
+        "window_hours": {
+          "type": "integer",
+          "description": "Lookback window for the 'current' signal (default 24)"
+        },
+        "top_n": {
+          "type": "integer",
+          "description": "Cap on events emitted (default 15)"
+        },
+        "vol_spike_percentile_threshold": {
+          "type": "number",
+          "description": "Realized vol must exceed this percentile of the trailing 30d distribution to flag (default 0.90)"
+        },
+        "volume_anomaly_threshold": {
+          "type": "number",
+          "description": "Current 24h USD volume / trailing 30d avg must exceed this to flag (default 2.0)"
+        },
+        "move_zscore_threshold": {
+          "type": "number",
+          "description": "abs(24h_return / 30d_daily_return_std) must exceed this to flag (default 2.0)"
+        },
+        "basis_bps_threshold": {
+          "type": "number",
+          "description": "Max minus min recent per-exchange price (bps) must exceed this to flag (default 20.0)"
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "Per-ticker events ranked by composite impact, descending",
+      "items": {
+        "type": "object",
+        "required": [
+          "ticker",
+          "base_currency",
+          "quote_currency",
+          "signal_type",
+          "spot",
+          "move_24h_pct",
+          "move_zscore",
+          "realized_vol_24h_pct",
+          "vol_percentile_30d",
+          "vol_vs_avg_ratio",
+          "volume_24h_usd",
+          "volume_vs_avg_ratio",
+          "composite_score"
+        ],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Massive crypto ticker, e.g. X:BTCUSD"
+          },
+          "base_currency": {
+            "type": "string",
+            "description": "Base symbol, e.g. BTC"
+          },
+          "quote_currency": {
+            "type": "string",
+            "description": "Quote symbol, e.g. USD"
+          },
+          "signal_type": {
+            "type": "string",
+            "enum": ["vol_spike", "volume_anomaly", "cross_exchange", "tail_move", "quiet", "combined"],
+            "description": "Dominant signal that put this event in the top N. 'combined' when 2+ signals fire above threshold; 'quiet' when realized vol is unusually low (sub-25th percentile)."
+          },
+          "signals_fired": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["vol_spike", "volume_anomaly", "cross_exchange", "tail_move", "quiet"]
+            },
+            "description": "All signals that exceeded their threshold. Drives the 'combined' tag."
+          },
+          "spot": {
+            "type": "number",
+            "description": "Current spot price from snapshot.lastTrade.p, with the best-price fallback chain when null"
+          },
+          "spot_source": {
+            "type": "string",
+            "description": "Which field the spot came from: lastTrade.p, day.c, prevDay.c, etc."
+          },
+          "move_24h_pct": {
+            "type": "number",
+            "description": "Trailing 24h return as a fraction. Computed as (lastTrade.p / prevDay.c) - 1."
+          },
+          "move_zscore": {
+            "type": "number",
+            "description": "24h return divided by the std of trailing 30d daily log-returns. >2σ = notable, >3σ = tail event. Sign preserved."
+          },
+          "realized_vol_24h_pct": {
+            "type": "number",
+            "description": "Annualized realized vol over the last 24h, as a percentage. Computed from hourly close-to-close log returns × sqrt(24 × 365)."
+          },
+          "vol_percentile_30d": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Where current 24h realized vol sits in the trailing 30d distribution of rolling-24h realized vol windows. 0.95 = 95th percentile."
+          },
+          "vol_vs_avg_ratio": {
+            "type": "number",
+            "description": "Current 24h realized vol divided by trailing 30d average realized vol. >2.0 = sharp regime change."
+          },
+          "volume_24h_usd": {
+            "type": "number",
+            "description": "Approximate USD volume for the last completed 24h window. Computed as prevDay.v × prevDay.vw from snapshot."
+          },
+          "volume_vs_avg_ratio": {
+            "type": "number",
+            "description": "Current 24h USD volume divided by trailing 30d daily USD-volume average. >2.0 = volume anomaly."
+          },
+          "basis_bps": {
+            "type": ["number", "null"],
+            "description": "Cross-exchange basis: max minus min of the most-recent per-exchange print, in basis points of the midpoint. Null when only one exchange returned recent trades."
+          },
+          "exchanges_compared": {
+            "type": "array",
+            "description": "Per-exchange last-price snapshot from /v3/trades. Used to render the cross-exchange context line.",
+            "items": {
+              "type": "object",
+              "required": ["exchange_id", "exchange_name", "last_price"],
+              "properties": {
+                "exchange_id": { "type": "integer" },
+                "exchange_name": { "type": "string" },
+                "last_price": { "type": "number" },
+                "trade_count": { "type": "integer" }
+              }
+            }
+          },
+          "basis_high_exchange": {
+            "type": ["string", "null"],
+            "description": "Exchange name with the highest recent price"
+          },
+          "basis_low_exchange": {
+            "type": ["string", "null"],
+            "description": "Exchange name with the lowest recent price"
+          },
+          "context_line": {
+            "type": ["string", "null"],
+            "description": "Optional one-line trader context, rendered as the ↳ continuation. Examples: 'social-driven flow; vol AND volume both 95th+%ile', 'basis widened from 8bps prior 24h; small but persistent', 'unusually quiet; calm-before-storm watch'."
+          },
+          "composite_score": {
+            "type": "number",
+            "description": "Ranking score. Composed as max(vol_zscore, volume_zscore, abs(move_zscore), basis_bps_zscore). Higher = more notable."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["count", "by_signal"],
+      "properties": {
+        "count": { "type": "integer" },
+        "by_signal": {
+          "type": "object",
+          "properties": {
+            "vol_spike": { "type": "integer" },
+            "volume_anomaly": { "type": "integer" },
+            "cross_exchange": { "type": "integer" },
+            "tail_move": { "type": "integer" },
+            "quiet": { "type": "integer" },
+            "combined": { "type": "integer" }
+          }
+        },
+        "median_realized_vol_pct": {
+          "type": "number",
+          "description": "Universe-wide median 24h realized vol. Useful for the take ('crypto is in a quiet regime', 'crypto is in a vol regime')."
+        }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "One- or two-sentence crypto desk read. Plain prose; no bullet list."
+    },
+    "skipped_tickers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

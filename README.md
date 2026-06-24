@@ -50,13 +50,13 @@ for free fallbacks where they work.
 
 ## Status
 
-Eight workflow skills are built end-to-end, each verified against
+Nine workflow skills are built end-to-end, each verified against
 real Massive API data with both layers shipped (canonical JSON + rendered
 output). Three foundation skills capture the REST, flat-files, and
 WebSocket patterns the suite shares; all three foundations have been
 exercised against the live API, and two surfaced real entitlement gaps
 that are now documented as workarounds (see flat-files in factor-research
-and channel-entitlement in portfolio-mark). Six more workflow skills are
+and channel-entitlement in portfolio-mark). Five more workflow skills are
 designed but not yet implemented; contributions welcome.
 
 | Status | Skill | Validated against |
@@ -69,7 +69,8 @@ designed but not yet implemented; contributions welcome.
 | Built | `factor-research` | 5y × top-500, 4 factors |
 | Built | `news-scanner` | Today's NVDA/TSLA/AAPL news |
 | Built | `portfolio-mark` (delayed + live) | 7-position sample book, WebSocket validated |
-| Designed | The other 6 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
+| Built | `crypto-vol-scanner` | BTC/ETH/SOL + 7 alts, cross-exchange basis |
+| Designed | The other 5 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -113,7 +114,7 @@ plan each skill needs.
 | [`factor-research`](skills/factor-research) | Run value, momentum, quality screens with IC + decile spreads + concentration check | **Built** |
 | [`options-flow`](skills/options-flow) | Surface unusual activity, large prints, IV crush around catalysts | **Built** |
 | [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, novelty, and price action on the same surface | **Built** |
-| [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange volatility and volume anomalies in crypto | Designed |
+| [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange basis, realized-vol spikes, and 24h move z-scores in crypto | **Built** |
 | [`event-study`](skills/event-study) | Pull price and volume behavior around earnings, FDA, M&A windows | Designed |
 | [`backtest-data-prep`](skills/backtest-data-prep) | Clean OHLCV with corporate-action adjustments and survivorship handling | Designed |
 
