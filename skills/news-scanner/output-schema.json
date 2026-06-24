@@ -1,0 +1,242 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "news-scanner output",
+  "description": "Canonical structured output for the news-scanner skill. Layer 1 (the data); Layer 2 (rendered stream) is described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "scan_params", "events", "sources", "run_at", "summary"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=Benzinga sentiment + minute aggs, B=keyword sentiment + 5-min aggs"
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats (sentiment source, reaction window granularity, missing aggs)"
+    },
+    "mode": {
+      "type": "string",
+      "const": "stream",
+      "description": "Always 'stream' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the scan was run"
+    },
+    "scan_params": {
+      "type": "object",
+      "required": ["watchlist", "window_hours", "top_n"],
+      "properties": {
+        "watchlist": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tickers scanned"
+        },
+        "window_hours": {
+          "type": "integer",
+          "description": "Lookback window in hours (default 24)"
+        },
+        "top_n": {
+          "type": "integer",
+          "description": "Cap on events emitted (default 15)"
+        },
+        "min_reaction_pct": {
+          "type": "number",
+          "description": "Minimum |reaction_pct| to surface as 'moved' (default 0.003 = 0.3%)"
+        },
+        "reaction_minutes": {
+          "type": "integer",
+          "description": "Minutes after publish to measure reaction (default 60, capped at market close)"
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "description": "Top news events ranked by impact, descending",
+      "items": {
+        "type": "object",
+        "required": [
+          "ticker",
+          "published_at",
+          "source",
+          "headline",
+          "url",
+          "sentiment_score",
+          "sentiment_source",
+          "novelty_score",
+          "novelty_band"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Massive article id, stable across publishers"
+          },
+          "ticker": {
+            "type": "string",
+            "description": "Stock ticker for which this event is scored. One Benzinga article can produce multiple events when multi-ticker tagged."
+          },
+          "published_at": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Publisher's UTC publish timestamp"
+          },
+          "published_at_et": {
+            "type": "string",
+            "description": "Convenience: same timestamp formatted in US/Eastern, used in the stream header"
+          },
+          "source": {
+            "type": "string",
+            "description": "Publisher name (Reuters, Bloomberg, Benzinga, CNBC, etc.)"
+          },
+          "headline": {
+            "type": "string",
+            "description": "Article title. Render truncates to ~90 chars."
+          },
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "description": "Canonical article URL. Used for cross-publisher dedup."
+          },
+          "sentiment_score": {
+            "type": "number",
+            "minimum": -1,
+            "maximum": 1,
+            "description": "Sentiment in [-1, +1]. Benzinga maps: positive=+0.7, neutral=0, negative=-0.7. Keyword scorer outputs continuous values."
+          },
+          "sentiment_source": {
+            "type": "string",
+            "enum": ["benzinga", "keyword"],
+            "description": "Which scorer produced the value. Benzinga is preferred; keyword is the fallback."
+          },
+          "sentiment_reasoning": {
+            "type": ["string", "null"],
+            "description": "Benzinga's free-text justification for the sentiment label. Null when sentiment_source = keyword."
+          },
+          "novelty_score": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Cosine distance to nearest neighbor in the trailing-7-day bucket for this ticker. 1.0 = no prior coverage; 0 = exact rerun."
+          },
+          "novelty_band": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+            "description": "Banded novelty: high if score > 0.6, medium if 0.3-0.6, low if < 0.3"
+          },
+          "nearest_prior": {
+            "type": ["object", "null"],
+            "description": "The trailing-7-day article that produced the novelty distance, when one exists",
+            "properties": {
+              "published_at": { "type": "string", "format": "date-time" },
+              "headline": { "type": "string" },
+              "distance": { "type": "number" }
+            }
+          },
+          "reaction_pct_since_publish": {
+            "type": ["number", "null"],
+            "description": "(close at window-end / close at publish-minute) - 1. Null if publish is outside market hours and no post-open bar exists yet."
+          },
+          "reaction_window_label": {
+            "type": "string",
+            "description": "Human-readable label for the reaction window, e.g. '47min', '1h 7min', '3h', 'overnight'"
+          },
+          "reaction_window_minutes": {
+            "type": ["integer", "null"],
+            "description": "Length of the window in minutes (capped at market close)"
+          },
+          "price_at_publish": {
+            "type": ["number", "null"],
+            "description": "Close of the bar containing publish_at_utc. Used as the reaction baseline."
+          },
+          "price_at_window_end": {
+            "type": ["number", "null"],
+            "description": "Close of the bar at publish + reaction_minutes (capped at market close)"
+          },
+          "volume_anomaly_x": {
+            "type": ["number", "null"],
+            "description": "Avg per-minute volume during the reaction window divided by prior-5-day same-time-of-day average per-minute volume. >2x is meaningful; >5x is a spike. Null when baseline volume is unavailable."
+          },
+          "divergence_flag": {
+            "type": "string",
+            "enum": ["none", "positive_news_negative_reaction", "negative_news_positive_reaction"],
+            "description": "Flag when sentiment and reaction disagree. See references/price-news-divergence.md."
+          },
+          "context_line": {
+            "type": ["string", "null"],
+            "description": "One-line trader context, rendered as the ↳ continuation. Examples: 'first India-specific partnership; prior coverage speculative', 'third China price cut this year; margin pressure narrative compounding'."
+          },
+          "keywords": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Benzinga-provided topic tags, kept for downstream filtering and clustering"
+          },
+          "related_event_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "IDs of articles deduped into this event (same URL across syndicated publishers)"
+          },
+          "impact_score": {
+            "type": "number",
+            "description": "Internal ranking score: |reaction_pct| × volume_anomaly × novelty_score. Higher = more impactful."
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["count", "by_sentiment", "by_novelty"],
+      "properties": {
+        "count": { "type": "integer" },
+        "tickers_with_events": { "type": "integer" },
+        "by_sentiment": {
+          "type": "object",
+          "properties": {
+            "positive": { "type": "integer" },
+            "neutral": { "type": "integer" },
+            "negative": { "type": "integer" }
+          }
+        },
+        "by_novelty": {
+          "type": "object",
+          "properties": {
+            "high": { "type": "integer" },
+            "medium": { "type": "integer" },
+            "low": { "type": "integer" }
+          }
+        },
+        "divergence_count": {
+          "type": "integer",
+          "description": "Total events flagged with any divergence type"
+        }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "One- or two-sentence read on what actually moved markets in the window. Plain prose; no bullet list."
+    },
+    "skipped_tickers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

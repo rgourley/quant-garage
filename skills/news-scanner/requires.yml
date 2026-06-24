@@ -1,0 +1,44 @@
+name: news-scanner
+kind: skill
+interface: rest
+output_mode: stream
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+  - product: benzinga_news
+    tier: addon
+realtime: preferred
+tick_history: no
+tiers:
+  A:
+    label: "Benzinga sentiment + minute reaction"
+    needs:
+      - product: stocks
+        tier: starter
+      - product: benzinga_news
+        tier: addon
+    enables: [benzinga_insights_sentiment, 1min_reaction_window, volume_anomaly_baseline]
+  B:
+    label: "Keyword sentiment fallback"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_news
+        tier: addon
+    enables: [keyword_sentiment, 5min_reaction_window]
+    loses: [precision_sentiment_score, sub_minute_reaction]
+endpoints:
+  - GET /v2/reference/news
+  - GET /v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+notes: |
+  Second stream-mode skill in the suite (after options-flow). Rendering
+  rules adapted from options-flow for news-tape conventions: 3-line
+  block, ticker/time/source header, sentiment+novelty+reaction line,
+  optional ↳ context. Benzinga News returns per-ticker `insights[]` with
+  `sentiment` ("positive"/"negative"/"neutral") and `sentiment_reasoning`;
+  the skill prefers this over keyword scoring when available.
+fallbacks:
+  - earnings-drilldown
