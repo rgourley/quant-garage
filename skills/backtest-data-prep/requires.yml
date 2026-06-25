@@ -1,0 +1,77 @@
+name: backtest-data-prep
+kind: skill
+interface: flat-files
+output_mode: dataset
+foundations:
+  - massive-flat-files
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Paid Stocks (Starter+) with flat-files"
+    needs:
+      - product: stocks
+        tier: starter
+    enables:
+      - universe_wide_backtest_dataset
+      - multi_year_window
+      - survivorship_clean
+      - corp_action_reconciled
+  B:
+    label: "Paid Stocks (Starter+) without flat-files entitlement"
+    needs:
+      - product: stocks
+        tier: starter
+    enables:
+      - universe_wide_backtest_dataset_rest_fallback
+      - multi_year_window
+      - survivorship_clean
+      - corp_action_reconciled
+    loses:
+      - flat_files
+    note: |
+      Tier B is the same plan as Tier A but with the flat-files entitlement
+      missing (verified 2026-06-23 on a Stocks Business + Options Business
+      key). Same output, slower wall-clock; documented in massive-flat-files
+      SKILL.md.
+endpoints:
+  - GET s3://flatfiles/us_stocks_sip/day_aggs_v1/{yyyy}/{mm}/{yyyy-mm-dd}.csv.gz
+  - GET /v2/aggs/grouped/locale/us/market/stocks/{date}
+  - GET /v3/reference/tickers
+  - GET /v3/reference/tickers/{ticker}
+  - GET /v3/reference/splits
+  - GET /v3/reference/dividends
+notes: |
+  First skill in the suite to ship the dataset output mode. The primary
+  artifact is a parquet file on disk, not a rendered string. The rendered
+  summary is the operator-readable companion, defined in
+  references/rendering.md.
+
+  Interface is flat-files primary, REST secondary. The implementation
+  probes the bucket on startup and falls back to /v2/aggs/grouped/... per
+  day when the key isn't entitled. Same pattern as factor-research.
+
+  Survivorship treatment is documented in references/survivorship-handling.md
+  and is more aggressive than universe-builder's. For windows that touch
+  pre-2024, the operator should use --survivorship clean (the default) to
+  retain delisted names; for windows under 12 months, the bias is academic
+  and the universe seed can stay current-snapshot.
+
+  Corporate action adjustment defaults to price-only (splits applied by
+  Massive's grouped aggs by default; cumulative adjustment factor emitted
+  as a separate column so the consumer can un-adjust if needed). Total-
+  return adjustment is documented in references/corporate-action-adjustment.md
+  but not implemented in v1; queued as a clean PR extension.
+
+  Look-ahead bias on fundamentals is documented in
+  references/point-in-time-fundamentals.md and cross-links to
+  earnings-drilldown's data-source-tiers.md for the SEC EDGAR 8-K
+  acceptance methodology. The v1 skill emits OHLCV only; fundamentals
+  joined point-in-time is a follow-on.
+fallbacks:
+  - factor-research
+  - universe-builder

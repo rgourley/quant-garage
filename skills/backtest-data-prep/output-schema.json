@@ -1,0 +1,259 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "backtest-data-prep output",
+  "description": "Canonical structured output for the backtest-data-prep skill. Layer 1 (the run metadata); the actual dataset lives on disk at the paths in files_written[]. Layer 2 (rendered dataset summary) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "tier",
+    "mode",
+    "run_at",
+    "universe_definition",
+    "window_start",
+    "window_end",
+    "files_written",
+    "universe_stats",
+    "corporate_actions_applied",
+    "edge_cases",
+    "schema_columns",
+    "take",
+    "sources"
+  ],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity tier. A=paid Stocks Starter+ with flat-files entitlement. B=same plan but flat-files entitlement missing (REST grouped-daily fallback used). Same correctness, different wall-clock."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats applicable to the chosen tier"
+    },
+    "mode": {
+      "type": "string",
+      "const": "dataset",
+      "description": "Always 'dataset' for this skill"
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the dataset was built. Forms part of the manifest reproducibility record."
+    },
+    "interface_used": {
+      "type": "string",
+      "enum": ["flat-files", "rest"],
+      "description": "Which interface served the daily aggregates. flat-files preferred; rest is the documented fallback when the key isn't entitled (verified 2026-06-23)."
+    },
+    "universe_definition": {
+      "type": "object",
+      "required": ["label", "seed", "size", "survivorship_mode"],
+      "description": "How the universe was constructed.",
+      "properties": {
+        "label": {
+          "type": "string",
+          "description": "Human-readable description, e.g. 'top 100 by current market cap'"
+        },
+        "seed": {
+          "type": "string",
+          "description": "CLI flag value used to construct the universe (top100, top500, sp500, custom:<path>)"
+        },
+        "size": {
+          "type": "integer",
+          "description": "Number of tickers in the final universe (post type-filter, post-coverage filter)"
+        },
+        "type_filter": {
+          "type": "string",
+          "description": "Security type whitelist applied, e.g. 'CS' for common stock only"
+        },
+        "survivorship_mode": {
+          "type": "string",
+          "enum": ["clean", "biased", "unknown"],
+          "description": "clean = delisted-during-window names retained. biased = current-snapshot only. unknown = couldn't determine."
+        },
+        "survivorship_note": {
+          "type": "string",
+          "description": "Human-readable explanation of the survivorship treatment"
+        }
+      }
+    },
+    "window_start": {
+      "type": "string",
+      "format": "date",
+      "description": "First calendar date requested (window start). The first trading day is the next on-or-after weekday excluding holidays."
+    },
+    "window_end": {
+      "type": "string",
+      "format": "date",
+      "description": "Last calendar date requested. Final trading day in the dataset may be earlier when window_end is a weekend/holiday."
+    },
+    "trading_days_in_window": {
+      "type": "integer",
+      "description": "Count of distinct trading days actually pulled (rows-per-ticker in the parquet for a name with full coverage)"
+    },
+    "files_written": {
+      "type": "array",
+      "description": "All files emitted to the output directory. Paths are relative to the output dir.",
+      "items": {
+        "type": "object",
+        "required": ["path", "description"],
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "Path relative to the output directory, e.g. 'ohlcv.parquet'"
+          },
+          "description": {
+            "type": "string",
+            "description": "What this file contains"
+          },
+          "row_count": {
+            "type": ["integer", "null"],
+            "description": "Row count where meaningful (parquet); null for text files like manifest.md"
+          },
+          "column_count": {
+            "type": ["integer", "null"],
+            "description": "Column count where meaningful (parquet); null otherwise"
+          },
+          "bytes_on_disk": {
+            "type": ["integer", "null"],
+            "description": "File size in bytes after Snappy compression"
+          }
+        }
+      }
+    },
+    "universe_stats": {
+      "type": "object",
+      "required": [
+        "tickers_requested",
+        "tickers_retrieved",
+        "continuous_coverage_count",
+        "partial_coverage_count",
+        "delisted_during_window_count"
+      ],
+      "properties": {
+        "tickers_requested": {
+          "type": "integer",
+          "description": "Universe size after seed construction (before any data-quality drops)"
+        },
+        "tickers_retrieved": {
+          "type": "integer",
+          "description": "Universe size after grouped-aggs returned at least one bar; pre-coverage filter"
+        },
+        "continuous_coverage_count": {
+          "type": "integer",
+          "description": "Tickers with a bar on every trading day in the window"
+        },
+        "partial_coverage_count": {
+          "type": "integer",
+          "description": "Tickers with at least one trading day missing (IPO partials, delistings, halts spanning a session)"
+        },
+        "delisted_during_window_count": {
+          "type": "integer",
+          "description": "Tickers in the universe whose delisted_utc falls inside the window. Nonzero is the survivorship signal."
+        }
+      }
+    },
+    "corporate_actions_applied": {
+      "type": "object",
+      "description": "Splits and dividends touched during the window. The skill does NOT re-apply splits to the OHLC columns (Massive's grouped aggs are split-adjusted by default); it emits a cumulative adjustment factor as a separate parquet column so the consumer can un-adjust.",
+      "required": ["splits", "dividends_count", "spinoffs", "adjustment_method"],
+      "properties": {
+        "adjustment_method": {
+          "type": "string",
+          "enum": ["price-only", "total-return", "none"],
+          "description": "price-only: splits applied by source, cumulative factor emitted for un-adjust. total-return: dividends also adjusted (not implemented in v1). none: raw prints, no factor emitted."
+        },
+        "splits": {
+          "type": "array",
+          "description": "Splits with execution_date inside the window",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "execution_date", "split_from", "split_to"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "execution_date": { "type": "string", "format": "date" },
+              "split_from": { "type": "number" },
+              "split_to": { "type": "number" },
+              "ratio_display": { "type": "string", "description": "Human-readable ratio, e.g. '10:1' or '1:4 reverse'" }
+            }
+          }
+        },
+        "dividends_count": {
+          "type": "integer",
+          "description": "Count of cash dividend ex-dates inside the window across the universe"
+        },
+        "spinoffs": {
+          "type": "array",
+          "description": "Spinoffs detected via the dividend feed (Massive emits spinoffs as stock dividends with type='SO').",
+          "items": {
+            "type": "object",
+            "required": ["parent_ticker", "spinoff_ticker", "ex_date", "manual_override_recommended"],
+            "properties": {
+              "parent_ticker": { "type": "string" },
+              "spinoff_ticker": { "type": ["string", "null"], "description": "May be null when the dividend feed records the spinoff but doesn't name the new ticker (Massive sometimes leaves this blank for small spinoffs)" },
+              "ex_date": { "type": "string", "format": "date" },
+              "manual_override_recommended": { "type": "boolean", "description": "Always true in v1; the basis split is not auto-applied" },
+              "reason": { "type": "string", "description": "Why manual override is recommended" }
+            }
+          }
+        }
+      }
+    },
+    "edge_cases": {
+      "type": "array",
+      "description": "Per-name anomalies detected during the run. Operator should review before treating the dataset as 100% backtest-clean.",
+      "items": {
+        "type": "object",
+        "required": ["type", "ticker", "detail"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "trading_halt",
+              "ipo_partial_coverage",
+              "delisting_during_window",
+              "ticker_change",
+              "data_gap"
+            ],
+            "description": "Categorization of the edge case"
+          },
+          "ticker": { "type": "string" },
+          "date": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Date associated with the event when applicable"
+          },
+          "detail": {
+            "type": "string",
+            "description": "Human-readable explanation of the edge case"
+          },
+          "missing_days": {
+            "type": ["integer", "null"],
+            "description": "For ipo_partial_coverage and data_gap, count of trading days missing from the parquet"
+          }
+        }
+      }
+    },
+    "schema_columns": {
+      "type": "array",
+      "description": "Parquet column names in order. The consumer of the dataset reads this to know what's available without opening the parquet.",
+      "items": { "type": "string" }
+    },
+    "take": {
+      "type": "string",
+      "description": "One-paragraph operator-readable verdict: is this dataset backtest-ready, and any caveats a quant should flag before pointing a model at it."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All endpoints called during the run, with fetched-at timestamps for audit",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
