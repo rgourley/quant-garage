@@ -50,14 +50,16 @@ for free fallbacks where they work.
 
 ## Status
 
-Eleven workflow skills are built end-to-end, each verified against
+Twelve workflow skills are built end-to-end, each verified against
 real Massive API data with both layers shipped (canonical JSON + rendered
 output). Three foundation skills capture the REST, flat-files, and
 WebSocket patterns the suite shares; all three foundations have been
 exercised against the live API, and two surfaced real entitlement gaps
 that are now documented as workarounds (see flat-files in factor-research
-and channel-entitlement in portfolio-mark). Three more workflow skills are
-designed but not yet implemented; contributions welcome.
+and channel-entitlement in portfolio-mark). All five output modes
+(note, stream, table, exception-report, hybrid, dataset) now have
+working templates. Two more workflow skills are designed but not yet
+implemented; contributions welcome.
 
 | Status | Skill | Validated against |
 |---|---|---|
@@ -72,7 +74,8 @@ designed but not yet implemented; contributions welcome.
 | Built | `crypto-vol-scanner` | BTC/ETH/SOL + 7 alts, cross-exchange basis |
 | Built | `event-study` (single + cross-section + aggregate) | Mega-cap tech earnings, n=20 trailing 4q |
 | Built | `valuation-sanity-check` | NVDA $250 target vs semi peer set |
-| Designed | The other 3 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
+| Built | `backtest-data-prep` | Top-100 × 4y window, parquet output, 18 splits applied |
+| Designed | The other 2 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -118,7 +121,7 @@ plan each skill needs.
 | [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, novelty, and price action on the same surface | **Built** |
 | [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange basis, realized-vol spikes, and 24h move z-scores in crypto | **Built** |
 | [`event-study`](skills/event-study) | Abnormal returns (AR, CAR) with t-stats around earnings, dividends, or volume spikes — single event, cross-section, or aggregate | **Built** |
-| [`backtest-data-prep`](skills/backtest-data-prep) | Clean OHLCV with corporate-action adjustments and survivorship handling | Designed |
+| [`backtest-data-prep`](skills/backtest-data-prep) | Emit a clean parquet dataset for backtesting: corporate-action adjustments, survivorship-clean universe, point-in-time correctness, edge-case logging | **Built** |
 
 ### Banker workflows
 
