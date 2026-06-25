@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "valuation-sanity-check output",
+  "description": "Canonical structured output for the valuation-sanity-check skill. Layer 1 (the data); Layer 2 (rendered flash note) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "tier",
+    "mode",
+    "run_at",
+    "subject",
+    "analyst_inputs",
+    "multiple_sanity",
+    "growth_sanity",
+    "margin_sanity",
+    "reverse_dcf",
+    "peers_used",
+    "take",
+    "read",
+    "sources"
+  ],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity: A=paid Stocks Starter+ (unlimited REST, full peer fanout); B=free Basic (rate-limited, curated override only)."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats applicable to the chosen tier."
+    },
+    "mode": {
+      "type": "string",
+      "const": "note",
+      "description": "Always 'note' for this skill."
+    },
+    "run_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the sanity check was run."
+    },
+    "subject": {
+      "type": "object",
+      "required": ["ticker", "name", "current_price", "current_mcap"],
+      "properties": {
+        "ticker": { "type": "string" },
+        "name": { "type": "string" },
+        "current_price": { "type": ["number", "null"], "description": "Current share price (USD)." },
+        "current_mcap": { "type": ["number", "null"], "description": "Current market cap (USD)." },
+        "current_ev": { "type": ["number", "null"], "description": "Current enterprise value = current_mcap + long_term_debt. USD." },
+        "shares_outstanding": { "type": ["number", "null"], "description": "Diluted or basic shares outstanding as reported by /v3/reference/tickers." },
+        "long_term_debt": { "type": ["number", "null"], "description": "Most recent reported long-term debt. USD." },
+        "revenue_ttm": { "type": ["number", "null"], "description": "TTM revenue. USD." },
+        "ebitda_margin_ttm": { "type": ["number", "null"], "description": "TTM EBITDA / TTM revenue. Decimal." },
+        "revenue_growth_ttm": { "type": ["number", "null"], "description": "TTM revenue growth vs prior TTM. Decimal." },
+        "sector": { "type": ["string", "null"] }
+      }
+    },
+    "analyst_inputs": {
+      "type": "object",
+      "required": ["target_price", "assumed_growth", "assumed_margin", "horizon_years"],
+      "properties": {
+        "target_price": { "type": "number", "description": "Analyst's target stock price (USD/share)." },
+        "assumed_growth": { "type": "number", "description": "Assumed revenue CAGR over the horizon. Decimal (0.28 = 28%)." },
+        "assumed_margin": { "type": "number", "description": "Assumed steady-state EBITDA margin. Decimal (0.60 = 60%)." },
+        "horizon_years": { "type": "integer", "description": "Forecast horizon in years (typical 3-7, default 5)." },
+        "implied_upside_pct": { "type": ["number", "null"], "description": "(target_price / current_price) - 1. Decimal." },
+        "target_mcap": { "type": ["number", "null"], "description": "target_price × shares_outstanding. USD." },
+        "target_ev": { "type": ["number", "null"], "description": "target_mcap + long_term_debt. USD." },
+        "target_revenue_horizon": { "type": ["number", "null"], "description": "subject.revenue_ttm × (1 + assumed_growth)^horizon_years. USD." },
+        "target_ebitda_horizon": { "type": ["number", "null"], "description": "target_revenue_horizon × assumed_margin. USD." }
+      }
+    },
+    "multiple_sanity": {
+      "type": "array",
+      "description": "Per multiple: target-implied value vs peer 25/50/75 percentile band. Status: in_line (inside band), above (above p75), below (below p25).",
+      "items": {
+        "type": "object",
+        "required": ["name", "implied_value", "peer_p25", "peer_p50", "peer_p75", "status"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["ev_sales", "ev_ebitda", "p_e"],
+            "description": "Which multiple."
+          },
+          "implied_value": {
+            "type": ["number", "null"],
+            "description": "Target-implied multiple. For EV/Sales and EV/EBITDA, computed at the horizon revenue / EBITDA (analyst's assumptions). For P/E, computed at horizon EPS implied by margin × revenue / shares."
+          },
+          "peer_p25": { "type": ["number", "null"], "description": "25th percentile of peer multiple distribution." },
+          "peer_p50": { "type": ["number", "null"], "description": "Median of peer multiple distribution." },
+          "peer_p75": { "type": ["number", "null"], "description": "75th percentile of peer multiple distribution." },
+          "status": {
+            "type": "string",
+            "enum": ["in_line", "above", "below", "n_a"],
+            "description": "in_line: target-implied inside the p25-p75 band; above: > p75; below: < p25; n_a: insufficient data."
+          },
+          "n_peers_in_distribution": { "type": "integer", "description": "Peers contributing to the distribution. Nulls dropped." }
+        }
+      }
+    },
+    "growth_sanity": {
+      "type": "object",
+      "description": "Analyst-assumed revenue growth vs peer TTM revenue growth distribution.",
+      "required": ["assumed", "peer_p25", "peer_p50", "peer_p75", "status"],
+      "properties": {
+        "assumed": { "type": ["number", "null"], "description": "Analyst's assumed growth (decimal)." },
+        "peer_p25": { "type": ["number", "null"] },
+        "peer_p50": { "type": ["number", "null"] },
+        "peer_p75": { "type": ["number", "null"] },
+        "delta_pp": { "type": ["number", "null"], "description": "(assumed - peer_p50) × 100. Percentage points." },
+        "status": { "type": "string", "enum": ["in_line", "above", "below", "n_a"] },
+        "n_peers_in_distribution": { "type": "integer" }
+      }
+    },
+    "margin_sanity": {
+      "type": "object",
+      "description": "Analyst-assumed EBITDA margin vs peer TTM EBITDA margin distribution.",
+      "required": ["assumed", "peer_p25", "peer_p50", "peer_p75", "status"],
+      "properties": {
+        "assumed": { "type": ["number", "null"], "description": "Analyst's assumed EBITDA margin (decimal)." },
+        "peer_p25": { "type": ["number", "null"] },
+        "peer_p50": { "type": ["number", "null"] },
+        "peer_p75": { "type": ["number", "null"] },
+        "delta_pp": { "type": ["number", "null"], "description": "(assumed - peer_p50) × 100. Percentage points." },
+        "status": { "type": "string", "enum": ["in_line", "above", "below", "n_a"] },
+        "n_peers_in_distribution": { "type": "integer" }
+      }
+    },
+    "reverse_dcf": {
+      "type": "object",
+      "description": "At the current stock price, given the assumed margin, what 5y revenue CAGR is implied? Simplified single-stage model; see references/reverse-dcf.md.",
+      "properties": {
+        "current_ev": { "type": ["number", "null"], "description": "Current EV used as the PV target." },
+        "wacc_assumption": { "type": "number", "description": "Discount rate. Hardcoded at 0.09 (9%) for v1; see references/reverse-dcf.md." },
+        "exit_multiple_assumption": { "type": ["number", "null"], "description": "Peer-median EV/EBITDA used as the terminal exit multiple." },
+        "implied_cagr": { "type": ["number", "null"], "description": "Solved revenue CAGR such that PV(horizon EBITDA × exit multiple) = current EV. Decimal." },
+        "peer_median_cagr": { "type": ["number", "null"], "description": "Peer median revenue growth used as the comparison. TTM proxy in v1; documented." },
+        "air_pp": { "type": ["number", "null"], "description": "(implied_cagr - peer_median_cagr) × 100. Percentage points of 'air' in the current price." },
+        "fair_value_at_peer_median": { "type": ["number", "null"], "description": "What the share price would be if you keep the assumed margin but trim growth to peer median. USD/share." }
+      }
+    },
+    "peers_used": {
+      "type": "array",
+      "description": "Per-peer summary of what fed the distributions. Subject excluded.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "name"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "name": { "type": "string" },
+          "ev_sales": { "type": ["number", "null"] },
+          "ev_ebitda": { "type": ["number", "null"] },
+          "p_e": { "type": ["number", "null"] },
+          "revenue_growth_ttm": { "type": ["number", "null"] },
+          "ebitda_margin": { "type": ["number", "null"] },
+          "data_status": {
+            "type": "string",
+            "enum": ["full", "partial", "empty"]
+          }
+        }
+      }
+    },
+    "peer_selection": {
+      "type": "object",
+      "required": ["method", "n_peers"],
+      "properties": {
+        "method": {
+          "type": "string",
+          "enum": ["curated_override", "correlation", "sic_fallback"]
+        },
+        "n_peers": { "type": "integer" }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "One-paragraph bold take at the top of the rendered note. Translates the target into 'NVDA grows X% CAGR at Y% margin for N years' framing, then flags the peer-median gap. Banker-tone, no hedge words."
+    },
+    "read": {
+      "type": "string",
+      "description": "Closing read at the bottom. If you trim assumptions to peer median, where does the target land? One or two sentences."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit.",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

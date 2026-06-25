@@ -1,0 +1,70 @@
+name: valuation-sanity-check
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [full_peer_fanout, sub_thirty_second_runtime, correlation_peer_fallback]
+  B:
+    label: "Free Basic (rate-limited, runs slowly)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime, curated_override_only]
+    loses: [correlation_peer_fallback, sub_thirty_second_runtime]
+endpoints:
+  - GET /v3/reference/tickers/{ticker}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /vX/reference/financials
+notes: |
+  Note-mode flash-note skill that sanity-checks an internal analyst valuation
+  thesis. The analyst hands over target_price + assumed_growth + assumed_margin
+  + horizon_years; the skill pulls the live name, builds the peer set
+  (curated override / correlation / SIC fallback, same waterfall as
+  pitch-comps), and produces a one-page sell-side flash note covering:
+
+    1. Multiple sanity: target-implied EV/Sales, EV/EBITDA, P/E vs the peer
+       25-75 percentile band. "In line" (inside band) / "above" / "below".
+    2. Growth sanity: assumed revenue growth vs peer 25-75 band.
+    3. Margin sanity: assumed EBITDA margin vs peer 25-75 band.
+    4. Reverse-DCF: at the current stock price, given the assumed margin,
+       what 5y revenue CAGR is implied? Compare to peer median 5y CAGR.
+
+  Peer methodology, multiples methodology, and peer-override map are reused
+  from pitch-comps; this skill's references cross-link rather than duplicate.
+
+  Real-data gotchas (inherited from pitch-comps and revalidated here):
+    - Cash and short-term investments not exposed as named fields on the
+      balance sheet endpoint. Target-implied EV uses
+      market_cap + long_term_debt (subject's actual LTD, not the analyst's
+      assumption). The simplification biases EV slightly high for cash-rich
+      names; documented per multiples-methodology.
+    - D&A null for most software comps. EBITDA falls back to operating
+      income; the resulting EV/EBITDA proxy is closer to EV/EBIT but
+      consistent across the peer set.
+    - When assumed_margin produces a target EBITDA that's positive even
+      though the subject's TTM EBITDA is negative, EV/EBITDA is still
+      computed (the analyst is projecting a future margin, not reading the
+      trailing one). Documented in references/multiple-sanity.md.
+
+  The reverse-DCF intentionally ships as a simplified single-stage model:
+    PV at peer-median WACC (proxied at 9%, hardcoded since cost-of-capital
+    inference is out of scope), terminal value = horizon_year revenue ×
+    assumed_margin × peer-median EV/EBITDA. Solve for the revenue CAGR
+    that equates PV to current EV. Documented in references/reverse-dcf.md
+    along with what a full DCF would add (per-period FCF projections,
+    bottom-up WACC, terminal growth stage).
+fallbacks:
+  - pitch-comps
+  - earnings-drilldown

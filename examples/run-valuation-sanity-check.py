@@ -1,0 +1,957 @@
+#!/usr/bin/env python3
+"""
+Reference implementation of the valuation-sanity-check skill.
+
+Takes a subject ticker plus the analyst's thesis (target price, assumed
+revenue growth, assumed EBITDA margin, horizon years). Pulls the live
+state of the name, builds the peer set using pitch-comps' override map,
+computes target-implied multiples vs peer 25-75 band, compares assumed
+growth and margin to peer band, runs a simplified reverse-DCF to back
+out the revenue CAGR the current price already implies given the
+assumed margin, and emits two output layers:
+
+  Layer 1: canonical JSON matching skills/valuation-sanity-check/output-schema.json
+  Layer 2: sell-side flash-note rendered to
+           examples/valuation-sanity-check-output.md
+
+Usage:
+    python3 examples/run-valuation-sanity-check.py NVDA \\
+        --target-price 250 \\
+        --assumed-growth 0.28 \\
+        --assumed-margin 0.60 \\
+        --horizon 5
+
+Reads MASSIVE_API_KEY from env. Writes to
+examples/valuation-sanity-check-output.md (gitignored).
+"""
+import os
+import sys
+import json
+import time
+import argparse
+import urllib.request
+import urllib.error
+from datetime import datetime, date, timezone
+
+import numpy as np
+
+
+KEY = os.environ.get("MASSIVE_API_KEY")
+if not KEY:
+    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
+    sys.exit(1)
+
+BASE = "https://api.polygon.io"
+HEADERS = {"Authorization": f"Bearer {KEY}"}
+NOW_UTC = datetime.now(timezone.utc)
+TODAY = date(2026, 6, 25)
+
+
+# Shared peer-override map. Mirrors pitch-comps and earnings-drilldown.
+# Updates should land in all three (see references/peer-selection.md).
+PEER_OVERRIDES = {
+    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
+    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
+    "ADBE": ["CRM", "ORCL", "INTU", "NOW", "WDAY", "SAP"],
+    "NOW":  ["CRM", "WDAY", "ADBE", "ORCL", "INTU", "PANW"],
+    "WDAY": ["CRM", "NOW", "ADBE", "INTU", "ORCL"],
+    "INTU": ["CRM", "ADBE", "ORCL", "NOW", "WDAY"],
+    "PANW": ["CRWD", "FTNT", "ZS", "S", "CHKP", "OKTA"],
+    "CRWD": ["PANW", "FTNT", "ZS", "S", "OKTA"],
+    "AAPL":  ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
+    "NVDA":  ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
+    "MSFT":  ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
+    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
+    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
+    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
+    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
+    "JPM": ["BAC", "WFC", "C", "GS", "MS"],
+    "GS":  ["MS", "JPM", "BAC", "C"],
+    "V":  ["MA", "PYPL", "AXP"],
+    "MA": ["V", "PYPL", "AXP"],
+    "LLY":  ["NVO", "PFE", "MRK", "ABBV", "BMY", "AMGN"],
+    "MRK":  ["LLY", "PFE", "ABBV", "BMY", "AMGN", "JNJ"],
+    "NVO":  ["LLY", "PFE", "MRK", "ABBV"],
+    "XOM": ["CVX", "COP", "EOG", "OXY"],
+    "CVX": ["XOM", "COP", "EOG", "OXY"],
+}
+
+# Hardcoded constants documented in references/.
+WACC = 0.09       # See references/reverse-dcf.md
+TAX_PROXY = 0.21  # See references/multiple-sanity.md (P/E section)
+
+
+# ----- HTTP -----
+
+def fetch(path):
+    url = f"{BASE}{path}"
+    req = urllib.request.Request(url, headers=HEADERS)
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:
+        body = e.read()[:400].decode("utf-8", errors="replace")
+        raise RuntimeError(f"{e.code} on {path}: {body}")
+
+
+def get_ticker_details(ticker):
+    try:
+        doc = fetch(f"/v3/reference/tickers/{ticker}")
+    except RuntimeError as exc:
+        print(f"  WARN: ticker details for {ticker}: {exc}", file=sys.stderr)
+        return None
+    return doc.get("results")
+
+
+def get_snapshot_price(ticker):
+    """Apply the lastTrade -> day.c -> prevDay.c -> fmv waterfall."""
+    try:
+        doc = fetch(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    except RuntimeError as exc:
+        print(f"  WARN: snapshot for {ticker}: {exc}", file=sys.stderr)
+        return None
+    t = doc.get("ticker") or {}
+    lt = (t.get("lastTrade") or {}).get("p")
+    if lt:
+        return float(lt)
+    day_c = (t.get("day") or {}).get("c")
+    if day_c:
+        return float(day_c)
+    prev_c = (t.get("prevDay") or {}).get("c")
+    if prev_c:
+        return float(prev_c)
+    fmv = t.get("fmv")
+    if fmv:
+        return float(fmv)
+    return None
+
+
+def get_financials(ticker, limit=8):
+    path = (f"/vX/reference/financials?ticker={ticker}"
+            f"&timeframe=quarterly&limit={limit}&order=desc")
+    try:
+        doc = fetch(path)
+    except RuntimeError as exc:
+        print(f"  WARN: financials for {ticker}: {exc}", file=sys.stderr)
+        return []
+    return doc.get("results") or []
+
+
+def _val(node, key):
+    sub = (node or {}).get(key)
+    if not sub:
+        return None
+    return sub.get("value")
+
+
+# ----- Per-name metrics -----
+
+def compute_metrics_from_financials(rows):
+    """TTM metrics from quarterly financials. Duplicates pitch-comps logic."""
+    out = {
+        "revenue_ttm": None,
+        "revenue_prior_ttm": None,
+        "revenue_growth_ttm": None,
+        "operating_income_ttm": None,
+        "depreciation_amortization_ttm": None,
+        "ebitda_ttm": None,
+        "ebitda_margin": None,
+        "diluted_eps_ttm": None,
+        "long_term_debt": None,
+    }
+    rev_quarters = []
+    for r in rows:
+        fin = r.get("financials") or {}
+        inc = fin.get("income_statement") or {}
+        bs = fin.get("balance_sheet") or {}
+        rev_quarters.append({
+            "end_date": r.get("end_date"),
+            "rev": _val(inc, "revenues"),
+            "op": _val(inc, "operating_income_loss"),
+            "da": _val(inc, "depreciation_and_amortization"),
+            "eps": _val(inc, "diluted_earnings_per_share"),
+            "ltd": _val(bs, "long_term_debt"),
+        })
+    for q in rev_quarters:
+        if q["ltd"] is not None:
+            out["long_term_debt"] = float(q["ltd"])
+            break
+    with_rev = [q for q in rev_quarters if q["rev"] is not None]
+    if len(with_rev) >= 4:
+        ttm = with_rev[:4]
+        out["revenue_ttm"] = float(sum(q["rev"] for q in ttm))
+        op_vals = [q["op"] for q in ttm if q["op"] is not None]
+        if len(op_vals) == 4:
+            out["operating_income_ttm"] = float(sum(op_vals))
+        elif op_vals:
+            out["operating_income_ttm"] = float(sum(op_vals) * (4.0 / len(op_vals)))
+        da_vals = [q["da"] for q in ttm if q["da"] is not None]
+        if len(da_vals) > 0:
+            out["depreciation_amortization_ttm"] = float(sum(da_vals)
+                                                          * (4.0 / len(da_vals)))
+        if out["operating_income_ttm"] is not None:
+            out["ebitda_ttm"] = (out["operating_income_ttm"]
+                                  + (out["depreciation_amortization_ttm"] or 0.0))
+            if out["revenue_ttm"] and out["revenue_ttm"] > 0:
+                out["ebitda_margin"] = out["ebitda_ttm"] / out["revenue_ttm"]
+        eps_vals = [q["eps"] for q in ttm if q["eps"] is not None]
+        if len(eps_vals) == 4:
+            out["diluted_eps_ttm"] = float(sum(eps_vals))
+    if len(with_rev) >= 8:
+        prior = with_rev[4:8]
+        out["revenue_prior_ttm"] = float(sum(q["rev"] for q in prior))
+        if (out["revenue_ttm"] is not None
+                and out["revenue_prior_ttm"]
+                and out["revenue_prior_ttm"] > 0):
+            out["revenue_growth_ttm"] = (
+                out["revenue_ttm"] / out["revenue_prior_ttm"]) - 1.0
+    return out
+
+
+def compute_multiples(market_cap, price, metrics):
+    """Apply the multiples per pitch-comps multiples-methodology."""
+    ev = None
+    if market_cap is not None:
+        ev = float(market_cap) + float(metrics.get("long_term_debt") or 0.0)
+    out = {"ev_sales": None, "ev_ebitda": None, "p_e": None}
+    if ev is not None and metrics.get("revenue_ttm") and metrics["revenue_ttm"] > 0:
+        out["ev_sales"] = ev / metrics["revenue_ttm"]
+    if ev is not None and metrics.get("ebitda_ttm") and metrics["ebitda_ttm"] > 0:
+        out["ev_ebitda"] = ev / metrics["ebitda_ttm"]
+    if (price is not None
+            and metrics.get("diluted_eps_ttm")
+            and metrics["diluted_eps_ttm"] > 0):
+        out["p_e"] = price / metrics["diluted_eps_ttm"]
+    return out, ev
+
+
+def assemble_name(ticker, sources):
+    det = get_ticker_details(ticker)
+    sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": f"ticker details for {ticker}"})
+    if not det:
+        return None
+    price = get_snapshot_price(ticker)
+    sources.append({"endpoint": "/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": f"current price for {ticker}"})
+    rows = get_financials(ticker, limit=12)
+    sources.append({"endpoint": "/vX/reference/financials",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": f"8q quarterly financials for {ticker}"})
+    metrics = compute_metrics_from_financials(rows)
+    mcap = det.get("market_cap")
+    multiples, ev = compute_multiples(mcap, price, metrics)
+    if not rows or all(v is None for v in metrics.values()):
+        data_status = "empty"
+    elif any(v is None for v in multiples.values()):
+        data_status = "partial"
+    else:
+        data_status = "full"
+    return {
+        "ticker": ticker,
+        "name": det.get("name") or ticker,
+        "market_cap": mcap,
+        "enterprise_value": ev,
+        "price": price,
+        "sector": det.get("sic_description"),
+        "shares_outstanding": det.get("share_class_shares_outstanding")
+                                or det.get("weighted_shares_outstanding"),
+        "multiples": multiples,
+        "metrics": metrics,
+        "data_status": data_status,
+    }
+
+
+# ----- Percentile band -----
+
+def percentile_band(values):
+    """p25, p50, p75 of non-null values."""
+    vals = [v for v in values if v is not None]
+    n = len(vals)
+    if n == 0:
+        return None, None, None, 0
+    arr = np.array(vals, dtype=float)
+    return (float(np.percentile(arr, 25)),
+            float(np.percentile(arr, 50)),
+            float(np.percentile(arr, 75)),
+            n)
+
+
+def status_for(value, p25, p75):
+    if value is None or p25 is None or p75 is None:
+        return "n_a"
+    if value > p75:
+        return "above"
+    if value < p25:
+        return "below"
+    return "in_line"
+
+
+# ----- Reverse-DCF -----
+
+def reverse_dcf_implied_cagr(current_ev, revenue_ttm, assumed_margin,
+                              exit_multiple, wacc, horizon):
+    """Solve for g s.t. PV(rev*(1+g)^h * margin * exit_mult @ wacc) = current_EV.
+
+    Closed-form: (1+g)^h = current_EV * (1+wacc)^h
+                            / (rev * margin * exit_mult)
+    """
+    if not (current_ev and revenue_ttm and assumed_margin and exit_multiple
+            and horizon):
+        return None
+    numer = current_ev * ((1.0 + wacc) ** horizon)
+    denom = revenue_ttm * assumed_margin * exit_multiple
+    if denom <= 0:
+        return None
+    ratio = numer / denom
+    if ratio <= 0:
+        return None
+    return (ratio ** (1.0 / horizon)) - 1.0
+
+
+def fair_value_at_peer_median(subject, peer_median_cagr, assumed_margin,
+                                exit_multiple, wacc, horizon, ltd, shares):
+    if not (peer_median_cagr is not None and assumed_margin and exit_multiple
+            and horizon and shares and shares > 0):
+        return None
+    rev = subject["metrics"].get("revenue_ttm")
+    if not rev:
+        return None
+    fair_rev = rev * ((1.0 + peer_median_cagr) ** horizon)
+    fair_ebitda = fair_rev * assumed_margin
+    fair_ev_horizon = fair_ebitda * exit_multiple
+    fair_pv = fair_ev_horizon / ((1.0 + wacc) ** horizon)
+    fair_mcap = fair_pv - (ltd or 0.0)
+    return fair_mcap / shares
+
+
+# ----- Take + read generation -----
+
+def fmt_pp(x, decimals=0):
+    if x is None:
+        return "n/a"
+    sign = "+" if x >= 0 else ""
+    return f"{sign}{x:.{decimals}f}pp"
+
+
+def fmt_pct(x, signed=False, decimals=0):
+    if x is None:
+        return "n/a"
+    val = x * 100
+    # Avoid "-0%" for near-zero values
+    if abs(val) < 0.5 * (10 ** -decimals):
+        val = 0.0
+    if signed:
+        sign = "+" if val >= 0 else ""
+        return f"{sign}{val:.{decimals}f}%"
+    return f"{val:.{decimals}f}%"
+
+
+def fmt_price(x):
+    if x is None:
+        return "n/a"
+    if x >= 1000:
+        return f"${x:,.0f}"
+    if x >= 100:
+        return f"${x:,.1f}"
+    return f"${x:,.2f}"
+
+
+def fmt_mult(x):
+    if x is None:
+        return "n/a"
+    if abs(x) > 1000:
+        return ">1000x"
+    return f"{x:.1f}x"
+
+
+def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks):
+    """Build the bold take.
+
+    Direction matters: target-implied multiples ABOVE peer band = stretched
+    (target demands premium multiples). BELOW peer band = conservative
+    (target works at sub-cohort multiples). Growth/margin ABOVE peer band
+    = thesis bets on outperformance. The verdict line classifies the
+    target as `stretched`, `conservative`, or `mixed` based on the
+    direction of the gaps, not just the count.
+    """
+    horizon = analyst["horizon_years"]
+    growth_pp = analyst["assumed_growth"] * 100
+    margin_pp = analyst["assumed_margin"] * 100
+    peer_growth = growth_sanity.get("peer_p50")
+    peer_margin = margin_sanity.get("peer_p50")
+    growth_delta = growth_sanity.get("delta_pp")
+    margin_delta = margin_sanity.get("delta_pp")
+
+    # Count stretched (target multiples ABOVE band, or growth/margin ABOVE band)
+    # vs conservative (target multiples BELOW band) signals
+    stretched = 0
+    conservative = 0
+    for c in mult_checks:
+        if c.get("status") == "above":
+            stretched += 1
+        elif c.get("status") == "below":
+            conservative += 1
+    # Growth/margin above peer band = ambitious thesis (counts as stretched
+    # because the analyst is more bullish on fundamentals than the cohort)
+    if growth_sanity.get("status") == "above":
+        stretched += 1
+    if margin_sanity.get("status") == "above":
+        stretched += 1
+    if growth_sanity.get("status") == "below":
+        conservative += 1
+    if margin_sanity.get("status") == "below":
+        conservative += 1
+
+    line1 = (f"Target requires {ticker} growing {growth_pp:.0f}% CAGR for "
+              f"{horizon} years at {margin_pp:.0f}% EBITDA margin.")
+    if peer_growth is not None and peer_margin is not None:
+        line2 = (f"Peer median is {peer_growth*100:.0f}% / "
+                 f"{peer_margin*100:.0f}%. The assumption is "
+                 f"{fmt_pp(growth_delta)} on growth and "
+                 f"{fmt_pp(margin_delta)} on margin.")
+    else:
+        line2 = "Peer median unavailable for direct delta comparison."
+
+    # Verdict
+    if stretched >= 3 and conservative == 0:
+        line3 = ("Defensible only if you believe the structural moat plus the "
+                 "growth/margin gap vs the cohort both persist; thesis carries "
+                 "the target, not the math.")
+    elif stretched >= 2 and conservative <= 1:
+        # Mixed but tilted stretched
+        dims = []
+        if growth_sanity.get("status") == "above":
+            dims.append("growth premium")
+        if margin_sanity.get("status") == "above":
+            dims.append("margin premium")
+        if any(c.get("status") == "above" for c in mult_checks):
+            dims.append("multiple premium")
+        if dims:
+            line3 = (f"Defensible if you accept the "
+                     f"{' and '.join(dims[:2])}.")
+        else:
+            line3 = "Defensible against the cohort on most dimensions."
+    elif conservative >= 3 and stretched == 0:
+        line3 = ("Target sits at or below the peer cohort on every "
+                 "valuation lens; the math is conservative against the "
+                 "comp set.")
+    elif conservative >= 2 and stretched <= 1:
+        line3 = ("Target's implied multiples sit at or below the cohort; "
+                 "the gap usually means the thesis is undemanding for the "
+                 "growth and margin assumed.")
+    elif stretched + conservative >= 3:
+        # Genuinely mixed (some above, some below)
+        line3 = ("Mixed read: some assumptions stretch vs the cohort, "
+                 "others sit conservative. Net depends on which gap matters "
+                 "more for the thesis.")
+    elif stretched + conservative == 0:
+        line3 = "Assumptions sit inside the peer cohort on every dimension."
+    else:
+        line3 = "Mostly in line with the cohort; one dimension carries the gap."
+    return f"{line1} {line2} {line3}"
+
+
+def generate_read(ticker, stretched, conservative, implied_cagr,
+                    peer_median_cagr, fair_value, current_price, target_price):
+    """Closing read, anchored on fair-value-at-peer-median vs target."""
+    air = None
+    if implied_cagr is not None and peer_median_cagr is not None:
+        air = (implied_cagr - peer_median_cagr) * 100
+    fv_str = fmt_price(fair_value)
+
+    # Compare fair value to current + target to anchor the read
+    fv_above_target = (fair_value is not None and target_price is not None
+                        and fair_value > target_price)
+    fv_above_current = (fair_value is not None and current_price is not None
+                          and fair_value > current_price)
+    fv_below_current = (fair_value is not None and current_price is not None
+                          and fair_value < current_price)
+
+    if fv_above_target:
+        return (f"Read: Even at peer-median growth and the assumed margin, "
+                f"fair value lands at ~{fv_str}, above the target. The "
+                f"target understates what the cohort math would support; "
+                f"check whether the analyst's exit-multiple assumption is "
+                f"too conservative or the growth assumption is too low.")
+    if fv_above_current and not fv_above_target:
+        return (f"Read: At peer-median growth (same margin) fair value is "
+                f"~{fv_str}, between current and target. The cushion to "
+                f"target is real but rests on the analyst's growth premium "
+                f"vs the cohort delivering.")
+    if stretched >= 3 and conservative == 0 and fv_below_current:
+        return (f"Read: Model assumes {ticker} outperforms peers by a wide "
+                f"margin on every defensible dimension. Trim growth to "
+                f"peer-median and fair value drops to ~{fv_str}, below "
+                f"the current price. Target is a thesis, not a sanity-"
+                f"check survivor.")
+    if stretched + conservative >= 3 and fv_below_current:
+        return (f"Read: Target requires the analyst's premium assumptions "
+                f"to deliver. Trim growth to peer median and fair value "
+                f"drops to ~{fv_str}; the cushion is thin.")
+    if conservative >= 2 and stretched == 0:
+        return (f"Read: Assumptions sit conservative against the cohort. "
+                f"Fair value at peer-median growth and the assumed margin "
+                f"is ~{fv_str}; the target is defensible.")
+    if fair_value is not None:
+        return (f"Read: Assumptions cluster around the cohort. Fair value "
+                f"at peer-median growth (same margin) is ~{fv_str}; the "
+                f"target lives or dies on whether the standout dimension "
+                f"delivers.")
+    return (f"Read: Insufficient peer data for a full reverse-DCF anchor; "
+            f"the sanity check above shows where the assumptions sit vs "
+            f"the cohort.")
+
+
+# ----- CLI -----
+
+ap = argparse.ArgumentParser(description="valuation-sanity-check reference")
+ap.add_argument("ticker", nargs="?", default="NVDA",
+                help="Subject ticker (default: NVDA)")
+ap.add_argument("--target-price", type=float, required=True,
+                help="Analyst's target share price (USD)")
+ap.add_argument("--assumed-growth", type=float, required=True,
+                help="Assumed revenue CAGR over the horizon (decimal, e.g. 0.28)")
+ap.add_argument("--assumed-margin", type=float, required=True,
+                help="Assumed steady-state EBITDA margin (decimal, e.g. 0.60)")
+ap.add_argument("--horizon", type=int, default=5,
+                help="Forecast horizon in years (default 5)")
+ap.add_argument("--peers", type=str, default=None,
+                help="Comma-separated peer override (skips curated map)")
+args = ap.parse_args()
+
+subject_ticker = args.ticker.upper()
+
+# ----- Peer selection -----
+
+if args.peers:
+    peers_list = [p.strip().upper() for p in args.peers.split(",") if p.strip()]
+    peer_selection_method = "curated_override"
+elif subject_ticker in PEER_OVERRIDES:
+    peers_list = PEER_OVERRIDES[subject_ticker]
+    peer_selection_method = "curated_override"
+else:
+    det = get_ticker_details(subject_ticker)
+    if not det:
+        print(f"ERROR: subject {subject_ticker} not found", file=sys.stderr)
+        sys.exit(1)
+    sic = det.get("sic_code")
+    if not sic:
+        print(f"ERROR: no SIC code for {subject_ticker}", file=sys.stderr)
+        sys.exit(1)
+    print(f"Peer SIC fallback on SIC {sic}...", file=sys.stderr)
+    path = (f"/v3/reference/tickers?market=stocks&active=true&type=CS"
+            f"&sic_code={sic}&limit=50")
+    rows = (fetch(path).get("results") or [])
+    peers_list = [r["ticker"] for r in rows
+                  if r.get("ticker") and r["ticker"] != subject_ticker][:8]
+    peer_selection_method = "sic_fallback"
+
+
+# ----- Pull data -----
+
+print(f"Sanity-checking {subject_ticker}: target=${args.target_price}, "
+      f"growth={args.assumed_growth:.0%}, margin={args.assumed_margin:.0%}, "
+      f"horizon={args.horizon}y, peers={len(peers_list)}",
+      file=sys.stderr)
+sources = []
+print(f"  Fetching subject {subject_ticker}...", file=sys.stderr)
+subject = assemble_name(subject_ticker, sources)
+if not subject:
+    print(f"ERROR: subject {subject_ticker} data unavailable", file=sys.stderr)
+    sys.exit(1)
+
+peer_objs = []
+for tk in peers_list:
+    print(f"  Fetching peer {tk}...", file=sys.stderr)
+    p = assemble_name(tk, sources)
+    if p is not None:
+        peer_objs.append(p)
+    time.sleep(0.15)
+
+
+# ----- Analyst-inputs derived fields -----
+
+shares = subject.get("shares_outstanding")
+ltd = subject["metrics"].get("long_term_debt") or 0.0
+current_price = subject.get("price")
+current_mcap = subject.get("market_cap")
+current_ev = subject.get("enterprise_value")
+revenue_ttm = subject["metrics"].get("revenue_ttm")
+
+target_price = args.target_price
+target_mcap = (target_price * shares) if shares else None
+target_ev = (target_mcap + ltd) if target_mcap is not None else None
+implied_upside = ((target_price / current_price) - 1.0) if current_price else None
+
+if revenue_ttm is not None:
+    target_revenue_horizon = revenue_ttm * ((1.0 + args.assumed_growth)
+                                              ** args.horizon)
+    target_ebitda_horizon = target_revenue_horizon * args.assumed_margin
+else:
+    target_revenue_horizon = None
+    target_ebitda_horizon = None
+
+
+# ----- Multiple sanity -----
+
+# Peer distributions on current multiples
+peer_ev_sales = [(p["multiples"] or {}).get("ev_sales") for p in peer_objs]
+peer_ev_ebitda = [(p["multiples"] or {}).get("ev_ebitda") for p in peer_objs]
+peer_p_e = [(p["multiples"] or {}).get("p_e") for p in peer_objs]
+
+p25_es, p50_es, p75_es, n_es = percentile_band(peer_ev_sales)
+p25_ev, p50_ev, p75_ev, n_ev = percentile_band(peer_ev_ebitda)
+p25_pe, p50_pe, p75_pe, n_pe = percentile_band(peer_p_e)
+
+# Target-implied multiples
+implied_ev_sales = None
+implied_ev_ebitda = None
+implied_p_e = None
+if target_ev is not None and target_revenue_horizon and target_revenue_horizon > 0:
+    implied_ev_sales = target_ev / target_revenue_horizon
+if target_ev is not None and target_ebitda_horizon and target_ebitda_horizon > 0:
+    implied_ev_ebitda = target_ev / target_ebitda_horizon
+if (target_revenue_horizon and target_ebitda_horizon and shares
+        and shares > 0):
+    target_net_income_horizon = (target_revenue_horizon
+                                   * args.assumed_margin
+                                   * (1.0 - TAX_PROXY))
+    target_eps_horizon = target_net_income_horizon / shares
+    if target_eps_horizon > 0:
+        implied_p_e = target_price / target_eps_horizon
+
+multiple_sanity = [
+    {
+        "name": "ev_sales",
+        "implied_value": round(implied_ev_sales, 2) if implied_ev_sales else None,
+        "peer_p25": round(p25_es, 2) if p25_es else None,
+        "peer_p50": round(p50_es, 2) if p50_es else None,
+        "peer_p75": round(p75_es, 2) if p75_es else None,
+        "status": status_for(implied_ev_sales, p25_es, p75_es),
+        "n_peers_in_distribution": n_es,
+    },
+    {
+        "name": "ev_ebitda",
+        "implied_value": round(implied_ev_ebitda, 2) if implied_ev_ebitda else None,
+        "peer_p25": round(p25_ev, 2) if p25_ev else None,
+        "peer_p50": round(p50_ev, 2) if p50_ev else None,
+        "peer_p75": round(p75_ev, 2) if p75_ev else None,
+        "status": status_for(implied_ev_ebitda, p25_ev, p75_ev),
+        "n_peers_in_distribution": n_ev,
+    },
+    {
+        "name": "p_e",
+        "implied_value": round(implied_p_e, 2) if implied_p_e else None,
+        "peer_p25": round(p25_pe, 2) if p25_pe else None,
+        "peer_p50": round(p50_pe, 2) if p50_pe else None,
+        "peer_p75": round(p75_pe, 2) if p75_pe else None,
+        "status": status_for(implied_p_e, p25_pe, p75_pe),
+        "n_peers_in_distribution": n_pe,
+    },
+]
+
+
+# ----- Growth and margin sanity -----
+
+peer_growth_vals = [(p["metrics"] or {}).get("revenue_growth_ttm")
+                     for p in peer_objs]
+peer_margin_vals = [(p["metrics"] or {}).get("ebitda_margin") for p in peer_objs]
+
+p25_g, p50_g, p75_g, n_g = percentile_band(peer_growth_vals)
+p25_m, p50_m, p75_m, n_m = percentile_band(peer_margin_vals)
+
+growth_sanity = {
+    "assumed": args.assumed_growth,
+    "peer_p25": round(p25_g, 4) if p25_g is not None else None,
+    "peer_p50": round(p50_g, 4) if p50_g is not None else None,
+    "peer_p75": round(p75_g, 4) if p75_g is not None else None,
+    "delta_pp": round((args.assumed_growth - p50_g) * 100, 1) if p50_g is not None else None,
+    "status": status_for(args.assumed_growth, p25_g, p75_g),
+    "n_peers_in_distribution": n_g,
+}
+margin_sanity = {
+    "assumed": args.assumed_margin,
+    "peer_p25": round(p25_m, 4) if p25_m is not None else None,
+    "peer_p50": round(p50_m, 4) if p50_m is not None else None,
+    "peer_p75": round(p75_m, 4) if p75_m is not None else None,
+    "delta_pp": round((args.assumed_margin - p50_m) * 100, 1) if p50_m is not None else None,
+    "status": status_for(args.assumed_margin, p25_m, p75_m),
+    "n_peers_in_distribution": n_m,
+}
+
+
+# ----- Reverse-DCF -----
+
+exit_multiple = p50_ev  # peer median EV/EBITDA
+implied_cagr = reverse_dcf_implied_cagr(
+    current_ev=current_ev,
+    revenue_ttm=revenue_ttm,
+    assumed_margin=args.assumed_margin,
+    exit_multiple=exit_multiple,
+    wacc=WACC,
+    horizon=args.horizon,
+)
+peer_median_cagr = p50_g  # TTM-as-CAGR proxy (documented)
+air_pp = None
+if implied_cagr is not None and peer_median_cagr is not None:
+    air_pp = (implied_cagr - peer_median_cagr) * 100
+
+fv_at_median = fair_value_at_peer_median(
+    subject=subject,
+    peer_median_cagr=peer_median_cagr,
+    assumed_margin=args.assumed_margin,
+    exit_multiple=exit_multiple,
+    wacc=WACC,
+    horizon=args.horizon,
+    ltd=ltd,
+    shares=shares,
+)
+
+reverse_dcf = {
+    "current_ev": current_ev,
+    "wacc_assumption": WACC,
+    "exit_multiple_assumption": round(exit_multiple, 2) if exit_multiple else None,
+    "implied_cagr": round(implied_cagr, 4) if implied_cagr is not None else None,
+    "peer_median_cagr": round(peer_median_cagr, 4) if peer_median_cagr is not None else None,
+    "air_pp": round(air_pp, 2) if air_pp is not None else None,
+    "fair_value_at_peer_median": round(fv_at_median, 2) if fv_at_median is not None else None,
+}
+
+
+# ----- peers_used summary -----
+
+peers_used = []
+for p in peer_objs:
+    peers_used.append({
+        "ticker": p["ticker"],
+        "name": p["name"],
+        "ev_sales": (p["multiples"] or {}).get("ev_sales"),
+        "ev_ebitda": (p["multiples"] or {}).get("ev_ebitda"),
+        "p_e": (p["multiples"] or {}).get("p_e"),
+        "revenue_growth_ttm": (p["metrics"] or {}).get("revenue_growth_ttm"),
+        "ebitda_margin": (p["metrics"] or {}).get("ebitda_margin"),
+        "data_status": p["data_status"],
+    })
+
+
+# ----- Take + read -----
+
+# Count direction-aware signals: stretched (target multiples above band, or
+# growth/margin above band) vs conservative (target multiples below band, or
+# growth/margin below band).
+stretched = 0
+conservative = 0
+for c in multiple_sanity:
+    if c.get("status") == "above":
+        stretched += 1
+    elif c.get("status") == "below":
+        conservative += 1
+for c in (growth_sanity, margin_sanity):
+    if c.get("status") == "above":
+        stretched += 1
+    elif c.get("status") == "below":
+        conservative += 1
+
+take = generate_take(subject_ticker, {
+    "target_price": target_price,
+    "assumed_growth": args.assumed_growth,
+    "assumed_margin": args.assumed_margin,
+    "horizon_years": args.horizon,
+}, growth_sanity, margin_sanity, multiple_sanity)
+
+read = generate_read(subject_ticker, stretched, conservative,
+                      implied_cagr, peer_median_cagr,
+                      reverse_dcf["fair_value_at_peer_median"],
+                      current_price, target_price)
+
+
+# ----- Payload -----
+
+payload = {
+    "tier": "A",
+    "tier_caveats": [],
+    "mode": "note",
+    "run_at": NOW_UTC.isoformat(),
+    "subject": {
+        "ticker": subject_ticker,
+        "name": subject["name"],
+        "current_price": current_price,
+        "current_mcap": current_mcap,
+        "current_ev": current_ev,
+        "shares_outstanding": shares,
+        "long_term_debt": subject["metrics"].get("long_term_debt"),
+        "revenue_ttm": revenue_ttm,
+        "ebitda_margin_ttm": subject["metrics"].get("ebitda_margin"),
+        "revenue_growth_ttm": subject["metrics"].get("revenue_growth_ttm"),
+        "sector": subject.get("sector"),
+    },
+    "analyst_inputs": {
+        "target_price": target_price,
+        "assumed_growth": args.assumed_growth,
+        "assumed_margin": args.assumed_margin,
+        "horizon_years": args.horizon,
+        "implied_upside_pct": implied_upside,
+        "target_mcap": target_mcap,
+        "target_ev": target_ev,
+        "target_revenue_horizon": target_revenue_horizon,
+        "target_ebitda_horizon": target_ebitda_horizon,
+    },
+    "multiple_sanity": multiple_sanity,
+    "growth_sanity": growth_sanity,
+    "margin_sanity": margin_sanity,
+    "reverse_dcf": reverse_dcf,
+    "peers_used": peers_used,
+    "peer_selection": {
+        "method": peer_selection_method,
+        "n_peers": len(peer_objs),
+    },
+    "take": take,
+    "read": read,
+    "sources": sources,
+}
+
+
+# ----- Renderer -----
+
+def status_label(s):
+    return {
+        "above": "ABOVE",
+        "below": "BELOW",
+        "in_line": "IN LINE",
+        "n_a": "N/A",
+    }.get(s, "N/A")
+
+
+def render(payload):
+    subj = payload["subject"]
+    an = payload["analyst_inputs"]
+    sel = payload["peer_selection"]
+    lines = []
+
+    # Header
+    lines.append(f"{subj['ticker']} · Valuation sanity check as of {TODAY.isoformat()}")
+    if sel["method"] != "curated_override":
+        lines.append(f"Peer set: {sel['n_peers']} names via {sel['method']}")
+    lines.append("")
+
+    # Target + current line
+    upside = an.get("implied_upside_pct")
+    upside_str = fmt_pct(upside, signed=True, decimals=1) if upside is not None else "n/a"
+    lines.append(
+        f"Target: {fmt_price(an['target_price'])} · "
+        f"Current: {fmt_price(subj['current_price'])} · "
+        f"Implied upside {upside_str}"
+    )
+    lines.append("")
+
+    # Take
+    lines.append(f"Take: {payload['take']}")
+    lines.append("")
+
+    # Multiple sanity
+    lines.append("Multiple sanity (target-implied vs peer band)")
+    label_map = {"ev_sales": "Implied EV/Sales",
+                  "ev_ebitda": "Implied EV/EBITDA",
+                  "p_e": "Implied P/E"}
+    for entry in payload["multiple_sanity"]:
+        label = label_map[entry["name"]]
+        impl = entry.get("implied_value")
+        p25 = entry.get("peer_p25")
+        p75 = entry.get("peer_p75")
+        if p25 is not None and p75 is not None:
+            band = f"[{fmt_mult(p25)} - {fmt_mult(p75)}]"
+        else:
+            band = "[n/a]"
+        n = entry.get("n_peers_in_distribution") or 0
+        n_caveat = f"  (n={n})" if n < 4 and n > 0 else ""
+        lines.append(
+            f"- {label:<18} {fmt_mult(impl):>7}  vs peer 25/75 band  "
+            f"{band:<18}  -> {status_label(entry['status'])}{n_caveat}"
+        )
+    lines.append("")
+
+    # Growth sanity
+    lines.append("Growth sanity (assumed vs peer band)")
+    gs = payload["growth_sanity"]
+    if gs.get("peer_p25") is not None and gs.get("peer_p75") is not None:
+        band = f"[{fmt_pct(gs['peer_p25'], signed=True)}, {fmt_pct(gs['peer_p75'], signed=True)}]"
+    else:
+        band = "[n/a]"
+    lines.append(
+        f"- Revenue growth (over horizon, TTM proxy):  "
+        f"{fmt_pct(gs.get('assumed'), signed=True):<6}  "
+        f"vs peer band  {band:<22}  -> {status_label(gs['status'])}"
+    )
+    lines.append("")
+
+    # Margin sanity
+    lines.append("Margin sanity (assumed vs peer band)")
+    ms = payload["margin_sanity"]
+    if ms.get("peer_p25") is not None and ms.get("peer_p75") is not None:
+        band = f"[{fmt_pct(ms['peer_p25'])}, {fmt_pct(ms['peer_p75'])}]"
+    else:
+        band = "[n/a]"
+    lines.append(
+        f"- EBITDA margin:  {fmt_pct(ms.get('assumed')):<5}  "
+        f"vs peer band  {band:<18}  -> {status_label(ms['status'])}"
+    )
+    lines.append("")
+
+    # Reverse-DCF
+    rd = payload["reverse_dcf"]
+    if rd.get("implied_cagr") is not None:
+        lines.append(f"Reverse-DCF view (at current {fmt_price(subj['current_price'])})")
+        assumed_margin_pct = fmt_pct(an["assumed_margin"])
+        lines.append(
+            f"- Implied {an['horizon_years']}yr revenue CAGR "
+            f"({assumed_margin_pct} margin floor): {fmt_pct(rd['implied_cagr'])}"
+        )
+        if rd.get("peer_median_cagr") is not None:
+            lines.append(
+                f"- vs peer median {an['horizon_years']}yr CAGR (TTM proxy):  "
+                f"{fmt_pct(rd['peer_median_cagr'])}"
+            )
+        if rd.get("air_pp") is not None:
+            lines.append(
+                f"- Air in current price:  {fmt_pp(rd['air_pp'], decimals=1)} CAGR"
+            )
+        if rd.get("fair_value_at_peer_median") is not None:
+            lines.append(
+                f"- Fair value at peer-median growth (same margin):  "
+                f"{fmt_price(rd['fair_value_at_peer_median'])}"
+            )
+        lines.append("")
+
+    # Read
+    lines.append(payload["read"])
+    return "\n".join(lines)
+
+
+rendered = render(payload)
+
+
+# ----- Write output -----
+
+out_name = "valuation-sanity-check-output.md"
+out_path = os.path.join(os.path.dirname(__file__), out_name)
+with open(out_path, "w") as fout:
+    fout.write("# valuation-sanity-check run\n\n")
+    fout.write(f"Generated: {NOW_UTC.isoformat()}\n")
+    fout.write(f"Subject: {subject_ticker}\n")
+    fout.write(f"Target: ${args.target_price}  Growth: {args.assumed_growth:.0%}  "
+                f"Margin: {args.assumed_margin:.0%}  Horizon: {args.horizon}y\n")
+    fout.write(f"Peer selection: {peer_selection_method}\n\n")
+    fout.write("## Layer 1: canonical JSON (live data)\n\n")
+    fout.write("```json\n")
+    fout.write(json.dumps(payload, indent=2, default=str))
+    fout.write("\n```\n\n")
+    fout.write("## Layer 2: rendered flash note (live data)\n\n")
+    fout.write("```\n")
+    fout.write(rendered)
+    fout.write("\n```\n")
+
+print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
+print(rendered)
