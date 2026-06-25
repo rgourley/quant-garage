@@ -252,10 +252,12 @@ def safe_zscore(vals):
 # ----- CLI -----
 
 p = argparse.ArgumentParser(description="universe-builder reference implementation")
-p.add_argument("--candidate-source", choices=["curated", "reference"], default="curated",
-               help="curated = the free-tier seed (top large-caps); reference = full /v3/reference/tickers pool")
+p.add_argument("--candidate-source", choices=["curated", "reference", "grouped"], default="curated",
+               help="curated = the free-tier seed; reference = /v3/reference/tickers pool; "
+                    "grouped = full US stocks for a recent trading day via /v2/aggs/grouped (best for broad screens)")
 p.add_argument("--candidate-cap", type=int, default=100,
-               help="Cap on candidate pool size (default 100). Applied to both sources.")
+               help="Cap on candidate pool size (default 100). Applied to curated/reference sources only; "
+                    "grouped uses the full pool returned by the endpoint (~8-10k names).")
 p.add_argument("--min-mcap", type=float, default=10e9,
                help="Minimum market cap in USD (default 10e9)")
 p.add_argument("--max-mcap", type=float, default=None,
@@ -269,17 +271,53 @@ p.add_argument("--no-mom-filter", action="store_true",
 p.add_argument("--mom-3m-top-quartile", action="store_true", default=True,
                help="Filter to top-quartile 3M momentum (default on)")
 p.add_argument("--mom-3m-min", type=float, default=None,
-               help="Hard minimum on 3M momentum (e.g. 0.10 for +10 percent)")
+               help="Hard minimum on 3M momentum (e.g. 0.10 for +10 percent). "
+                    "When set, disables top-quartile mode by default.")
+p.add_argument("--min-mom-3m", type=float, default=None,
+               help="Alias for --mom-3m-min, matches the screener-flag style of --min-price / --min-adv.")
+p.add_argument("--min-price", type=float, default=None,
+               help="Minimum last close price in USD (e.g. 20 to filter penny stocks)")
+p.add_argument("--min-adv", type=float, default=None,
+               help="Minimum 20-day average daily volume in shares (e.g. 400000 for a liquidity floor)")
+p.add_argument("--max-week-return", type=float, default=None,
+               help="Maximum 5-trading-day return (e.g. 0.0 keeps names where week return < 0, "
+                    "i.e. recently pulled back; -0.05 keeps only deeper dips)")
 p.add_argument("--ocf-yield-min", type=float, default=None,
-               help="Minimum operating CF yield (e.g. 0.03 for 3 percent)")
+               help="Minimum operating CF yield (e.g. 0.03 for 3 percent). Requires per-name "
+                    "financials call; skipped for grouped source unless explicitly set.")
+p.add_argument("--skip-financials", action="store_true",
+               help="Skip the per-name financials call entirely (OCF yield becomes informational only). "
+                    "Defaults on for grouped source.")
 p.add_argument("--top-n", type=int, default=20,
                help="Size of the top-N pool for concentration check (default 20)")
 p.add_argument("--lookback-days", type=int, default=63,
                help="Trading days for momentum lookback (default 63 ~= 3M)")
+p.add_argument("--output-name", type=str, default="universe-builder-output.md",
+               help="Output filename in examples/ (gitignored by the *-output.md pattern)")
+p.add_argument("--rank-by", choices=["composite", "pullback"], default="composite",
+               help="composite = mom_3m+ocf_yield+mcap_log z-score (default); "
+                    "pullback = mom_3m * (-week_return), the dip-buy strength axis")
 args = p.parse_args()
+
+# Reconcile the two equivalent 3M momentum thresholds. --min-mom-3m wins if both set.
+if args.min_mom_3m is not None and args.mom_3m_min is None:
+    args.mom_3m_min = args.min_mom_3m
+
+# When the user passes any of the screener-style thresholds, disable the
+# top-quartile default. They asked for an absolute screen, not a relative one.
+if (args.mom_3m_min is not None
+        or args.min_price is not None
+        or args.min_adv is not None
+        or args.max_week_return is not None):
+    args.mom_3m_top_quartile = False
 
 if args.no_mom_filter:
     args.mom_3m_top_quartile = False
+
+# Grouped source pulls thousands of names; financials would be one call
+# per survivor at 5/min, which is the wrong default for a broad screen.
+if args.candidate_source == "grouped" and args.ocf_yield_min is None:
+    args.skip_financials = True
 
 include_sectors = set(args.include_sectors.split(",")) if args.include_sectors else None
 exclude_sectors = set(args.exclude_sectors.split(",")) if args.exclude_sectors else None
@@ -290,6 +328,11 @@ print(f"Building candidate pool ({args.candidate_source})...", file=sys.stderr)
 sources = []
 filter_chain = []
 
+# Persistent across branches so the grouped path can reuse what it pulled
+# to derive every price-based factor (price, ADV, 5d, 3M) without
+# re-fetching the same endpoint multiple times.
+grouped_history = None  # dict[date_iso] -> {ticker: {"c": close, "v": volume}}
+
 if args.candidate_source == "curated":
     raw_pool = CURATED_LARGE_CAPS[: args.candidate_cap]
     candidate_pool_size = len(raw_pool)
@@ -298,7 +341,7 @@ if args.candidate_source == "curated":
         "Tier B (Stocks Basic): curated 100-name seed used to stay under the 5/min rate cap.",
         "For the full ~12,000-name US stocks pool, re-run with --candidate-source reference (requires Stocks Starter+).",
     ]
-else:
+elif args.candidate_source == "reference":
     print("WARN: reference pool requires a paid plan to complete in reasonable time", file=sys.stderr)
     path = f"/v3/reference/tickers?market=stocks&active=true&type=CS&limit=1000"
     rows = fetch_all(path, hard_cap=args.candidate_cap)
@@ -310,6 +353,32 @@ else:
     candidate_pool_size = len(raw_pool)
     tier = "A"
     tier_caveats = []
+else:
+    # Grouped source: pull /v2/aggs/grouped for ~25 trading days going back
+    # ~95 calendar days. One ~10k-row response per day. This gives us close
+    # price, volume, and the price series needed for ADV, 5d return, and
+    # 3M return all from one endpoint, with no per-name fan-out.
+    # The right choice for a broad mean-reversion / momentum screen.
+    print("Pulling grouped-aggs candidate pool (this is the right move for broad screens)...",
+          file=sys.stderr)
+    end_d, end_aggs = get_grouped_aggs(TODAY - timedelta(days=1))
+    if not end_aggs:
+        print("ERROR: grouped-aggs endpoint returned no rows; aborting", file=sys.stderr)
+        sys.exit(1)
+    # Filter to common-stock-shaped tickers (drop warrants, units, preferreds).
+    # Symbols containing "." or "/" are typically class shares or units.
+    raw_pool = [a["T"] for a in end_aggs
+                if a.get("T") and "." not in a["T"] and "/" not in a["T"] and a.get("c")]
+    candidate_pool_size = len(raw_pool)
+    grouped_history = {end_d.isoformat(): {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in end_aggs}}
+    sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": f"candidate pool from {end_d.isoformat()} grouped daily bars"})
+    tier = "A"
+    tier_caveats = [
+        f"Grouped-aggs source: full US stocks pool from {end_d.isoformat()} ({candidate_pool_size} tickers).",
+        "Tickers with '.' or '/' (warrants, units, class shares) filtered out.",
+    ]
 
 filter_chain.append({
     "name": "candidate_pool",
@@ -319,56 +388,110 @@ filter_chain.append({
 })
 
 # ----- Fetch per-name details (mcap, sector). One pass, cached. -----
+# Skipped for the grouped source — fanning out 10k ticker-details calls
+# is the wrong shape for a broad screen, and most users running grouped
+# don't need market cap as a filter (they're price + volume + return based).
 
-print(f"Fetching ticker details for {len(raw_pool)} names...", file=sys.stderr)
 details_cache = {}
-for tk in raw_pool:
-    det = get_ticker_details(tk)
-    if det:
-        details_cache[tk] = det
-sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
-                "fetched_at": NOW_UTC.isoformat(),
-                "context": "market cap + sector per name"})
+if args.candidate_source != "grouped":
+    print(f"Fetching ticker details for {len(raw_pool)} names...", file=sys.stderr)
+    for tk in raw_pool:
+        det = get_ticker_details(tk)
+        if det:
+            details_cache[tk] = det
+    sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": "market cap + sector per name"})
 
 # Starting universe sector distribution for the concentration check
 starting_sector_counts = defaultdict(int)
 for tk, det in details_cache.items():
     sec = sic_to_sector(det.get("sic_code"), det.get("sic_description"))
     starting_sector_counts[sec] += 1
-starting_universe_total = len(details_cache)
+starting_universe_total = len(details_cache) if details_cache else len(raw_pool)
 
 # Build the working "names" list of dicts
 names = []
-for tk, det in details_cache.items():
-    mcap = det.get("market_cap")
-    if mcap is None:
-        continue
-    sector = sic_to_sector(det.get("sic_code"), det.get("sic_description"))
-    names.append({
-        "ticker": tk,
-        "name": det.get("name"),
-        "market_cap": mcap,
-        "sector": sector,
-        "industry": det.get("sic_description"),
-        "active": det.get("active", True),
-        "factors": {},
+if args.candidate_source == "grouped":
+    # No mcap/sector data; we fill the structure with the grouped close so
+    # downstream filters see a "price" factor and the table can render.
+    end_iso = next(iter(grouped_history))
+    end_snap = grouped_history[end_iso]
+    for tk in raw_pool:
+        snap = end_snap.get(tk)
+        if not snap:
+            continue
+        names.append({
+            "ticker": tk,
+            "name": None,
+            "market_cap": None,
+            "sector": "Unknown",
+            "industry": None,
+            "active": True,
+            "factors": {"price": snap["c"]},
+        })
+else:
+    for tk, det in details_cache.items():
+        mcap = det.get("market_cap")
+        if mcap is None:
+            continue
+        sector = sic_to_sector(det.get("sic_code"), det.get("sic_description"))
+        names.append({
+            "ticker": tk,
+            "name": det.get("name"),
+            "market_cap": mcap,
+            "sector": sector,
+            "industry": det.get("sic_description"),
+            "active": det.get("active", True),
+            "factors": {},
+        })
+
+# ----- Filter: market cap (skipped when grouped source has no mcap) -----
+
+if args.candidate_source != "grouped":
+    filtered = [n for n in names if n["market_cap"] >= args.min_mcap]
+    if args.max_mcap:
+        filtered = [n for n in filtered if n["market_cap"] <= args.max_mcap]
+    mcap_pred = f"market_cap >= ${args.min_mcap/1e9:.0f}B"
+    if args.max_mcap:
+        mcap_pred += f" and <= ${args.max_mcap/1e9:.0f}B"
+    filter_chain.append({
+        "name": "market_cap",
+        "predicate": mcap_pred,
+        "survivors_count": len(filtered),
+        "cumulative_count": len(filtered),
     })
+    names = filtered
 
-# ----- Filter: market cap -----
+# ----- Filter: minimum price (last close) -----
 
-filtered = [n for n in names if n["market_cap"] >= args.min_mcap]
-if args.max_mcap:
-    filtered = [n for n in filtered if n["market_cap"] <= args.max_mcap]
-mcap_pred = f"market_cap >= ${args.min_mcap/1e9:.0f}B"
-if args.max_mcap:
-    mcap_pred += f" and <= ${args.max_mcap/1e9:.0f}B"
-filter_chain.append({
-    "name": "market_cap",
-    "predicate": mcap_pred,
-    "survivors_count": len(filtered),
-    "cumulative_count": len(filtered),
-})
-names = filtered
+if args.min_price is not None:
+    if args.candidate_source != "grouped":
+        # Need a last close per name — fall back to grouped aggs for the most
+        # recent trading day. One call covers the whole universe.
+        if grouped_history is None:
+            end_d_price, end_aggs_price = get_grouped_aggs(TODAY - timedelta(days=1))
+            grouped_history = {end_d_price.isoformat():
+                               {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in end_aggs_price}}
+            sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                            "fetched_at": NOW_UTC.isoformat(),
+                            "context": f"last close for price filter: {end_d_price.isoformat()}"})
+        end_iso_p = next(iter(grouped_history))
+        end_snap_p = grouped_history[end_iso_p]
+        for n in names:
+            snap = end_snap_p.get(n["ticker"])
+            if snap:
+                n["factors"]["price"] = snap["c"]
+    pre = len(names)
+    names = [n for n in names
+             if n["factors"].get("price") is not None
+             and n["factors"]["price"] >= args.min_price]
+    filter_chain.append({
+        "name": "min_price",
+        "predicate": f"last close >= ${args.min_price:.2f}",
+        "survivors_count": len(names),
+        "cumulative_count": len(names),
+    })
 
 # ----- Filter: sectors -----
 
@@ -389,27 +512,94 @@ if exclude_sectors:
         "cumulative_count": len(names),
     })
 
-# ----- Compute and filter momentum -----
+# ----- Compute and filter momentum + week return + ADV -----
+# All four price-based factors (3M return, 5d return, last price, 20d ADV)
+# come from the same grouped-aggs sweep. One call per trading day, then
+# all the math is per-name lookups in dicts.
 
-if args.mom_3m_top_quartile or args.mom_3m_min is not None:
-    print("Computing 3M momentum (two grouped-aggs calls)...", file=sys.stderr)
-    end_d, end_aggs = get_grouped_aggs(TODAY - timedelta(days=1))
-    # Lookback ~63 trading days = ~90 calendar days
-    start_target = end_d - timedelta(days=int(args.lookback_days * 1.45))
-    start_d, start_aggs = get_grouped_aggs(start_target)
-    sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-                    "fetched_at": NOW_UTC.isoformat(),
-                    "context": f"3M momentum endpoints: {start_d} and {end_d}"})
+needs_price_history = (
+    args.mom_3m_top_quartile
+    or args.mom_3m_min is not None
+    or args.max_week_return is not None
+    or args.min_adv is not None
+)
 
-    end_map = {a["T"]: a["c"] for a in end_aggs if a.get("c")}
-    start_map = {a["T"]: a["c"] for a in start_aggs if a.get("c")}
-    for n in names:
-        tk = n["ticker"]
-        if tk in end_map and tk in start_map and start_map[tk] > 0:
-            n["factors"]["mom_3m"] = (end_map[tk] / start_map[tk]) - 1
-        else:
-            n["factors"]["mom_3m"] = None
+if needs_price_history:
+    print("Pulling grouped-aggs price history (1 call per trading day)...", file=sys.stderr)
+    if grouped_history is None:
+        grouped_history = {}
 
+    # Anchor dates: end (today-1), 5 trading days back, 63 trading days back.
+    # Calendar approximations: 5d ~= 7 calendar days, 63d ~= 91 calendar days.
+    end_target = TODAY - timedelta(days=1)
+    week_target = end_target - timedelta(days=8)
+    mom_target = end_target - timedelta(days=int(args.lookback_days * 1.45))
+
+    def ensure_day(target):
+        """Walk back to a real trading day, populate grouped_history, return iso date."""
+        d, rows = get_grouped_aggs(target)
+        iso = d.isoformat()
+        if iso not in grouped_history:
+            grouped_history[iso] = {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in rows}
+            sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                            "fetched_at": NOW_UTC.isoformat(),
+                            "context": f"price history anchor: {iso}"})
+        return iso
+
+    end_iso = ensure_day(end_target)
+    week_iso = ensure_day(week_target) if args.max_week_return is not None else None
+    mom_iso = ensure_day(mom_target) if (args.mom_3m_top_quartile or args.mom_3m_min is not None) else None
+
+    # For ADV, pull ~20 trading days of grouped aggs ending at end_iso.
+    # 20 trading days ~= 28 calendar days; walk back day by day skipping
+    # weekends/holidays. Cap at 30 calendar walk-backs.
+    adv_days_iso = []
+    if args.min_adv is not None:
+        cur = end_target
+        attempts = 0
+        while len(adv_days_iso) < 20 and attempts < 30:
+            iso = ensure_day(cur)
+            if iso not in adv_days_iso:
+                adv_days_iso.append(iso)
+            # parse back to date for next step
+            y, m, dd = (int(x) for x in iso.split("-"))
+            cur = date(y, m, dd) - timedelta(days=1)
+            attempts += 1
+
+    end_map = {tk: snap["c"] for tk, snap in grouped_history[end_iso].items() if snap["c"]}
+
+    # 3M momentum
+    if mom_iso:
+        start_map = {tk: snap["c"] for tk, snap in grouped_history[mom_iso].items() if snap["c"]}
+        for n in names:
+            tk = n["ticker"]
+            if tk in end_map and tk in start_map and start_map[tk] > 0:
+                n["factors"]["mom_3m"] = (end_map[tk] / start_map[tk]) - 1
+            else:
+                n["factors"]["mom_3m"] = None
+
+    # 5-day (week) return
+    if week_iso:
+        week_map = {tk: snap["c"] for tk, snap in grouped_history[week_iso].items() if snap["c"]}
+        for n in names:
+            tk = n["ticker"]
+            if tk in end_map and tk in week_map and week_map[tk] > 0:
+                n["factors"]["week_return"] = (end_map[tk] / week_map[tk]) - 1
+            else:
+                n["factors"]["week_return"] = None
+
+    # 20-day ADV
+    if adv_days_iso:
+        for n in names:
+            tk = n["ticker"]
+            vols = []
+            for iso in adv_days_iso:
+                snap = grouped_history[iso].get(tk)
+                if snap and snap["v"]:
+                    vols.append(snap["v"])
+            n["factors"]["adv_20d"] = sum(vols) / len(vols) if vols else None
+
+    # Apply momentum filters
     if args.mom_3m_top_quartile:
         with_mom = [n for n in names if n["factors"].get("mom_3m") is not None]
         if with_mom:
@@ -434,18 +624,47 @@ if args.mom_3m_top_quartile or args.mom_3m_min is not None:
             "cumulative_count": len(names),
         })
 
+    # Apply ADV filter
+    if args.min_adv is not None:
+        names = [n for n in names
+                 if n["factors"].get("adv_20d") is not None
+                 and n["factors"]["adv_20d"] >= args.min_adv]
+        filter_chain.append({
+            "name": "min_adv",
+            "predicate": f"20d avg daily volume >= {args.min_adv:,.0f} shares",
+            "survivors_count": len(names),
+            "cumulative_count": len(names),
+        })
+
+    # Apply week-return filter (max — we want pullbacks below threshold)
+    if args.max_week_return is not None:
+        names = [n for n in names
+                 if n["factors"].get("week_return") is not None
+                 and n["factors"]["week_return"] < args.max_week_return]
+        filter_chain.append({
+            "name": "max_week_return",
+            "predicate": f"5d return < {args.max_week_return*100:+.1f}% (recently pulled back)",
+            "survivors_count": len(names),
+            "cumulative_count": len(names),
+        })
+
 # ----- Operating cash flow yield (filter or informational) -----
 
-print(f"Computing OCF yield for {len(names)} survivors...", file=sys.stderr)
-for n in names:
-    ttm_ocf, _ = get_ttm_ocf(n["ticker"])
-    if ttm_ocf is not None and n["market_cap"] > 0:
-        n["factors"]["ocf_yield"] = ttm_ocf / n["market_cap"]
-    else:
+if args.skip_financials:
+    for n in names:
         n["factors"]["ocf_yield"] = None
-sources.append({"endpoint": "/vX/reference/financials",
-                "fetched_at": NOW_UTC.isoformat(),
-                "context": "TTM operating cash flow per survivor"})
+else:
+    print(f"Computing OCF yield for {len(names)} survivors...", file=sys.stderr)
+    for n in names:
+        mcap = n.get("market_cap")
+        ttm_ocf, _ = get_ttm_ocf(n["ticker"])
+        if ttm_ocf is not None and mcap and mcap > 0:
+            n["factors"]["ocf_yield"] = ttm_ocf / mcap
+        else:
+            n["factors"]["ocf_yield"] = None
+    sources.append({"endpoint": "/vX/reference/financials",
+                    "fetched_at": NOW_UTC.isoformat(),
+                    "context": "TTM operating cash flow per survivor"})
 
 if args.ocf_yield_min is not None:
     names = [n for n in names
@@ -459,28 +678,66 @@ if args.ocf_yield_min is not None:
     })
 
 # ----- Composite z-score -----
+# Compose only the factors that actually have data. Grouped source has no
+# market cap or OCF yield, so those drop out. Mean-reversion screens
+# usually pair mom_3m (momentum that earned the dip) with -week_return
+# (the dip itself), so include both as a composite when present.
 
-factors_in_composite = ["mom_3m", "ocf_yield", "mcap_log"]
-factor_directions = {"mom_3m": +1, "ocf_yield": +1, "mcap_log": +1}
+candidate_factor_directions = {
+    "mom_3m": +1,
+    "ocf_yield": +1,
+    "mcap_log": +1,
+    "week_return": -1,  # negative is good for the dip-buy thesis
+}
+
+def has_factor(factor):
+    return any(n["factors"].get(factor) is not None for n in names)
+
+factors_in_composite = []
+for f in ("mom_3m", "ocf_yield"):
+    if has_factor(f):
+        factors_in_composite.append(f)
+# week_return and mcap_log are conditionally included
+if has_factor("week_return") and args.max_week_return is not None:
+    factors_in_composite.append("week_return")
+if any(n.get("market_cap") for n in names):
+    factors_in_composite.append("mcap_log")
+    for n in names:
+        if n.get("market_cap") and n["market_cap"] > 0:
+            n["factors"]["mcap_log"] = math.log10(n["market_cap"])
+        else:
+            n["factors"]["mcap_log"] = None
+
+factor_directions = {f: candidate_factor_directions[f] for f in factors_in_composite}
 
 factor_values = defaultdict(list)
 for n in names:
-    factor_values["mom_3m"].append(n["factors"].get("mom_3m"))
-    factor_values["ocf_yield"].append(n["factors"].get("ocf_yield"))
-    factor_values["mcap_log"].append(
-        math.log10(n["market_cap"]) if n["market_cap"] > 0 else None
-    )
+    for f in factors_in_composite:
+        factor_values[f].append(n["factors"].get(f))
 
 z_by_factor = {f: safe_zscore(factor_values[f]) for f in factors_in_composite}
 
-n_factors = len(factors_in_composite)
+n_factors = max(len(factors_in_composite), 1)
 for i, n in enumerate(names):
     fzscores = {f: z_by_factor[f][i] * factor_directions[f] for f in factors_in_composite}
     n["factor_zscores"] = fzscores
     n["composite_zscore"] = sum(fzscores.values()) / n_factors
-    n["factors"]["mcap_log"] = math.log10(n["market_cap"]) if n["market_cap"] > 0 else None
 
-names.sort(key=lambda n: n["composite_zscore"], reverse=True)
+# Pullback strength = 3M momentum × -(week return). Higher is "stronger
+# uptrend, deeper recent pullback". Only meaningful when both factors exist.
+for n in names:
+    mom = n["factors"].get("mom_3m")
+    wk = n["factors"].get("week_return")
+    if mom is not None and wk is not None:
+        n["pullback_score"] = mom * (-wk)
+    else:
+        n["pullback_score"] = None
+
+if args.rank_by == "pullback" and any(n.get("pullback_score") is not None for n in names):
+    names.sort(key=lambda n: (n.get("pullback_score") is not None, n.get("pullback_score") or 0),
+               reverse=True)
+else:
+    names.sort(key=lambda n: n["composite_zscore"], reverse=True)
 for i, n in enumerate(names):
     n["rank"] = i + 1
 
@@ -572,6 +829,8 @@ payload = {
             "factors": n["factors"],
             "factor_zscores": {k: round(v, 4) for k, v in n["factor_zscores"].items()},
             "composite_zscore": round(n["composite_zscore"], 4),
+            "pullback_score": (round(n["pullback_score"], 6)
+                               if n.get("pullback_score") is not None else None),
         }
         for n in names
     ],
@@ -601,28 +860,78 @@ def fmt_z(x):
     return f"{x:+.2f}"
 
 
-def render_table(payload):
+def fmt_adv(v):
+    if v is None:
+        return "n/a"
+    if v >= 1e9:
+        return f"{v/1e9:,.2f}B"
+    if v >= 1e6:
+        return f"{v/1e6:,.1f}M"
+    if v >= 1e3:
+        return f"{v/1e3:,.0f}K"
+    return f"{v:,.0f}"
+
+
+def fmt_price(v):
+    if v is None:
+        return "n/a"
+    return f"${v:,.2f}"
+
+
+def render_table(payload, want_week=False, want_adv=False, want_price=False, want_pullback=False):
     lines = []
     end = payload["universe_size_end"]
     start = payload["universe_size_start"]
-    lines.append(f"Filter chain → {end} names from {start}")
+    lines.append(f"Filter chain -> {end} names from {start:,}")
     if payload["tier"] != "A":
         lines.append("Tier B run (free Basic, curated 100-name seed). Re-run on Stocks Starter for the full pool.")
     lines.append("")
 
-    rows = payload["results"][:20]
+    # Cap displayed rows at 30 for the pullback/screener mode, 20 otherwise.
+    row_cap = 30 if (want_pullback or want_week) else 20
+    rows = payload["results"][:row_cap]
     if rows:
-        headers = ["Ticker", "MCap($B)", "3M Mom", "OCF Yld", "Z-score"]
+        headers = ["Rank", "Ticker"]
+        if want_price:
+            headers.append("Price")
+        # Show MCap only when we have it for at least one row
+        show_mcap = any(r.get("market_cap") for r in rows)
+        if show_mcap:
+            headers.append("MCap($B)")
+        if want_adv:
+            headers.append("ADV(20d)")
+        headers.append("3M Mom")
+        if want_week:
+            headers.append("Wk Ret")
+        # Only show OCF when at least one row has it
+        show_ocf = any(r["factors"].get("ocf_yield") is not None for r in rows)
+        if show_ocf:
+            headers.append("OCF Yld")
+        if want_pullback:
+            headers.append("Pull")
+        headers.append("Z-score")
+
         body = []
         for r in rows:
             f = r["factors"]
-            body.append([
-                r["ticker"],
-                fmt_mcap(r["market_cap"]),
-                fmt_pct(f.get("mom_3m")),
-                fmt_pct(f.get("ocf_yield"), signed=False) if f.get("ocf_yield") is not None else "n/a",
-                fmt_z(r["composite_zscore"]),
-            ])
+            row = [str(r["rank"]), r["ticker"]]
+            if want_price:
+                row.append(fmt_price(f.get("price")))
+            if show_mcap:
+                row.append(fmt_mcap(r["market_cap"]) if r.get("market_cap") else "n/a")
+            if want_adv:
+                row.append(fmt_adv(f.get("adv_20d")))
+            row.append(fmt_pct(f.get("mom_3m")))
+            if want_week:
+                row.append(fmt_pct(f.get("week_return")))
+            if show_ocf:
+                row.append(fmt_pct(f.get("ocf_yield"), signed=False)
+                           if f.get("ocf_yield") is not None else "n/a")
+            if want_pullback:
+                ps = r.get("pullback_score")
+                row.append(f"{ps*100:.2f}" if ps is not None else "n/a")
+            row.append(fmt_z(r["composite_zscore"]))
+            body.append(row)
         widths = [max(len(h), max(len(b[i]) for b in body)) for i, h in enumerate(headers)]
 
         def fmt_row(cells):
@@ -688,11 +997,17 @@ def render_table(payload):
     return "\n".join(lines)
 
 
-rendered = render_table(payload)
+rendered = render_table(
+    payload,
+    want_week=args.max_week_return is not None,
+    want_adv=args.min_adv is not None,
+    want_price=args.min_price is not None,
+    want_pullback=args.rank_by == "pullback",
+)
 
 # ----- Write output -----
 
-out_name = "universe-builder-output.md"
+out_name = args.output_name
 out_path = os.path.join(os.path.dirname(__file__), out_name)
 with open(out_path, "w") as fout:
     fout.write("# universe-builder run\n\n")
