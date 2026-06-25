@@ -32,6 +32,7 @@ import urllib.request
 import urllib.error
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 KEY = os.environ.get("MASSIVE_API_KEY")
@@ -181,6 +182,32 @@ def get_ticker_details(ticker):
     return doc.get("results")
 
 
+def enrich_ticker_details(tickers, workers=16):
+    """Fetch /v3/reference/tickers/{T} for each ticker in parallel.
+
+    Massive's `?ticker.any_of=...` query is silently ignored by the list
+    endpoint (probed 2026-06-24: list endpoint returns the alphabetical head
+    no matter what filter you pass for batch lookup), and `type`, `sic_code`,
+    and `market_cap` are null on the list endpoint anyway. The right move is
+    per-ticker fetches in a parallel worker pool. On Business tier (100 req/s
+    soft cap), a 16-worker pool handles 345 names in <30s.
+
+    Returns dict[ticker] -> details (or None on failure).
+    """
+    out = {}
+    if not tickers:
+        return out
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(get_ticker_details, tk): tk for tk in tickers}
+        for fut in as_completed(futures):
+            tk = futures[fut]
+            try:
+                out[tk] = fut.result()
+            except Exception:
+                out[tk] = None
+    return out
+
+
 def get_grouped_aggs(d, max_walk=7):
     """Return (date_used, results) walking back over holidays / weekends."""
     cur = d
@@ -270,18 +297,29 @@ p.add_argument("--no-mom-filter", action="store_true",
                help="Skip the momentum filter entirely")
 p.add_argument("--mom-3m-top-quartile", action="store_true", default=True,
                help="Filter to top-quartile 3M momentum (default on)")
-p.add_argument("--mom-3m-min", type=float, default=None,
-               help="Hard minimum on 3M momentum (e.g. 0.10 for +10 percent). "
-                    "When set, disables top-quartile mode by default.")
 p.add_argument("--min-mom-3m", type=float, default=None,
-               help="Alias for --mom-3m-min, matches the screener-flag style of --min-price / --min-adv.")
+               help="Hard minimum on 3M momentum (e.g. 0.10 for +10 percent). "
+                    "When set, disables top-quartile mode by default. "
+                    "Canonical screener flag, parallels --min-price / --min-adv.")
+p.add_argument("--mom-3m-min", type=float, default=None,
+               help=argparse.SUPPRESS)  # deprecated alias; --min-mom-3m is canonical
 p.add_argument("--min-price", type=float, default=None,
                help="Minimum last close price in USD (e.g. 20 to filter penny stocks)")
 p.add_argument("--min-adv", type=float, default=None,
                help="Minimum 20-day average daily volume in shares (e.g. 400000 for a liquidity floor)")
 p.add_argument("--max-week-return", type=float, default=None,
-               help="Maximum 5-trading-day return (e.g. 0.0 keeps names where week return < 0, "
-                    "i.e. recently pulled back; -0.05 keeps only deeper dips)")
+               help="Maximum 5-trading-day return. 0.0 keeps names where week return < 0 "
+                    "(recently pulled back, strict to exclude flat names); any negative "
+                    "threshold uses <= so '--max-week-return -0.05' keeps the natural "
+                    "'down 5% or more' cohort. See SKILL.md for the semantic.")
+p.add_argument("--include-types", type=str, default="CS",
+               help="Comma-separated Massive ticker types to KEEP after enrichment "
+                    "(default 'CS' = US common stock only). Other types Massive returns "
+                    "include ETF, ETN, ETV, ADRC (foreign ADR), PFD (preferred), "
+                    "WARRANT, RIGHT, UNIT, FUND. Pass e.g. 'CS,ADRC' to include foreign "
+                    "ADRs, or 'CS,ETF' to include ETFs. The enrichment pass runs after "
+                    "the price / volume / momentum filters, when survivors are typically "
+                    "300-2,000 names.")
 p.add_argument("--ocf-yield-min", type=float, default=None,
                help="Minimum operating CF yield (e.g. 0.03 for 3 percent). Requires per-name "
                     "financials call; skipped for grouped source unless explicitly set.")
@@ -299,17 +337,29 @@ p.add_argument("--rank-by", choices=["composite", "pullback"], default="composit
                     "pullback = mom_3m * (-week_return), the dip-buy strength axis")
 args = p.parse_args()
 
-# Reconcile the two equivalent 3M momentum thresholds. --min-mom-3m wins if both set.
-if args.min_mom_3m is not None and args.mom_3m_min is None:
-    args.mom_3m_min = args.min_mom_3m
+# --mom-3m-min is the deprecated alias for --min-mom-3m. Warn on use and
+# fold into the canonical flag. The canonical one always wins if both are set.
+if args.mom_3m_min is not None:
+    print("WARN: --mom-3m-min is deprecated; use --min-mom-3m (canonical, "
+          "parallels --min-price / --min-adv)", file=sys.stderr)
+    if args.min_mom_3m is None:
+        args.min_mom_3m = args.mom_3m_min
 
 # When the user passes any of the screener-style thresholds, disable the
 # top-quartile default. They asked for an absolute screen, not a relative one.
-if (args.mom_3m_min is not None
+if (args.min_mom_3m is not None
         or args.min_price is not None
         or args.min_adv is not None
         or args.max_week_return is not None):
     args.mom_3m_top_quartile = False
+
+# Parse include-types: a non-empty set of Massive type codes to KEEP
+# (default 'CS'). Empty / "*" / "all" disables the filter.
+include_types_raw = (args.include_types or "").strip()
+if include_types_raw.lower() in ("", "*", "all"):
+    include_types = None  # keep everything
+else:
+    include_types = {t.strip().upper() for t in include_types_raw.split(",") if t.strip()}
 
 if args.no_mom_filter:
     args.mom_3m_top_quartile = False
@@ -519,7 +569,7 @@ if exclude_sectors:
 
 needs_price_history = (
     args.mom_3m_top_quartile
-    or args.mom_3m_min is not None
+    or args.min_mom_3m is not None
     or args.max_week_return is not None
     or args.min_adv is not None
 )
@@ -548,7 +598,7 @@ if needs_price_history:
 
     end_iso = ensure_day(end_target)
     week_iso = ensure_day(week_target) if args.max_week_return is not None else None
-    mom_iso = ensure_day(mom_target) if (args.mom_3m_top_quartile or args.mom_3m_min is not None) else None
+    mom_iso = ensure_day(mom_target) if (args.mom_3m_top_quartile or args.min_mom_3m is not None) else None
 
     # For ADV, pull ~20 trading days of grouped aggs ending at end_iso.
     # 20 trading days ~= 28 calendar days; walk back day by day skipping
@@ -613,13 +663,13 @@ if needs_price_history:
                 "survivors_count": len(names),
                 "cumulative_count": len(names),
             })
-    if args.mom_3m_min is not None:
+    if args.min_mom_3m is not None:
         names = [n for n in names
                  if n["factors"].get("mom_3m") is not None
-                 and n["factors"]["mom_3m"] >= args.mom_3m_min]
+                 and n["factors"]["mom_3m"] >= args.min_mom_3m]
         filter_chain.append({
-            "name": "mom_3m_min",
-            "predicate": f"3M momentum >= {args.mom_3m_min*100:+.1f}%",
+            "name": "min_mom_3m",
+            "predicate": f"3M momentum >= {args.min_mom_3m*100:+.1f}%",
             "survivors_count": len(names),
             "cumulative_count": len(names),
         })
@@ -636,17 +686,98 @@ if needs_price_history:
             "cumulative_count": len(names),
         })
 
-    # Apply week-return filter (max — we want pullbacks below threshold)
+    # Apply week-return filter (max — we want pullbacks at or below threshold).
+    # Semantic: 0.0 means "week is down" (strict <, exclude flat names);
+    # any negative threshold like -0.05 means "down 5% or more" (inclusive <=,
+    # matches user intuition that '5% pullback' includes the -5.0% case).
     if args.max_week_return is not None:
-        names = [n for n in names
-                 if n["factors"].get("week_return") is not None
-                 and n["factors"]["week_return"] < args.max_week_return]
+        if args.max_week_return >= 0:
+            names = [n for n in names
+                     if n["factors"].get("week_return") is not None
+                     and n["factors"]["week_return"] < args.max_week_return]
+            pred_op = "<"
+        else:
+            names = [n for n in names
+                     if n["factors"].get("week_return") is not None
+                     and n["factors"]["week_return"] <= args.max_week_return]
+            pred_op = "<="
         filter_chain.append({
             "name": "max_week_return",
-            "predicate": f"5d return < {args.max_week_return*100:+.1f}% (recently pulled back)",
+            "predicate": f"5d return {pred_op} {args.max_week_return*100:+.1f}% (recently pulled back)",
             "survivors_count": len(names),
             "cumulative_count": len(names),
         })
+
+# ----- Enrichment pass: type / sector / market cap from ticker details -----
+# Runs AFTER the cheap price/volume/momentum filters when survivors are
+# typically 300-2,000 names. Without this pass, the grouped path has no
+# security-type info, so ETFs and leveraged products leak through a
+# "stock screen" (e.g. ETHD ProShares UltraShort Ether ETF, LNOK Defiance
+# 2X Long NOK ETF). Also fills in sector for the concentration check.
+#
+# Skipped when the curated/reference path already populated details_cache
+# (those paths fetch details up-front for market-cap filtering).
+
+needs_enrichment = (
+    include_types is not None
+    or args.candidate_source == "grouped"
+)
+if needs_enrichment and names:
+    to_fetch = [n["ticker"] for n in names if n["ticker"] not in details_cache]
+    if to_fetch:
+        print(f"Enriching {len(to_fetch)} survivors with ticker details "
+              f"(type/sector/mcap)...", file=sys.stderr)
+        fetched = enrich_ticker_details(to_fetch, workers=16)
+        for tk, det in fetched.items():
+            if det:
+                details_cache[tk] = det
+        sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
+                        "fetched_at": NOW_UTC.isoformat(),
+                        "context": f"enrichment pass: type+sector+mcap for {len(to_fetch)} survivors"})
+
+    # Backfill name fields from details_cache. Detail rows fetched late are
+    # the source of truth for type/sector/market_cap on the grouped path.
+    for n in names:
+        det = details_cache.get(n["ticker"])
+        if not det:
+            continue
+        if not n.get("name"):
+            n["name"] = det.get("name")
+        if n.get("market_cap") is None:
+            n["market_cap"] = det.get("market_cap")
+        sic = det.get("sic_code")
+        sic_desc = det.get("sic_description")
+        if sic and (n["sector"] == "Unknown" or not n["sector"]):
+            n["sector"] = sic_to_sector(sic, sic_desc)
+        if not n.get("industry"):
+            n["industry"] = sic_desc
+        n["type"] = det.get("type")
+
+    # Apply the type filter (default CS-only).
+    if include_types is not None:
+        pre = len(names)
+        # Names that fail to enrich (no detail row) are dropped under a CS-only
+        # filter, since we can't verify they're common stock. This is the
+        # right call: a stock-only screen shouldn't silently keep unknowns.
+        names = [n for n in names if (n.get("type") or "") in include_types]
+        filter_chain.append({
+            "name": "include_types",
+            "predicate": f"type in {sorted(include_types)}",
+            "survivors_count": len(names),
+            "cumulative_count": len(names),
+        })
+
+    # Recompute starting-universe sector distribution from the enriched
+    # survivor cohort when we didn't have one up front (grouped path: there
+    # was no sector data on the 12k starting pool, so the cohort we're
+    # picking the top-20 FROM becomes the baseline). The curated/reference
+    # paths already populated starting_sector_counts before filtering, so
+    # leave those alone — their baseline IS the whole pre-filter pool.
+    if not starting_sector_counts and names:
+        for n in names:
+            starting_sector_counts[n["sector"]] += 1
+        starting_universe_total = len(names)
+
 
 # ----- Operating cash flow yield (filter or informational) -----
 
@@ -777,7 +908,7 @@ concentration_findings.sort(key=lambda f: abs(f["std_devs_overweight"]), reverse
 
 has_lookback = (
     args.mom_3m_top_quartile
-    or args.mom_3m_min is not None
+    or args.min_mom_3m is not None
     or args.ocf_yield_min is not None
 )
 if args.candidate_source == "curated":

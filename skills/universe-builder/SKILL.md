@@ -45,6 +45,78 @@ Unlike a generic screener, universe-builder:
 - Stocks Basic plan minimum (free works end to end at small candidate
   sizes; paid removes the 5/min rate cap)
 
+### Canonical CLI flags
+
+The screener-style flags all use the `--<bound>-<factor>` shape so a
+filter chain reads top to bottom like a SQL `WHERE`:
+
+```
+--min-price 20             # last close >= $20.00
+--min-adv 400000           # 20d avg daily volume >= 400,000 shares
+--min-mom-3m 0.10          # 3M momentum >= +10% (canonical)
+--max-week-return 0.0      # 5d return below threshold (see semantic below)
+--min-mcap 10e9            # market cap >= $10B
+--max-mcap 100e9           # market cap <= $100B
+--ocf-yield-min 0.03       # operating CF yield >= 3%
+--include-sectors X,Y      # categorical sector include
+--exclude-sectors X,Y      # categorical sector exclude
+--include-types CS         # security type whitelist (default 'CS', see below)
+```
+
+`--mom-3m-min` is a deprecated alias for `--min-mom-3m`. It still works
+but prints a warning. Use the canonical `--min-mom-3m` so the flag style
+matches `--min-price` and `--min-adv`.
+
+### `--max-week-return` semantic
+
+The threshold is signed and the comparison operator changes at zero so
+the natural-language reading matches the math:
+
+- `--max-week-return 0.0` keeps names where week return is **strictly
+  less than 0** (excludes flat names — we want pullbacks, not stasis)
+- `--max-week-return -0.05` keeps names where week return is **at or
+  below -5%** (the user-intuitive reading of "down 5% or more"
+  includes the exact -5.0% case)
+
+In other words: zero is strict `<`, negative thresholds are inclusive
+`<=`.
+
+### `--include-types` (default `CS`)
+
+The default keeps **common stock only** so a "stock screen" doesn't
+silently include ETFs, leveraged products, foreign ADRs, or warrants.
+The enrichment pass (see below) tags every survivor with its Massive
+type before this filter runs.
+
+Override examples:
+
+- `--include-types CS,ADRC` — also include foreign ADRs (LEGN, etc.)
+- `--include-types CS,ETF,ETN` — include ETFs and exchange-traded
+  notes
+- `--include-types '*'` — disable the type filter entirely
+
+Massive returns these types in practice: `CS` (common stock), `ETF`,
+`ETN`, `ETV` (ETF / ETN / ETV variants), `ADRC` (foreign ADR), `PFD`
+(preferred), `WARRANT`, `RIGHT`, `UNIT`, `FUND`. The list endpoint
+exposes the filter, but the `type` field is only populated on
+per-ticker details, which is why the skill defers the type filter to
+the enrichment pass.
+
+### Enrichment pass
+
+After the cheap price / volume / momentum filters reduce the working
+set from ~12,000 names to 300-2,000, the skill makes a parallel fan-out
+of per-ticker `/v3/reference/tickers/{T}` calls (16 workers) to pull
+`type`, `sic_code`, `sic_description`, `market_cap`, and the human
+name. Without this pass the grouped-aggs path has no security-type
+data, so leveraged ETFs and 2x products leak through and the
+concentration check shows everything as "Unknown".
+
+Cost on Business tier is under 30 seconds for a 345-name cohort.
+Massive's list endpoint silently ignores `ticker.any_of=...` for batch
+lookup (probed 2026-06-24), so per-ticker fetches in parallel are the
+right shape.
+
 The skill runs at two fidelity tiers, flagged in the output JSON as
 `tier`.
 

@@ -39,6 +39,34 @@ The skill ships these out of the box. Each has a known direction
 (higher is better, lower is better, or band), used by the composite
 z-score sign correction.
 
+### Security type (`include_types`, default `CS`)
+
+- Field: `type` on `/v3/reference/tickers/{ticker}` (one call per
+  survivor). The list endpoint exposes `?type=CS` for filtered list
+  pulls, but does NOT populate the `type` field in the response rows,
+  and the `ticker.any_of=...` batch syntax is silently ignored as of
+  2026-06-24. The only reliable way to read `type` for a known cohort
+  is per-ticker fetches.
+- Direction: categorical whitelist
+- Defaults to `{"CS"}` so a "stock screen" excludes ETFs, leveraged
+  products, foreign ADRs, warrants, and units by default. Override
+  with `--include-types CS,ETF` etc.
+- Massive types observed in production: `CS` (common stock), `ETF`
+  (exchange-traded fund), `ETN` (exchange-traded note), `ETV` (ETV
+  variant), `ADRC` (foreign ADR), `PFD` (preferred), `WARRANT`,
+  `RIGHT`, `UNIT`, `FUND`.
+- Names that fail to enrich (no detail row) are dropped under a
+  CS-only filter, since we can't verify they're common stock.
+
+### Enrichment pass: order-of-operations rule
+
+The type, sector, and market_cap filters depend on per-ticker detail
+calls. Run those AFTER the cheap price / volume / momentum filters have
+narrowed the working set from ~12,000 names to 300-2,000. A 16-worker
+ThreadPoolExecutor handles a 345-name enrichment in <30s on Business
+tier. Doing it before momentum trims would burn ~12,000 calls on names
+you're about to drop anyway.
+
 ### Market cap (`min_mcap`, `max_mcap`)
 
 - Field: `market_cap` on `/v3/reference/tickers/{ticker}` (one call
@@ -60,7 +88,19 @@ z-score sign correction.
   (602x, 603x), Pharmaceuticals (283x), Energy (291x, 131x),
   Healthcare (806x), Industrials (357x, 371x).
 
-### Momentum (`mom_3m`, `mom_6m`, `mom_12m`)
+### Week return (`max_week_return`)
+
+- Field: derived from daily close-to-close, 5 trading days back.
+- Direction: lower = better for mean-reversion / pullback screens.
+- Operator: zero threshold uses strict `<` (exclude flat names — a
+  pullback screen wants names that moved down, not names that didn't
+  move); any negative threshold uses inclusive `<=` so the
+  user-intuitive reading of `--max-week-return -0.05` ("down 5% or
+  more") includes the exact -5.0% case.
+- Threshold examples: `0.0` = any pullback; `-0.05` = down 5%+;
+  `-0.10` = down 10%+ (deep dip).
+
+### Momentum (`min_mom_3m`, `mom_6m`, `mom_12m`)
 
 - Field: derived from daily close-to-close. 63 trading days back =
   3M, 126 = 6M, 252 = 12M.
@@ -108,21 +148,24 @@ The reference implementation runs this order, top-down:
 
 1. `active=true` (free, on the list endpoint)
 2. `market=stocks` (free)
-3. `type=CS` (free, common stock only)
-4. `primary_exchange in {XNAS, XNYS, ARCX}` (free, drops OTC and
+3. `primary_exchange in {XNAS, XNYS, ARCX}` (free, drops OTC and
    foreign listings)
-5. `min_mcap` (one ticker-details call per name, or bulk via
-   grouped aggs)
-6. `mom_3m_top_quartile` (one grouped-aggs call for today + one for
-   T-63; computed on the surviving set)
-7. `ocf_yield_min` (one financials call per surviving name)
-8. `opt_adv_min` (one contracts-list call per surviving name; skipped
+4. `min_price`, `min_adv`, `mom_3m`, `max_week_return` (one
+   grouped-aggs call per anchor date, computed in-memory)
+5. **Enrichment pass**: parallel per-ticker `/v3/reference/tickers/{T}`
+   for every survivor. Populates `type`, `sic_code`, `market_cap`,
+   `name`.
+6. `include_types` (default `CS`, applied to enriched survivors)
+7. `min_mcap` (applied to enriched survivors; on grouped path this
+   filter only runs after the enrichment pass)
+8. `ocf_yield_min` (one financials call per surviving name)
+9. `opt_adv_min` (one contracts-list call per surviving name; skipped
    without Options Developer)
 
-Steps 7 and 8 are the expensive ones. Putting market cap and momentum
-before them shrinks the working set 10x typically. The free-tier
-on-ramp uses a 100-name curated seed to skip the expensive market-cap
-fan-out entirely.
+Steps 5 and 8 are the expensive ones. Putting price / volume / momentum
+before them shrinks the working set 10x typically (12k -> ~300-1k).
+The free-tier on-ramp uses a 100-name curated seed to skip the
+expensive market-cap fan-out entirely.
 
 ## Adding a new filter
 
@@ -144,14 +187,18 @@ The reference CLI accepts these flags:
 ```
 --min-mcap 10e9              # large-cap floor
 --max-mcap 100e9             # mid-cap ceiling
+--min-price 20               # last close >= $20
+--min-adv 400000             # 20d avg daily volume >= 400k shares
 --include-sectors Semiconductors,Software
 --exclude-sectors Banking
+--include-types CS           # default 'CS'; pass CS,ETF to keep ETFs
 --mom-3m-top-quartile        # top 25% by 3M momentum
---mom-3m-min 0.10            # >10% 3M momentum
+--min-mom-3m 0.10            # >=10% 3M momentum (canonical)
+--max-week-return 0.0        # 5d return < 0 (--max-week-return -0.05 uses <=)
 --ocf-yield-min 0.03         # >3% operating CF yield
 --opt-adv-min 50000          # 50k+ contracts ADV (requires options)
---candidate-source curated   # 'curated' (free-tier seed) or 'reference' (full pool)
---candidate-cap 100          # cap on candidate pool size
+--candidate-source curated   # 'curated' / 'reference' / 'grouped'
+--candidate-cap 100          # cap on candidate pool size (curated/reference only)
 ```
 
 Default chain when no flags are passed:
