@@ -50,13 +50,13 @@ for free fallbacks where they work.
 
 ## Status
 
-Ten workflow skills are built end-to-end, each verified against
+Eleven workflow skills are built end-to-end, each verified against
 real Massive API data with both layers shipped (canonical JSON + rendered
 output). Three foundation skills capture the REST, flat-files, and
 WebSocket patterns the suite shares; all three foundations have been
 exercised against the live API, and two surfaced real entitlement gaps
 that are now documented as workarounds (see flat-files in factor-research
-and channel-entitlement in portfolio-mark). Four more workflow skills are
+and channel-entitlement in portfolio-mark). Three more workflow skills are
 designed but not yet implemented; contributions welcome.
 
 | Status | Skill | Validated against |
@@ -71,7 +71,8 @@ designed but not yet implemented; contributions welcome.
 | Built | `portfolio-mark` (delayed + live) | 7-position sample book, WebSocket validated |
 | Built | `crypto-vol-scanner` | BTC/ETH/SOL + 7 alts, cross-exchange basis |
 | Built | `event-study` (single + cross-section + aggregate) | Mega-cap tech earnings, n=20 trailing 4q |
-| Designed | The other 4 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
+| Built | `valuation-sanity-check` | NVDA $250 target vs semi peer set |
+| Designed | The other 3 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -125,7 +126,7 @@ plan each skill needs.
 |---|---|---|
 | [`earnings-drilldown`](skills/earnings-drilldown) | Brief a print with filings, estimates, price action, and IV crush in one pull | **Built** (AAPL + NVDA verified) |
 | [`pitch-comps`](skills/pitch-comps) | Build a comp set with live EV/EBITDA, P/E, growth, plus regression-adjusted multiples | **Built** (CRM verified) |
-| [`valuation-sanity-check`](skills/valuation-sanity-check) | Cross-check an analyst model against current marks before the meeting | Designed |
+| [`valuation-sanity-check`](skills/valuation-sanity-check) | Stress-test an analyst's target/growth/margin assumptions against peer-distribution bands plus reverse-DCF implied CAGR | **Built** |
 
 ### Risk and operations
 
