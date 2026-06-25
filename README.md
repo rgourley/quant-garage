@@ -50,13 +50,13 @@ for free fallbacks where they work.
 
 ## Status
 
-Nine workflow skills are built end-to-end, each verified against
+Ten workflow skills are built end-to-end, each verified against
 real Massive API data with both layers shipped (canonical JSON + rendered
 output). Three foundation skills capture the REST, flat-files, and
 WebSocket patterns the suite shares; all three foundations have been
 exercised against the live API, and two surfaced real entitlement gaps
 that are now documented as workarounds (see flat-files in factor-research
-and channel-entitlement in portfolio-mark). Five more workflow skills are
+and channel-entitlement in portfolio-mark). Four more workflow skills are
 designed but not yet implemented; contributions welcome.
 
 | Status | Skill | Validated against |
@@ -64,13 +64,14 @@ designed but not yet implemented; contributions welcome.
 | Built | `earnings-drilldown` (Tier A + Tier B) | AAPL + NVDA live |
 | Built | `corp-actions-reconciler` | 4 real splits (AAPL/GOOGL/NVDA/TSLA) |
 | Built | `options-flow` | Live OPRA tape |
-| Built | `universe-builder` | Top-100 + concentration check |
+| Built | `universe-builder` | Top-100 + concentration + ETF filter |
 | Built | `pitch-comps` | CRM software comp set |
 | Built | `factor-research` | 5y × top-500, 4 factors |
 | Built | `news-scanner` | Today's NVDA/TSLA/AAPL news |
 | Built | `portfolio-mark` (delayed + live) | 7-position sample book, WebSocket validated |
 | Built | `crypto-vol-scanner` | BTC/ETH/SOL + 7 alts, cross-exchange basis |
-| Designed | The other 5 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
+| Built | `event-study` (single + cross-section + aggregate) | Mega-cap tech earnings, n=20 trailing 4q |
+| Designed | The other 4 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -115,7 +116,7 @@ plan each skill needs.
 | [`options-flow`](skills/options-flow) | Surface unusual activity, large prints, IV crush around catalysts | **Built** |
 | [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, novelty, and price action on the same surface | **Built** |
 | [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange basis, realized-vol spikes, and 24h move z-scores in crypto | **Built** |
-| [`event-study`](skills/event-study) | Pull price and volume behavior around earnings, FDA, M&A windows | Designed |
+| [`event-study`](skills/event-study) | Abnormal returns (AR, CAR) with t-stats around earnings, dividends, or volume spikes — single event, cross-section, or aggregate | **Built** |
 | [`backtest-data-prep`](skills/backtest-data-prep) | Clean OHLCV with corporate-action adjustments and survivorship handling | Designed |
 
 ### Banker workflows
