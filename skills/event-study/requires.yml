@@ -1,0 +1,72 @@
+name: event-study
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Full fidelity (with Benzinga Earnings)"
+    needs:
+      - product: stocks
+        tier: starter
+      - product: benzinga_earnings
+        tier: addon
+    enables: [true_print_date, surprise_pct, surprise_reaction_correlation, beat_miss_bucketing]
+  B:
+    label: "Degraded (stocks only)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [reaction_sign_bucketing, dividend_changes, large_volume_spike]
+    loses: [surprise_pct, surprise_reaction_correlation, beat_miss_bucketing]
+modes:
+  single:
+    label: "Single ticker, single event"
+    output_shape: note
+    needs:
+      - product: stocks
+        tier: starter
+  cross_section:
+    label: "Many tickers, one event period"
+    output_shape: table
+    needs:
+      - product: stocks
+        tier: starter
+  aggregate:
+    label: "Many tickers, many events"
+    output_shape: summary
+    needs:
+      - product: stocks
+        tier: starter
+event_classes:
+  - earnings (Benzinga preferred, SEC EDGAR 8-K item 2.02 fallback)
+  - dividend_changes (cash amount diff vs prior payment >= 1%)
+  - large_volume_spike (volume > 3 sigma trailing 30d, 5d cooldown)
+endpoints:
+  - GET /benzinga/v1/earnings (Tier A only)
+  - GET https://data.sec.gov/submissions/CIK{cik}.json (Tier B fallback; free)
+  - GET /v3/reference/dividends (dividend_changes class)
+  - GET /v3/reference/tickers/{ticker} (CIK lookup for EDGAR fallback)
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /v2/aggs/ticker/SPY/range/1/day/{from}/{to}
+notes: |
+  Output mode is hybrid because input shape picks between three rendered
+  forms (note, table, summary) while the JSON contract stays unified
+  under a `mode` discriminant. The cross_section and aggregate modes
+  generalize earnings-drilldown's post-earnings-drift logic to any event
+  class. The single mode overlaps with earnings-drilldown for earnings
+  events but is the only path for dividend_changes and
+  large_volume_spike (which earnings-drilldown does not cover).
+
+  T-stat-vs-history requires n>=8 prior events for the same name to be
+  considered reliable. Below that, the skill emits the t-stat with a
+  "underpowered" marker rather than hiding the number. See
+  references/t-stat-significance.md for the threshold rationale.
+fallbacks:
+  - earnings-drilldown

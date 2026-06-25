@@ -1,0 +1,226 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "event-study output",
+  "description": "Canonical structured output for the event-study skill. Layer 1 (the data); Layer 2 (rendered note/table/summary) is described in references/rendering.md. The shape is discriminated by `mode`: single, cross_section, or aggregate. All three carry the same per-subject blocks; the difference is whether the rendering layer renders one subject (single), a row per subject (cross_section), or only the aggregate (aggregate).",
+  "type": "object",
+  "required": ["mode", "tier", "event_class", "subjects", "sources"],
+  "properties": {
+    "mode": {
+      "type": "string",
+      "enum": ["single", "cross_section", "aggregate"],
+      "description": "Discriminant. Picks the rendered output shape. single = 1 ticker, 1 event; cross_section = N tickers, 1 event period; aggregate = N tickers, all events in window."
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "Data fidelity for the event class. A = Benzinga earnings (true print date + surprise %); B = stocks-only fallback (8-K acceptance date, no surprise). Tier is meaningful only for the earnings class; dividend_changes and large_volume_spike are tier-agnostic and report A."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats when tier < A. Empty array on Tier A."
+    },
+    "event_class": {
+      "type": "string",
+      "enum": ["earnings", "dividend_changes", "large_volume_spike"],
+      "description": "Which event class was queried."
+    },
+    "model": {
+      "type": "string",
+      "enum": ["spy"],
+      "description": "Benchmark model used to compute abnormal returns. v1 supports `spy` only (AR = raw - SPY); v2 will add `capm` (per-name beta). Reserved here so consumers don't break when capm ships."
+    },
+    "take": {
+      "type": "string",
+      "description": "One-sentence trade-relevant conclusion. Surfaced from the strongest signal across the analysis (regime shift, significant t-stat, strong surprise-vs-reaction correlation)."
+    },
+    "subjects": {
+      "type": "array",
+      "description": "One entry per (ticker, event) pair. In single mode this has exactly 1 entry. In cross_section it has N entries (1 per ticker for the chosen period). In aggregate it has N*K entries (all matching events across all tickers).",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "event_date", "event_window_returns", "abnormal_returns"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "event_date": {
+            "type": "string",
+            "format": "date",
+            "description": "T0 calendar date. For AMC events, T0 is the date of the press release (returns are measured from that day's close); the close used at T0 is the close on the day BEFORE if the event was BMO (so T+1 captures the open-day reaction)."
+          },
+          "event_session": {
+            "type": "string",
+            "enum": ["BMO", "AMC", "DMH", "unknown"],
+            "description": "Event timing relative to market hours. Drives which trading day is T0 in the return computation."
+          },
+          "event_metadata": {
+            "type": "object",
+            "description": "Class-specific metadata. For earnings: fiscal_period, fiscal_year, surprise_eps_pct, estimated_eps. For dividend_changes: prior_amount, new_amount, change_pct. For large_volume_spike: volume, trailing_30d_avg, z_score.",
+            "additionalProperties": true
+          },
+          "event_window_returns": {
+            "type": "object",
+            "description": "Raw and SPY returns at each horizon, anchored at T0 close. T0 close is the ticker's close on the trading day BEFORE T+1 (i.e. the last close that did NOT yet reflect the event). For AMC events the trading day of the press release is T0; for BMO events the trading day BEFORE is T0.",
+            "required": ["t0_close", "horizons"],
+            "properties": {
+              "t0_close": { "type": "number" },
+              "spy_t0_close": { "type": ["number", "null"] },
+              "horizons": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["horizon", "date", "raw_return_pct", "spy_return_pct"],
+                  "properties": {
+                    "horizon": {
+                      "type": "string",
+                      "enum": ["T+1", "T+3", "T+5"],
+                      "description": "Trading days after T0."
+                    },
+                    "date": { "type": "string", "format": "date" },
+                    "close": { "type": "number" },
+                    "raw_return_pct": {
+                      "type": "number",
+                      "description": "(close_at_horizon / t0_close) - 1"
+                    },
+                    "spy_close": { "type": ["number", "null"] },
+                    "spy_return_pct": { "type": ["number", "null"] }
+                  }
+                }
+              }
+            }
+          },
+          "abnormal_returns": {
+            "type": "object",
+            "description": "Per-horizon abnormal return = raw - spy. CAR is the cumulative abnormal return from T+1 through the horizon (for a daily model with non-compounded sum, CAR(T+5) == AR(T+5) here; the schema names the field CAR for forward compatibility with multi-day-window event types).",
+            "properties": {
+              "ar_t1_pct": { "type": ["number", "null"] },
+              "ar_t3_pct": { "type": ["number", "null"] },
+              "ar_t5_pct": { "type": ["number", "null"] },
+              "car_t5_pct": {
+                "type": ["number", "null"],
+                "description": "Cumulative abnormal return through T+5. For the SPY model with daily close-to-close measurement this equals ar_t5_pct; preserved as its own field so a v2 multi-day window doesn't break consumers."
+              }
+            }
+          },
+          "t_stat_vs_history": {
+            "type": ["object", "null"],
+            "description": "For this name, compare this event's T+5 CAR to the distribution of prior events of the same class. Null when the name has <8 prior events (sample too small for the t-test to be reliable; the rendered output still shows the raw comparison but marks it 'underpowered').",
+            "properties": {
+              "prior_n": { "type": "integer" },
+              "prior_mean_t5_car_pct": { "type": "number" },
+              "prior_std_t5_car_pct": { "type": "number" },
+              "this_event_t5_car_pct": { "type": "number" },
+              "z_score": {
+                "type": "number",
+                "description": "(this_event_t5_car - prior_mean) / prior_std. Reported even at small n; the `underpowered` flag warns the reader."
+              },
+              "percentile": {
+                "type": "number",
+                "description": "Percentile of this event within the prior distribution (0.0 to 1.0)."
+              },
+              "underpowered": {
+                "type": "boolean",
+                "description": "True when prior_n < 8. The number is still emitted so the reader can judge; the flag prevents action on a 4-observation distribution."
+              },
+              "direction_concurrence": {
+                "type": ["string", "null"],
+                "description": "For earnings class only: 'X/N' count of prior events where the sign of the abnormal return matched the sign of the surprise. e.g. '5/8'. Null for classes without a direction signal."
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "description": "Cross-sectional and aggregate statistics. Null in single mode. Populated in cross_section and aggregate.",
+      "properties": {
+        "n_subjects": { "type": "integer" },
+        "n_tickers": { "type": "integer" },
+        "mean_t5_car_pct": { "type": "number" },
+        "median_t5_car_pct": { "type": "number" },
+        "std_t5_car_pct": { "type": "number" },
+        "t_stat_avg_vs_zero": {
+          "type": "number",
+          "description": "mean / (std / sqrt(n)). Tests whether the average CAR across events is reliably non-zero."
+        },
+        "significant": {
+          "type": "boolean",
+          "description": "True when |t_stat_avg_vs_zero| > 2.0 AND n_subjects >= 8."
+        },
+        "horizon_breakdown": {
+          "type": "array",
+          "description": "Aggregate stats at each horizon (T+1, T+3, T+5). Used in aggregate mode rendering.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "horizon": { "type": "string" },
+              "mean_ar_pct": { "type": "number" },
+              "median_ar_pct": { "type": "number" },
+              "t_stat": { "type": "number" },
+              "n": { "type": "integer" },
+              "significant": { "type": "boolean" }
+            }
+          }
+        },
+        "percentiles": {
+          "type": "object",
+          "description": "Distribution percentiles of T+5 CARs across the cross-section.",
+          "properties": {
+            "p10_pct": { "type": "number" },
+            "p25_pct": { "type": "number" },
+            "p50_pct": { "type": "number" },
+            "p75_pct": { "type": "number" },
+            "p90_pct": { "type": "number" }
+          }
+        },
+        "surprise_reaction_correlation": {
+          "type": ["object", "null"],
+          "description": "For earnings class on Tier A only: Pearson correlation between surprise_eps_pct and ar_t5_pct across the cross-section. Null for other classes or Tier B (no surprise data).",
+          "properties": {
+            "rho": { "type": "number" },
+            "n": { "type": "integer" },
+            "r_squared": { "type": "number" }
+          }
+        },
+        "regime_check": {
+          "type": ["object", "null"],
+          "description": "Only populated in aggregate mode when n_subjects >= 8. Compares the most-recent 4 events' avg CAR to the full window mean.",
+          "properties": {
+            "recent_n": { "type": "integer" },
+            "recent_mean_t5_car_pct": { "type": "number" },
+            "full_window_mean_t5_car_pct": { "type": "number" },
+            "delta_pp": { "type": "number" },
+            "regime_shift_flag": {
+              "type": "boolean",
+              "description": "True when |recent_mean - full_mean| > 1 standard error of the full mean."
+            }
+          }
+        }
+      }
+    },
+    "window": {
+      "type": ["object", "null"],
+      "description": "The query window. Populated in cross_section (single period) and aggregate (date range).",
+      "properties": {
+        "period_label": {
+          "type": ["string", "null"],
+          "description": "User-supplied label like 'Q1 2026' or 'most-recent-quarter'. Cross-section only."
+        },
+        "from_date": { "type": ["string", "null"], "format": "date" },
+        "to_date": { "type": ["string", "null"], "format": "date" }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
