@@ -12,7 +12,7 @@ bottom of this file; the table at the top is the running scorecard.
   script that hasn't been migrated.
 - `[x]` Closed. Fix landed in every affected script, verified.
 
-**Last updated:** 2026-06-26
+**Last updated:** 2026-06-26 (L2 closed; N1 dismissed after live probe)
 
 ---
 
@@ -23,7 +23,7 @@ bottom of this file; the table at the top is the running scorecard.
 | ID | Severity | Status | Affects | Notes |
 |---|---|---|---|---|
 | L1 | Crit | `[ ]` | event-study | Non-functional out of the box; returns "No events matched" in earnings and volume-spike modes |
-| L2 | Crit | `[ ]` | backtest-data-prep | `pyarrow` missing from `requirements.txt`; parquet write crashes |
+| L2 | Crit | `[x]` | backtest-data-prep | Closed by commit adding `pyarrow>=15.0` to `requirements.txt` |
 | L3 | High | `[~]` | earnings-drilldown (Tier B) | Retry exists in `MassiveClient`; applied to the 2 migrated scripts. Other 14 scripts unchanged |
 
 ### Critical (corrupts output numbers)
@@ -92,7 +92,7 @@ These weren't in the original audit but surfaced during the foundation refactor:
 
 | ID | Severity | Notes |
 |---|---|---|
-| N1 | High (suspected Critical) | `run-aapl-tier-b.py` reads SEC EDGAR `acceptanceDateTime` as UTC. SEC docs suggest it's Eastern. If true, every AMC/BMO session classification in earnings-drilldown is off by 4-5 hours. Worth verifying against a known-AMC AAPL print before fixing. |
+| N1 | Dismissed | **Resolved 2026-06-26 by direct probe.** SEC EDGAR's `acceptanceDateTime` field IS UTC. The `Z` suffix is the explicit ISO 8601 UTC marker. Verified against AAPL's last 6 earnings 8-Ks: every acceptance time interpreted as UTC lands at exactly 16:30 ET (AAPL's standard print time). Internally consistent across DST: 20:30Z in EDT months (= 16:30 EDT), 21:30Z in EST months (= 16:30 EST). The script's existing UTC interpretation is correct. The migration subagent's concern was wrong. |
 | N2 | Medium | `run-aapl-tier-b.py` uses `lastQuote.p` (quote-mid) for spot price, bypassing `lastTrade`. `resolve_price()` doesn't cover lastQuote. Decide whether to extend the chain or keep the inline read |
 | N3 | Cosmetic | `utcnow_iso()` emits `+00:00`; some scripts normalized to `Z`. JSON consumers regex-matching `Z` would now miss |
 
