@@ -50,16 +50,16 @@ for free fallbacks where they work.
 
 ## Status
 
-Twelve workflow skills are built end-to-end, each verified against
+Thirteen workflow skills are built end-to-end, each verified against
 real Massive API data with both layers shipped (canonical JSON + rendered
 output). Three foundation skills capture the REST, flat-files, and
 WebSocket patterns the suite shares; all three foundations have been
 exercised against the live API, and two surfaced real entitlement gaps
 that are now documented as workarounds (see flat-files in factor-research
 and channel-entitlement in portfolio-mark). All five output modes
-(note, stream, table, exception-report, hybrid, dataset) now have
-working templates. Two more workflow skills are designed but not yet
-implemented; contributions welcome.
+(note, stream, table, exception-report, hybrid, dataset) have working
+templates. One more workflow skill is designed but not yet implemented;
+contributions welcome.
 
 | Status | Skill | Validated against |
 |---|---|---|
@@ -75,7 +75,8 @@ implemented; contributions welcome.
 | Built | `event-study` (single + cross-section + aggregate) | Mega-cap tech earnings, n=20 trailing 4q |
 | Built | `valuation-sanity-check` | NVDA $250 target vs semi peer set |
 | Built | `backtest-data-prep` | Top-100 × 4y window, parquet output, 18 splits applied |
-| Designed | The other 2 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
+| Built | `best-ex-check` | 20-fill TCA, 8 seeded violations caught, microsecond NBBO via REST |
+| Designed | The other 1 | See [PLAN-MATRIX.md](./PLAN-MATRIX.md) |
 
 ## Two ways to use these
 
@@ -137,7 +138,7 @@ plan each skill needs.
 |---|---|---|
 | [`portfolio-mark`](skills/portfolio-mark) | Mark a book to last trade with a documented fallback chain (delayed REST + live WebSocket) | **Built** |
 | [`corp-actions-reconciler`](skills/corp-actions-reconciler) | Catch splits, dividends, and spinoffs against a position file before they break P&L | **Built** |
-| [`best-ex-check`](skills/best-ex-check) | TCA an execution against NBBO at trade time | Designed |
+| [`best-ex-check`](skills/best-ex-check) | TCA against NBBO at trade time: crossed-spread, off-NBBO, VWAP slippage, adverse selection | **Built** |
 | [`t+1-settlement-prep`](skills/t+1-settlement-prep) | Walk a settlement calendar against a position file | Designed |
 
 ## Setup
