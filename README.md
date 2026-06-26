@@ -1,9 +1,9 @@
-# finance-playbook
+# quant-garage
 
-![finance-playbook](./assets/og.png)
+![quant-garage](./assets/og.png)
 
-**Quant and equity research workflows packaged as Claude skills. The
-analyst methodology is the product.**
+**Built in the garage, not the trading floor. Quant and equity research
+workflows packaged as Claude skills, with the analyst methodology baked in.**
 
 Anyone can pull a stock price. The hard part is the analysis on top:
 implied-vs-realized move with the right historical analog, post-earnings
@@ -14,7 +14,9 @@ peer baskets that mean something (NVDA → AMD/AVGO/TSM, not SIC's IBM/HPE).
 Each skill encodes a workflow a real analyst, trader, or PM already runs
 manually. The methodology references inside each skill (statistical
 methods, sample-size rules, base rates, edge cases) are where the IP
-lives. The Massive API just provides the inputs.
+lives. The Massive API just provides the inputs. This is an analyst
+workflow framework, not an alpha factory: structurally honest about
+sample sizes, statistical limits, and what the takes do and don't prove.
 
 **Use them two ways.** Drop into Claude Code to run a skill in chat
 ("preview NVDA earnings", "reconcile my positions", "screen the universe
@@ -147,7 +149,7 @@ plan each skill needs.
    tier runs five of the skills end to end. Paid plans start at $29.
 2. Clone into your Claude Code skills directory:
    ```bash
-   git clone https://github.com/rgourley/finance-playbook.git ~/.claude/skills/finance-playbook
+   git clone https://github.com/rgourley/quant-garage.git ~/.claude/skills/quant-garage
    ```
 3. Set the key:
    ```bash
@@ -161,8 +163,8 @@ plan each skill needs.
 This is the one skill that's actually implemented. To run it directly:
 
 ```bash
-git clone https://github.com/rgourley/finance-playbook.git
-cd finance-playbook
+git clone https://github.com/rgourley/quant-garage.git
+cd quant-garage
 pip install -r requirements.txt
 export MASSIVE_API_KEY=your_key_here
 python3 examples/run-aapl-tier-b.py    # AAPL preview, Tier B (free SEC EDGAR + Stocks Starter)

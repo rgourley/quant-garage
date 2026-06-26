@@ -1,5 +1,5 @@
 {
-  "name": "finance-playbook",
+  "name": "quant-garage",
   "version": "0.1.0",
   "description": "Claude Code skills for grounded market data workflows on the Massive API",
   "type": "module",
