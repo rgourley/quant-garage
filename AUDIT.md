@@ -12,7 +12,7 @@ bottom of this file; the table at the top is the running scorecard.
   script that hasn't been migrated.
 - `[x]` Closed. Fix landed in every affected script, verified.
 
-**Last updated:** 2026-06-26 (batch 1 migration: 7 of 16 scripts now on lib.quant_garage)
+**Last updated:** 2026-06-26 (batch 2 migration: 11 of 16 scripts now on lib.quant_garage; M5 and M6 closed)
 
 ---
 
@@ -24,7 +24,7 @@ bottom of this file; the table at the top is the running scorecard.
 |---|---|---|---|---|
 | L1 | Crit | `[x]` | event-study | Closed: SEC EDGAR 8-K item 2.02 fallback implemented (was stubbed `return []`); volume-spike mode-detection bug fixed (single ticker + window now resolves to aggregate, not single); script migrated to lib.quant_garage. Verified on AAPL single, mega-cap cross-section, mega-cap aggregate, and NVDA volume-spike. |
 | L2 | Crit | `[x]` | backtest-data-prep | Closed by commit adding `pyarrow>=15.0` to `requirements.txt` |
-| L3 | High | `[~]` | earnings-drilldown (Tier B) | Retry exists in `MassiveClient`; applied to 7 migrated scripts. Other 9 scripts unchanged |
+| L3 | High | `[~]` | earnings-drilldown (Tier B) | Retry exists in `MassiveClient`; applied to 11 migrated scripts. Other 5 scripts unchanged |
 
 ### Critical (corrupts output numbers)
 
@@ -47,8 +47,8 @@ bottom of this file; the table at the top is the running scorecard.
 
 | ID | Status | Affects | Resolution path |
 |---|---|---|---|
-| H1 | `[~]` | best-ex-check, news-scanner, portfolio-mark, earnings-drilldown | Fixed in `lib/quant_garage/timezones.py`; migrated to 7 scripts so far. Other 9 still use hardcoded UTC-4 |
-| H2 | `[~]` | most scripts | Fixed in `lib/quant_garage/as_of.py`; migrated to 7 scripts so far |
+| H1 | `[~]` | best-ex-check, news-scanner, portfolio-mark, earnings-drilldown | Fixed in `lib/quant_garage/timezones.py`; migrated to 11 scripts so far. Other 5 still use hardcoded UTC-4 |
+| H2 | `[~]` | most scripts | Fixed in `lib/quant_garage/as_of.py`; migrated to 11 scripts so far |
 | H3 | `[~]` | universe-builder, factor-research | `Universe.survivorship_mode` is derived from how the universe was built, not asserted by caller. Migration pending |
 | H4 | `[ ]` | pitch-comps | Min-n enforcement; SE/t-stat/CI on OLS; drop endogenous regressor |
 | H5 | `[ ]` | valuation, pitch-comps | Consistent D&A and operating-income annualization in shared lib |
@@ -66,10 +66,10 @@ bottom of this file; the table at the top is the running scorecard.
 | M2 | `[ ]` | best-ex-check | Use quotes endpoint for NBBO proxy; doc the bias direction correctly |
 | M3 | `[ ]` | corp-actions-reconciler | One consolidated break with final state per ticker |
 | M4 | `[ ]` | corp-actions-reconciler | Tolerance compare on fractional shares |
-| M5 | `[~]` | universe-builder | `lib/quant_garage/universe.py::top_quartile_threshold()` returns exact 75th percentile. Migration pending |
-| M6 | `[~]` | universe-builder | `lib/quant_garage/universe.py::concentration_z_score()` is the one definition. Migration pending |
+| M5 | `[x]` | universe-builder | Closed in batch-2 migration (commit `143b3f5`); script now uses `top_quartile_threshold()`. The `*0.75-1` indexing bug is gone |
+| M6 | `[x]` | universe-builder | Closed in batch-2 migration (commit `143b3f5`); script now uses `concentration_z_score()`. The single existing baseline path swapped cleanly (subagent reports no curated-vs-grouped-vs-reference divergence remained in current code) |
 | M7 | `[ ]` | portfolio-mark | Use streamed quote in live mode; skip REST round-trip |
-| M8 | `[~]` | most scripts | Per-call fetched_at via `MassiveClient.get()`; migrated to 7 scripts so far |
+| M8 | `[~]` | most scripts | Per-call fetched_at via `MassiveClient.get()`; migrated to 11 scripts so far |
 | M9 | `[ ]` | options-flow, crypto-vol-scanner, news-scanner | Add percentile/base-rate context on composite scores |
 | M10 | `[ ]` | earnings-drilldown, event-study (single mode) | Universe base rate for single-name skills |
 
@@ -79,7 +79,7 @@ bottom of this file; the table at the top is the running scorecard.
 |---|---|---|---|
 | D1 | `[ ]` | massive-flat-files | Document separate S3 access key + secret |
 | D2 | `[ ]` | massive-websockets | Align docs to actual WS status enum |
-| D3 | `[~]` | most scripts | Client uses `api.polygon.io` exclusively, citations match in 7 migrated scripts |
+| D3 | `[~]` | most scripts | Client uses `api.polygon.io` exclusively, citations match in 11 migrated scripts |
 | D4 | `[~]` | massive-api-patterns | `lib/quant_garage/snapshot.py` uses correct paths; foundation doc still wrong |
 | D5 | `[~]` | portfolio-mark | Chain is 4 steps in `resolve_price`; foundation doc still says 5 |
 | D6 | `[~]` | earnings-drilldown, pitch-comps, options-flow, portfolio-mark, corp-actions | event-study EDGAR fallback implemented (was stubbed). Other scripts still claim documented behavior they don't deliver |
@@ -95,6 +95,7 @@ These weren't in the original audit but surfaced during the foundation refactor:
 | N1 | Dismissed | **Resolved 2026-06-26 by direct probe.** SEC EDGAR's `acceptanceDateTime` field IS UTC. The `Z` suffix is the explicit ISO 8601 UTC marker. Verified against AAPL's last 6 earnings 8-Ks: every acceptance time interpreted as UTC lands at exactly 16:30 ET (AAPL's standard print time). Internally consistent across DST: 20:30Z in EDT months (= 16:30 EDT), 21:30Z in EST months (= 16:30 EST). The script's existing UTC interpretation is correct. The migration subagent's concern was wrong. |
 | N2 | Medium | `run-aapl-tier-b.py` uses `lastQuote.p` (quote-mid) for spot price, bypassing `lastTrade`. `resolve_price()` doesn't cover lastQuote. Decide whether to extend the chain or keep the inline read |
 | N3 | Cosmetic | `utcnow_iso()` emits `+00:00`; some scripts normalized to `Z`. JSON consumers regex-matching `Z` would now miss |
+| N4 | Cosmetic | `run-pitch-comps.py` and `run-valuation-sanity-check.py` had a `ticker.fmv` step at the bottom of their snapshot fallback waterfalls that never executed (FMV is a separate stream-only event, not on v2 snapshot). Migration to `resolve_price()` silently drops this dead step. No behavioral change because it never returned non-None. Same family as D5 |
 
 ---
 
