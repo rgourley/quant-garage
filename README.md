@@ -70,14 +70,15 @@ with t-stats). Last month's run on mega-cap tech Q1 prints surfaced
 that the cross-section average is negative despite all five beating
 on EPS. Guidance is dominating headlines this regime.
 
-### Banking and research
+### Equity research and valuation
 
 **[`pitch-comps`](skills/pitch-comps)**
-You're a junior banker building a CRM pitch deck. You need the
-software comp set with multiples, growth, EBITDA margin, plus a
-regression-adjusted view that controls for the growth differential.
-Run it, get a table you can drop straight into the deck. The one-
-sentence read at the bottom is the take the MD wants on page two.
+You're a junior banker or an equity research analyst building a CRM
+comp set. You need the software peer group with multiples, growth,
+EBITDA margin, plus a regression-adjusted view that controls for the
+growth differential. Run it, get a table you can drop straight into
+the deck or the model. The one-sentence read at the bottom is the
+take the MD or PM wants on page two.
 
 **[`valuation-sanity-check`](skills/valuation-sanity-check)**
 The analyst on your team has a $250 NVDA target with assumed 28%
@@ -86,6 +87,8 @@ check? The tool runs the reverse-DCF at the current price and tells
 you what CAGR is actually priced in. When I ran it, the $250 target
 came back understated against the semi peer set, which was the
 opposite of what I expected.
+
+### Quant research and screening
 
 **[`universe-builder`](skills/universe-builder)**
 You want every US common stock above $20 with quarterly +10% momentum
