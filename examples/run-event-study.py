@@ -25,56 +25,57 @@ import os
 import sys
 import urllib.error
 import urllib.request
-from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage.timezones import utc_to_et
+
+# SEC EDGAR is NOT a Massive endpoint, so it stays on raw urllib with the
+# personal User-Agent required by SEC's fair-use policy.
 SEC_HEADERS = {"User-Agent": "Rob Gourley rgourley@gmail.com"}
-TODAY = date(2026, 6, 24)
+TODAY = today()
+
+client = MassiveClient()
 
 
 # -------- HTTP helpers --------
 
 
-def fetch(path: str) -> dict[str, Any]:
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
-def fetch_all(path: str) -> list[dict[str, Any]]:
+def fetch_all(path: str, params: dict[str, Any] | None = None) -> tuple[list[dict[str, Any]], str]:
+    """Collect every page from the Massive client and return (results, last_fetched_at)."""
     out: list[dict[str, Any]] = []
-    url = f"{BASE}{path}"
-    while url:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            doc = json.load(r)
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
+    last_fetched = utcnow_iso()
+    for page, fetched_at in client.paginate(path, params):
+        out.extend(page)
+        last_fetched = fetched_at
+    return out, last_fetched
 
 
 def fetch_sec(url: str) -> dict[str, Any]:
     req = urllib.request.Request(url, headers=SEC_HEADERS)
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
+
+
+# -------- Provenance tracking --------
+
+# Collects (endpoint, fetched_at, context) tuples as the script runs so the
+# sources[] block in the payload reflects actual call times (M8).
+_sources: list[dict[str, str]] = []
+
+
+def record_source(endpoint: str, fetched_at: str, context: str) -> None:
+    _sources.append({
+        "endpoint": endpoint,
+        "fetched_at": fetched_at,
+        "context": context,
+    })
 
 
 # -------- Stats helpers --------
@@ -165,9 +166,14 @@ def get_daily_aggs(ticker: str, from_date: str, to_date: str) -> dict[str, dict[
     if cache_key in _aggs_cache:
         return _aggs_cache[cache_key]
     print(f"  fetching daily aggs {ticker} {from_date}..{to_date}", file=sys.stderr)
-    rows = fetch_all(
-        f"/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}"
-        f"?adjusted=true&sort=asc&limit=50000"
+    rows, fetched_at = fetch_all(
+        f"/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}",
+        {"adjusted": "true", "sort": "asc", "limit": 50000},
+    )
+    record_source(
+        f"/v2/aggs/ticker/{ticker}/range/1/day/{from_date}/{to_date}",
+        fetched_at,
+        f"Daily closes for {ticker} ({from_date}..{to_date})",
     )
     out: dict[str, dict[str, Any]] = {}
     for a in rows:
@@ -198,24 +204,154 @@ def classify_session(time_str: str | None) -> str:
     return "DMH"
 
 
+def classify_session_from_utc(utc_iso: str) -> tuple[str, str]:
+    """Convert a UTC ISO timestamp (EDGAR acceptanceDateTime) to (ET_date, session_label).
+
+    Uses zoneinfo via utc_to_et so the AMC/BMO/Intraday boundaries land on the
+    correct ET clock year-round, including across DST transitions (H1).
+    """
+    iso = utc_iso
+    if iso.endswith("Z"):
+        iso = iso[:-1] + "+00:00"
+    dt_utc = datetime.fromisoformat(iso)
+    dt_et = utc_to_et(dt_utc)
+    et_date = dt_et.date().isoformat()
+    minutes = dt_et.hour * 60 + dt_et.minute
+    if minutes < 9 * 60 + 30:
+        return et_date, "BMO"
+    if minutes >= 16 * 60:
+        return et_date, "AMC"
+    return et_date, "DMH"
+
+
 # -------- Event resolvers --------
 
 
 _benzinga_cache: dict[str, list[dict[str, Any]]] = {}
+_edgar_cache: dict[str, list[dict[str, Any]]] = {}
+_cik_cache: dict[str, str | None] = {}
 
 
 def benzinga_earnings(ticker: str) -> list[dict[str, Any]]:
     if ticker in _benzinga_cache:
         return _benzinga_cache[ticker]
     print(f"  Benzinga earnings {ticker}", file=sys.stderr)
-    rows = fetch_all(
-        f"/benzinga/v1/earnings?ticker={ticker}&limit=40&order=desc"
-        f"&sort=date&date.lte={TODAY.isoformat()}"
-    )
+    try:
+        rows, fetched_at = fetch_all(
+            "/benzinga/v1/earnings",
+            {
+                "ticker": ticker,
+                "limit": 40,
+                "order": "desc",
+                "sort": "date",
+                "date.lte": TODAY.isoformat(),
+            },
+        )
+        record_source(
+            "/benzinga/v1/earnings?ticker={ticker}",
+            fetched_at,
+            f"Benzinga earnings history for {ticker}",
+        )
+    except Exception as e:
+        # Benzinga add-on may be missing on this key, or the endpoint may be
+        # transiently unavailable. Fall through to EDGAR rather than erroring
+        # out the entire study. The caller will switch to Tier B.
+        print(f"  Benzinga earnings {ticker}: {e}", file=sys.stderr)
+        rows = []
     # filter to confirmed past prints
     rows = [r for r in rows if r.get("date_status") != "projected"]
     _benzinga_cache[ticker] = rows
     return rows
+
+
+def get_cik(ticker: str) -> str | None:
+    """Pull the zero-padded 10-digit CIK for a ticker from Massive reference."""
+    if ticker in _cik_cache:
+        return _cik_cache[ticker]
+    try:
+        body, fetched_at = client.get(f"/v3/reference/tickers/{ticker}")
+        record_source(
+            f"/v3/reference/tickers/{ticker}",
+            fetched_at,
+            f"Ticker metadata for {ticker} (CIK lookup)",
+        )
+    except Exception as e:
+        print(f"  ticker reference {ticker}: {e}", file=sys.stderr)
+        _cik_cache[ticker] = None
+        return None
+    results = body.get("results") or {}
+    cik_raw = results.get("cik")
+    if not cik_raw:
+        _cik_cache[ticker] = None
+        return None
+    padded = str(cik_raw).zfill(10)
+    _cik_cache[ticker] = padded
+    return padded
+
+
+def edgar_earnings(ticker: str) -> list[dict[str, Any]]:
+    """Return earnings prints sourced from SEC EDGAR 8-K item 2.02 filings.
+
+    Output rows expose the same shape that resolve_earnings consumes
+    (date, time, fiscal_period, fiscal_year, company_name, eps_surprise_percent).
+    Surprise / estimates are unavailable from EDGAR alone, so those keys are
+    None and the resulting events are Tier B.
+    """
+    if ticker in _edgar_cache:
+        return _edgar_cache[ticker]
+    cik_padded = get_cik(ticker)
+    if not cik_padded:
+        _edgar_cache[ticker] = []
+        return []
+    print(f"  SEC EDGAR 8-Ks {ticker} (CIK {cik_padded})", file=sys.stderr)
+    sec_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+    try:
+        doc = fetch_sec(sec_url)
+        sec_fetched_at = utcnow_iso()
+        record_source(sec_url, sec_fetched_at, f"SEC EDGAR submissions for {ticker} (8-K item 2.02)")
+    except Exception as e:
+        print(f"  SEC EDGAR {ticker}: {e}", file=sys.stderr)
+        _edgar_cache[ticker] = []
+        return []
+    recent = (doc.get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    items_col = recent.get("items") or [""] * len(forms)
+    acc_col = recent.get("acceptanceDateTime") or [""] * len(forms)
+    company_name = doc.get("name")
+
+    out: list[dict[str, Any]] = []
+    for i, form in enumerate(forms):
+        if form != "8-K":
+            continue
+        items_list = [it.strip() for it in (items_col[i] or "").split(",")]
+        if "2.02" not in items_list:
+            continue
+        acc_dt = acc_col[i]
+        if not acc_dt:
+            continue
+        # EDGAR acceptanceDateTime is UTC; AAPL's last 6 prints verified at 16:30 ET
+        # (commit d47e67a notes this in AUDIT N1). Z suffix is implicit.
+        utc_iso = acc_dt if acc_dt.endswith("Z") else acc_dt + "Z"
+        et_date, session = classify_session_from_utc(utc_iso)
+        # Convert session ("BMO"/"AMC"/"DMH") into the HH:MM:SS bucket the
+        # classifier expects so the downstream renderer keeps a consistent shape.
+        time_str = {"BMO": "07:00:00", "AMC": "16:30:00", "DMH": "12:00:00"}[session]
+        out.append({
+            "date": et_date,
+            "time": time_str,
+            "date_status": "confirmed",
+            "company_name": company_name,
+            "fiscal_period": None,
+            "fiscal_year": None,
+            "eps_surprise_percent": None,
+            "estimated_eps": None,
+            "previous_eps": None,
+            "_source": "edgar",
+        })
+    # newest-first to match Benzinga's ordering
+    out.sort(key=lambda r: r["date"], reverse=True)
+    _edgar_cache[ticker] = out
+    return out
 
 
 def resolve_earnings(
@@ -223,15 +359,19 @@ def resolve_earnings(
     event_date: str | None = None,
     window: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
-    """Return a list of event tuples for the earnings class."""
+    """Return a list of event tuples for the earnings class.
+
+    Tier A path: Benzinga returns rows. Use surprise %, EPS estimates, etc.
+    Tier B path: Benzinga returns empty (key missing the add-on, or the
+    endpoint is briefly unavailable). Fall back to SEC EDGAR 8-K item 2.02
+    filings for print dates. No surprise data, no consensus EPS.
+    """
     rows = benzinga_earnings(ticker)
-    tier = "A" if rows and rows[0].get("eps_surprise_percent") is not None else "B"
-    # Fallback to EDGAR only when Benzinga returned nothing usable
+    tier = "A" if rows else "B"
     if not rows:
-        # In practice Benzinga is reliable for mega-caps; if we needed EDGAR
-        # the run-aapl-tier-b.py helper has the full path. For this skill's
-        # cross-section runs we assume Benzinga is available.
-        return []
+        rows = edgar_earnings(ticker)
+        if not rows:
+            return []
 
     out = []
     for r in rows:
@@ -269,9 +409,14 @@ def resolve_dividend_changes(
     window: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     print(f"  dividends {ticker}", file=sys.stderr)
-    rows = fetch_all(
-        f"/v3/reference/dividends?ticker={ticker}&limit=40"
-        f"&order=asc&sort=ex_dividend_date"
+    rows, fetched_at = fetch_all(
+        "/v3/reference/dividends",
+        {"ticker": ticker, "limit": 40, "order": "asc", "sort": "ex_dividend_date"},
+    )
+    record_source(
+        "/v3/reference/dividends?ticker={ticker}",
+        fetched_at,
+        f"Cash dividend history for {ticker}",
     )
     # Exclude special-cash dividends from the baseline
     regular = [
@@ -319,11 +464,13 @@ def resolve_volume_spike(
     window: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     # Pull a wide buffer for both volume history and the 30d trailing stats.
+    # The full-history pass (window=None) needs to span far enough back that
+    # downstream window-filtered queries find spikes. Default: 2 years.
     if window:
         from_d = (date.fromisoformat(window[0]) - timedelta(days=60)).isoformat()
-        to_d = window[1]
+        to_d = min(date.fromisoformat(window[1]), TODAY).isoformat()
     else:
-        from_d = (TODAY - timedelta(days=180)).isoformat()
+        from_d = (TODAY - timedelta(days=365 * 2)).isoformat()
         to_d = TODAY.isoformat()
     aggs = get_daily_aggs(ticker, from_d, to_d)
     dates_sorted = sorted(aggs.keys())
@@ -738,6 +885,8 @@ def event_label(event_class: str, meta: dict[str, Any]) -> str:
     if event_class == "earnings":
         fp = meta.get("fiscal_period", "?")
         fy = meta.get("fiscal_year", "?")
+        if fp is None and fy is None:
+            return "earnings"
         return f"{fp} FY{fy} earnings"
     if event_class == "dividend_changes":
         d = meta.get("change_direction", "change")
@@ -983,7 +1132,10 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         mode = "single" if len(tickers) == 1 else "cross_section"
         window_arg = None
     elif args.window:
-        mode = "aggregate" if len(tickers) > 1 else "single"
+        # Window mode: aggregate across whatever the resolver returns inside
+        # the window. Single ticker is still "aggregate" so the multi-event
+        # summary path runs; the renderer handles n_tickers=1 cleanly.
+        mode = "aggregate"
         a, b = args.window.split("..")
         window_arg = (a.strip(), b.strip())
     elif args.period:
@@ -1008,7 +1160,7 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         for e in full:
             tiers_seen.add(e.get("_tier", "A"))
 
-        if mode == "single":
+        if mode == "single" and args.event_date:
             chosen = [e for e in full if e["event_date"] == args.event_date]
         elif args.period and args.period == "most_recent":
             chosen = [full[-1]] if full else []
@@ -1109,32 +1261,6 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "to_date": window_arg[1],
         }
 
-    # Sources
-    sources = [
-        {
-            "endpoint": "/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "context": "Per-ticker daily closes for raw returns",
-        },
-        {
-            "endpoint": "/v2/aggs/ticker/SPY/range/1/day/{from}/{to}",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "context": "SPY closes for benchmark abnormal-return computation",
-        },
-    ]
-    if event_class == "earnings":
-        sources.append({
-            "endpoint": "/benzinga/v1/earnings?ticker={ticker}",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "context": "Press release date, time, surprise %, fiscal period",
-        })
-    elif event_class == "dividend_changes":
-        sources.append({
-            "endpoint": "/v3/reference/dividends?ticker={ticker}",
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "context": "Cash dividend history for change-detection resolver",
-        })
-
     payload = {
         "mode": mode,
         "tier": tier,
@@ -1145,7 +1271,7 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "subjects": subjects,
         "summary": summary,
         "window": window_block,
-        "sources": sources,
+        "sources": list(_sources),
     }
 
     if mode == "single":
@@ -1185,7 +1311,7 @@ def main() -> None:
     )
     with open(out_path, "w") as f:
         f.write(f"# event-study {payload['mode']} run\n\n")
-        f.write(f"Generated: {datetime.now(timezone.utc).isoformat()}\n")
+        f.write(f"Generated: {utcnow_iso()}\n")
         f.write(f"Event class: {payload['event_class']} · Tier: {payload['tier']}\n\n")
         f.write("## Layer 1: canonical JSON\n\n```json\n")
         f.write(json.dumps(payload, indent=2, default=str))
