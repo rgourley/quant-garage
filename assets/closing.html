@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>quant-garage · closing</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #0d0d0d;
+    --surface: #fafaf7;
+    --muted: #6b6b6b;
+    --border: #e8e5df;
+    --accent: #e84d1a;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    width: 1200px;
+    height: 630px;
+    background: var(--surface);
+    color: var(--ink);
+    font-family: "IBM Plex Sans Condensed", system-ui, sans-serif;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container {
+    width: 1200px;
+    height: 630px;
+    padding: 56px 64px 50px;
+    display: flex;
+    flex-direction: column;
+  }
+  /* Top branding bar */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--ink);
+  }
+  .brand {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+  .brand-name {
+    opacity: 0.85;
+  }
+  .brand-tag {
+    color: var(--accent);
+  }
+  .brand-url {
+    color: var(--muted);
+  }
+  /* Kicker */
+  .kicker {
+    margin-top: 56px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  /* Title */
+  .title {
+    margin-top: 18px;
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 96px;
+    font-weight: 700;
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    color: var(--ink);
+    max-width: 1080px;
+  }
+  .title .accent { color: var(--accent); }
+  /* Spacer */
+  .spacer { flex: 1; }
+  /* Stat row above hairline */
+  .stat-row {
+    display: flex;
+    align-items: baseline;
+    gap: 28px;
+    border-top: 1px solid var(--border);
+    padding-top: 26px;
+    margin-top: 16px;
+  }
+  .big-value {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 64px;
+    font-weight: 700;
+    color: var(--ink);
+    line-height: 1;
+    letter-spacing: -0.02em;
+  }
+  .meta {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 18px;
+    font-weight: 500;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: 6px;
+  }
+  /* Footer */
+  .footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 24px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 14px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <div class="topbar">
+    <div class="brand">
+      <span class="brand-name">QUANT GARAGE</span>
+      <span class="brand-tag">// ANALYST SKILLS</span>
+    </div>
+    <span class="brand-url">github.com/rgourley/quant-garage</span>
+  </div>
+
+  <div class="kicker">// MIT · OPEN SOURCE · v0.1</div>
+
+  <div class="title">Built in the garage,<br>not the trading<span class="accent"> floor.</span></div>
+
+  <div class="spacer"></div>
+
+  <div class="stat-row">
+    <div class="big-value">Fork it.</div>
+    <div class="meta">Ship it. Charge for it. Attribution welcome, not required.</div>
+  </div>
+
+  <div class="footer">
+    <span>QUANT GARAGE · 14 SKILLS · 5 OUTPUT MODES</span>
+    <span>GITHUB.COM/RGOURLEY/QUANT-GARAGE</span>
+  </div>
+
+</div>
+</body>
+</html>

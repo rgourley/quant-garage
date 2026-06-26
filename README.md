@@ -303,6 +303,8 @@ Not a production execution system. `portfolio-mark` reports marks;
 
 Not a regulated advisor. None of the outputs are investment advice.
 
+![Built in the garage, not the trading floor.](./assets/closing.png)
+
 ## License
 
 MIT. Fork it, ship it, charge for it. Attribution appreciated, not
