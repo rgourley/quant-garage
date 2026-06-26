@@ -134,6 +134,20 @@ def _val(node, key):
     return sub.get("value")
 
 
+def _first_non_null(rows, section, keys):
+    """Walk quarterly rows (most-recent first) and pull the first non-null
+    value for any of `keys` in `financials.<section>`. Returns (value, key).
+    """
+    for r in rows:
+        fin = r.get("financials") or {}
+        node = fin.get(section) or {}
+        for k in keys:
+            v = _val(node, k)
+            if v is not None:
+                return float(v), k
+    return None, None
+
+
 def compute_metrics_from_financials(rows):
     """Walk a list of quarterly rows and compute the TTM metrics we need.
 
@@ -149,7 +163,12 @@ def compute_metrics_from_financials(rows):
         "ebitda_ttm": None,
         "ebitda_margin": None,
         "diluted_eps_ttm": None,
+        # EV component pieces (C11). long_term_debt kept for back-compat.
         "long_term_debt": None,
+        "total_debt": None,
+        "cash_and_equivalents": None,
+        "operating_lease_liability": None,
+        "minority_interest": None,
     }
 
     # Walk rows; collect quarters that have a revenue value (drops 10-K rows)
@@ -213,15 +232,104 @@ def compute_metrics_from_financials(rows):
             out["revenue_growth_ttm"] = (
                 out["revenue_ttm"] / out["revenue_prior_ttm"]) - 1.0
 
+    # ----- C11 EV component sourcing -----
+    st_debt, _ = _first_non_null(rows, "balance_sheet",
+                                  ("short_term_debt", "current_debt",
+                                   "debt_current"))
+    lt_debt = out["long_term_debt"]
+    if lt_debt is not None and st_debt is not None:
+        out["total_debt"] = float(lt_debt) + float(st_debt)
+    elif lt_debt is not None:
+        out["total_debt"] = float(lt_debt)
+    elif st_debt is not None:
+        out["total_debt"] = float(st_debt)
+
+    cash, _ = _first_non_null(rows, "balance_sheet",
+                               ("cash_and_cash_equivalents",
+                                "cash_short_term_investments",
+                                "cash"))
+    if cash is not None:
+        out["cash_and_equivalents"] = float(cash)
+
+    lease_nc, _ = _first_non_null(rows, "balance_sheet",
+                                   ("operating_lease_liabilities_noncurrent",
+                                    "operating_lease_liability_noncurrent"))
+    lease_c, _ = _first_non_null(rows, "balance_sheet",
+                                  ("operating_lease_liabilities_current",
+                                   "operating_lease_liability_current"))
+    if lease_nc is not None or lease_c is not None:
+        out["operating_lease_liability"] = float(lease_nc or 0.0) + float(lease_c or 0.0)
+
+    minority, _ = _first_non_null(rows, "balance_sheet",
+                                   ("minority_interest",
+                                    "noncontrolling_interest",
+                                    "redeemable_noncontrolling_interest"))
+    if minority is not None:
+        out["minority_interest"] = float(minority)
+
     return out
 
 
-def compute_multiples(market_cap, price, metrics):
-    """Apply the multiples per references/multiples-methodology.md."""
-    ev = None
-    if market_cap is not None:
-        ev = float(market_cap) + float(metrics.get("long_term_debt") or 0.0)
+def compute_ev_components(market_cap, metrics, ticker):
+    """C11: EV = mcap + total_debt - cash + operating_leases + minority_interest.
+
+    Required: market_cap, total_debt, cash_and_equivalents. Missing any of
+    them raises NotImplementedError so we don't silently emit the old
+    overcounted EV. Optional fields default to 0 and populate
+    `missing_fields` for the audit trail.
+    """
+    if market_cap is None:
+        raise NotImplementedError(
+            f"{ticker}: market_cap required for EV but missing")
+    total_debt = metrics.get("total_debt")
+    if total_debt is None:
+        raise NotImplementedError(
+            f"{ticker}: total_debt required for EV but missing "
+            f"(checked short_term_debt + long_term_debt)")
+    cash = metrics.get("cash_and_equivalents")
+    if cash is None:
+        raise NotImplementedError(
+            f"{ticker}: cash_and_equivalents required for EV but missing "
+            f"(checked cash_and_cash_equivalents, cash_short_term_investments)")
+
+    missing = []
+    leases = metrics.get("operating_lease_liability")
+    if leases is None:
+        missing.append("operating_lease_liability")
+        leases = 0.0
+    minority = metrics.get("minority_interest")
+    if minority is None:
+        missing.append("minority_interest")
+        minority = 0.0
+
+    ev = (float(market_cap) + float(total_debt) - float(cash)
+           + float(leases) + float(minority))
+    return {
+        "mcap": float(market_cap),
+        "total_debt": float(total_debt),
+        "cash": float(cash),
+        "operating_leases": float(leases),
+        "minority": float(minority),
+        "ev": ev,
+        "missing_fields": missing,
+    }
+
+
+def compute_multiples(market_cap, price, metrics, ticker):
+    """Apply the multiples per references/multiples-methodology.md.
+
+    Returns (multiples, ev, ev_components). When EV cannot be computed
+    (required component missing), ev_components is None and EV-based
+    multiples are None.
+    """
     out = {"ev_sales": None, "ev_ebitda": None, "p_e": None}
+    ev_components = None
+    ev = None
+    try:
+        ev_components = compute_ev_components(market_cap, metrics, ticker)
+        ev = ev_components["ev"]
+    except NotImplementedError as exc:
+        print(f"  WARN: EV skipped for {ticker}: {exc}", file=sys.stderr)
     if ev is not None and metrics.get("revenue_ttm") and metrics["revenue_ttm"] > 0:
         out["ev_sales"] = ev / metrics["revenue_ttm"]
     if ev is not None and metrics.get("ebitda_ttm") and metrics["ebitda_ttm"] > 0:
@@ -230,7 +338,7 @@ def compute_multiples(market_cap, price, metrics):
             and metrics.get("diluted_eps_ttm")
             and metrics["diluted_eps_ttm"] > 0):
         out["p_e"] = price / metrics["diluted_eps_ttm"]
-    return out, ev
+    return out, ev, ev_components
 
 
 def assemble_name(ticker, sources):
@@ -245,6 +353,7 @@ def assemble_name(ticker, sources):
             "name": ticker,
             "market_cap": None,
             "enterprise_value": None,
+            "ev_components": None,
             "price": None,
             "sector": None,
             "multiples": {"ev_sales": None, "ev_ebitda": None, "p_e": None},
@@ -264,7 +373,7 @@ def assemble_name(ticker, sources):
 
     metrics = compute_metrics_from_financials(rows)
     mcap = det.get("market_cap")
-    multiples, ev = compute_multiples(mcap, price, metrics)
+    multiples, ev, ev_components = compute_multiples(mcap, price, metrics, ticker)
 
     if not rows or all(v is None for v in metrics.values()):
         data_status = "empty"
@@ -278,6 +387,7 @@ def assemble_name(ticker, sources):
         "name": det.get("name") or ticker,
         "market_cap": mcap,
         "enterprise_value": ev,
+        "ev_components": ev_components,
         "price": price,
         "sector": det.get("sic_description"),
         "multiples": multiples,

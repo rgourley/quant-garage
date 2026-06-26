@@ -127,6 +127,40 @@ def _val(node, key):
 
 # ----- Per-name metrics -----
 
+_SHARES_FIELDS = (
+    "weighted_average_diluted_shares_outstanding",
+    "weighted_average_basic_shares_outstanding",
+    "weighted_shares_outstanding",
+    "share_class_shares_outstanding",
+)
+
+
+def _pick_shares(rows):
+    """Walk quarterly rows and pick the first available shares value
+    using the documented fallback chain. Returns (value, source_field)."""
+    for field in _SHARES_FIELDS:
+        for r in rows:
+            fin = r.get("financials") or {}
+            inc = fin.get("income_statement") or {}
+            v = _val(inc, field)
+            if v is not None and float(v) > 0:
+                return float(v), field
+    return None, None
+
+
+def _first_non_null(rows, section, keys):
+    """Walk quarterly rows (most-recent first) and pull the first non-null
+    value for any of `keys` in `financials.<section>`. Returns (value, key)."""
+    for r in rows:
+        fin = r.get("financials") or {}
+        node = fin.get(section) or {}
+        for k in keys:
+            v = _val(node, k)
+            if v is not None:
+                return float(v), k
+    return None, None
+
+
 def compute_metrics_from_financials(rows):
     """TTM metrics from quarterly financials. Duplicates pitch-comps logic."""
     out = {
@@ -135,10 +169,19 @@ def compute_metrics_from_financials(rows):
         "revenue_growth_ttm": None,
         "operating_income_ttm": None,
         "depreciation_amortization_ttm": None,
+        "da_reported": False,  # C7: was the underlying D&A actually reported?
         "ebitda_ttm": None,
         "ebitda_margin": None,
         "diluted_eps_ttm": None,
+        # EV component pieces (C11). long_term_debt kept for back-compat.
         "long_term_debt": None,
+        "total_debt": None,
+        "cash_and_equivalents": None,
+        "operating_lease_liability": None,
+        "minority_interest": None,
+        # Share-count source (C12)
+        "shares_outstanding": None,
+        "shares_source": None,
     }
     rev_quarters = []
     for r in rows:
@@ -170,9 +213,14 @@ def compute_metrics_from_financials(rows):
         if len(da_vals) > 0:
             out["depreciation_amortization_ttm"] = float(sum(da_vals)
                                                           * (4.0 / len(da_vals)))
-        if out["operating_income_ttm"] is not None:
+            out["da_reported"] = True
+        if out["operating_income_ttm"] is not None and out["da_reported"]:
+            # C7: only compute EBITDA when D&A actually exists in the filings.
+            # Otherwise leaving it None signals "EBITDA not measurable" so
+            # downstream comparisons drop this name rather than silently
+            # comparing EBIT to peer EBITDA.
             out["ebitda_ttm"] = (out["operating_income_ttm"]
-                                  + (out["depreciation_amortization_ttm"] or 0.0))
+                                  + out["depreciation_amortization_ttm"])
             if out["revenue_ttm"] and out["revenue_ttm"] > 0:
                 out["ebitda_margin"] = out["ebitda_ttm"] / out["revenue_ttm"]
         eps_vals = [q["eps"] for q in ttm if q["eps"] is not None]
@@ -186,15 +234,116 @@ def compute_metrics_from_financials(rows):
                 and out["revenue_prior_ttm"] > 0):
             out["revenue_growth_ttm"] = (
                 out["revenue_ttm"] / out["revenue_prior_ttm"]) - 1.0
+
+    # ----- C11 EV component sourcing -----
+    # total_debt = short-term + long-term where both exist; long-term-only fallback.
+    st_debt, _ = _first_non_null(rows, "balance_sheet",
+                                  ("short_term_debt", "current_debt",
+                                   "debt_current"))
+    lt_debt = out["long_term_debt"]
+    if lt_debt is not None and st_debt is not None:
+        out["total_debt"] = float(lt_debt) + float(st_debt)
+    elif lt_debt is not None:
+        out["total_debt"] = float(lt_debt)
+    elif st_debt is not None:
+        out["total_debt"] = float(st_debt)
+
+    # cash_and_equivalents — required for EV
+    cash, _ = _first_non_null(rows, "balance_sheet",
+                               ("cash_and_cash_equivalents",
+                                "cash_short_term_investments",
+                                "cash"))
+    if cash is not None:
+        out["cash_and_equivalents"] = float(cash)
+
+    # operating_lease_liability — optional, current + noncurrent
+    lease_nc, _ = _first_non_null(rows, "balance_sheet",
+                                   ("operating_lease_liabilities_noncurrent",
+                                    "operating_lease_liability_noncurrent"))
+    lease_c, _ = _first_non_null(rows, "balance_sheet",
+                                  ("operating_lease_liabilities_current",
+                                   "operating_lease_liability_current"))
+    if lease_nc is not None or lease_c is not None:
+        out["operating_lease_liability"] = float(lease_nc or 0.0) + float(lease_c or 0.0)
+
+    # minority_interest — optional
+    minority, _ = _first_non_null(rows, "balance_sheet",
+                                   ("minority_interest",
+                                    "noncontrolling_interest",
+                                    "redeemable_noncontrolling_interest"))
+    if minority is not None:
+        out["minority_interest"] = float(minority)
+
+    # ----- C12 share count source -----
+    shares_val, shares_field = _pick_shares(rows)
+    if shares_val is not None:
+        out["shares_outstanding"] = shares_val
+        out["shares_source"] = shares_field
+
     return out
 
 
-def compute_multiples(market_cap, price, metrics):
-    """Apply the multiples per pitch-comps multiples-methodology."""
-    ev = None
-    if market_cap is not None:
-        ev = float(market_cap) + float(metrics.get("long_term_debt") or 0.0)
+def compute_ev_components(market_cap, metrics, ticker):
+    """C11: EV = mcap + total_debt - cash + operating_leases + minority_interest.
+
+    Required fields: market_cap, total_debt, cash_and_equivalents. Missing
+    any of them raises NotImplementedError so we don't silently emit the
+    old overcounted EV. Optional fields default to 0 and populate
+    `missing_fields` for the audit trail.
+    """
+    if market_cap is None:
+        raise NotImplementedError(
+            f"{ticker}: market_cap required for EV but missing")
+    total_debt = metrics.get("total_debt")
+    if total_debt is None:
+        raise NotImplementedError(
+            f"{ticker}: total_debt required for EV but missing "
+            f"(checked short_term_debt + long_term_debt)")
+    cash = metrics.get("cash_and_equivalents")
+    if cash is None:
+        raise NotImplementedError(
+            f"{ticker}: cash_and_equivalents required for EV but missing "
+            f"(checked cash_and_cash_equivalents, cash_short_term_investments)")
+
+    missing = []
+    leases = metrics.get("operating_lease_liability")
+    if leases is None:
+        missing.append("operating_lease_liability")
+        leases = 0.0
+    minority = metrics.get("minority_interest")
+    if minority is None:
+        missing.append("minority_interest")
+        minority = 0.0
+
+    ev = (float(market_cap) + float(total_debt) - float(cash)
+           + float(leases) + float(minority))
+    return {
+        "mcap": float(market_cap),
+        "total_debt": float(total_debt),
+        "cash": float(cash),
+        "operating_leases": float(leases),
+        "minority": float(minority),
+        "ev": ev,
+        "missing_fields": missing,
+    }
+
+
+def compute_multiples(market_cap, price, metrics, ticker):
+    """Apply the multiples per pitch-comps multiples-methodology.
+
+    Returns (multiples_dict, ev_components_dict_or_None). When EV cannot
+    be computed because a required component is missing, ev_components is
+    None and EV-based multiples are None; the price-based P/E is still
+    attempted.
+    """
     out = {"ev_sales": None, "ev_ebitda": None, "p_e": None}
+    ev_components = None
+    ev = None
+    try:
+        ev_components = compute_ev_components(market_cap, metrics, ticker)
+        ev = ev_components["ev"]
+    except NotImplementedError as exc:
+        print(f"  WARN: EV skipped for {ticker}: {exc}", file=sys.stderr)
     if ev is not None and metrics.get("revenue_ttm") and metrics["revenue_ttm"] > 0:
         out["ev_sales"] = ev / metrics["revenue_ttm"]
     if ev is not None and metrics.get("ebitda_ttm") and metrics["ebitda_ttm"] > 0:
@@ -203,7 +352,7 @@ def compute_multiples(market_cap, price, metrics):
             and metrics.get("diluted_eps_ttm")
             and metrics["diluted_eps_ttm"] > 0):
         out["p_e"] = price / metrics["diluted_eps_ttm"]
-    return out, ev
+    return out, ev, ev_components
 
 
 def assemble_name(ticker, sources):
@@ -222,8 +371,34 @@ def assemble_name(ticker, sources):
                     "fetched_at": utcnow_iso(),
                     "context": f"8q quarterly financials for {ticker}"})
     metrics = compute_metrics_from_financials(rows)
-    mcap = det.get("market_cap")
-    multiples, ev = compute_multiples(mcap, price, metrics)
+
+    # C12: prefer weighted-diluted shares from financials. Falls back to the
+    # ticker-details `share_class_shares_outstanding` field only if every
+    # financials-derived source is null (small/illiquid names sometimes
+    # have no shares fields on the financials response).
+    shares = metrics.get("shares_outstanding")
+    shares_source = metrics.get("shares_source")
+    if shares is None:
+        det_class = det.get("share_class_shares_outstanding")
+        det_weighted = det.get("weighted_shares_outstanding")
+        if det_weighted is not None:
+            shares = det_weighted
+            shares_source = "ticker_details.weighted_shares_outstanding"
+        elif det_class is not None:
+            shares = det_class
+            shares_source = "ticker_details.share_class_shares_outstanding"
+
+    # Recompute mcap from corrected share count × price. The ticker-details
+    # `market_cap` field is reported off Class A only for dual-class names
+    # (GOOGL: 5.82B Class A vs 12.2B total), which understates the cap by
+    # the inactive-class share count. Falling back to the API value when we
+    # have no price + shares of our own.
+    if shares is not None and price is not None:
+        mcap = float(shares) * float(price)
+    else:
+        mcap = det.get("market_cap")
+
+    multiples, ev, ev_components = compute_multiples(mcap, price, metrics, ticker)
     if not rows or all(v is None for v in metrics.values()):
         data_status = "empty"
     elif any(v is None for v in multiples.values()):
@@ -235,10 +410,11 @@ def assemble_name(ticker, sources):
         "name": det.get("name") or ticker,
         "market_cap": mcap,
         "enterprise_value": ev,
+        "ev_components": ev_components,
         "price": price,
         "sector": det.get("sic_description"),
-        "shares_outstanding": det.get("share_class_shares_outstanding")
-                                or det.get("weighted_shares_outstanding"),
+        "shares_outstanding": shares,
+        "shares_source": shares_source,
         "multiples": multiples,
         "metrics": metrics,
         "data_status": data_status,
@@ -293,7 +469,15 @@ def reverse_dcf_implied_cagr(current_ev, revenue_ttm, assumed_margin,
 
 
 def fair_value_at_peer_median(subject, peer_median_cagr, assumed_margin,
-                                exit_multiple, wacc, horizon, ltd, shares):
+                                exit_multiple, wacc, horizon, ev_net_non_mcap,
+                                shares):
+    """Back fair value per share from a peer-median EV/EBITDA exit multiple.
+
+    `ev_net_non_mcap` is the non-equity part of EV (total_debt - cash +
+    operating_leases + minority_interest). We unwind the same components
+    used in current_ev so fair_mcap = fair_ev - ev_net_non_mcap stays in
+    parity with the corrected EV math (C11).
+    """
     if not (peer_median_cagr is not None and assumed_margin and exit_multiple
             and horizon and shares and shares > 0):
         return None
@@ -304,7 +488,7 @@ def fair_value_at_peer_median(subject, peer_median_cagr, assumed_margin,
     fair_ebitda = fair_rev * assumed_margin
     fair_ev_horizon = fair_ebitda * exit_multiple
     fair_pv = fair_ev_horizon / ((1.0 + wacc) ** horizon)
-    fair_mcap = fair_pv - (ltd or 0.0)
+    fair_mcap = fair_pv - (ev_net_non_mcap or 0.0)
     return fair_mcap / shares
 
 
@@ -561,6 +745,7 @@ for tk in peers_list:
 # ----- Analyst-inputs derived fields -----
 
 shares = subject.get("shares_outstanding")
+shares_source = subject.get("shares_source")
 ltd = subject["metrics"].get("long_term_debt") or 0.0
 current_price = subject.get("price")
 current_mcap = subject.get("market_cap")
@@ -569,7 +754,20 @@ revenue_ttm = subject["metrics"].get("revenue_ttm")
 
 target_price = args.target_price
 target_mcap = (target_price * shares) if shares else None
-target_ev = (target_mcap + ltd) if target_mcap is not None else None
+
+# Target EV uses the same component net (debt - cash + leases + minority)
+# as current EV. Components missing on the subject already triggered a
+# warning during assemble_name; here we treat any missing component as 0
+# rather than failing the whole script (the subject's current_ev would
+# also be None in that case, which is already a degraded run).
+_metrics = subject["metrics"]
+_ev_net_non_mcap = (
+    float(_metrics.get("total_debt") or 0.0)
+    - float(_metrics.get("cash_and_equivalents") or 0.0)
+    + float(_metrics.get("operating_lease_liability") or 0.0)
+    + float(_metrics.get("minority_interest") or 0.0)
+)
+target_ev = (target_mcap + _ev_net_non_mcap) if target_mcap is not None else None
 implied_upside = ((target_price / current_price) - 1.0) if current_price else None
 
 if revenue_ttm is not None:
@@ -583,9 +781,26 @@ else:
 
 # ----- Multiple sanity -----
 
+# C7: tag peers missing D&A and exclude them from the EBITDA distribution.
+# Without D&A their "ebitda_ttm" would have been EBIT, and comparing the
+# subject's true EV/EBITDA to a peer cohort built off EV/EBIT is the bug
+# the audit caught. With the C7 metrics fix above, ebitda_ttm is already
+# None for these peers; this loop just makes the exclusion explicit on the
+# per-peer audit trail and tier_caveats.
+for p in peer_objs:
+    da_reported = (p.get("metrics") or {}).get("da_reported")
+    if not da_reported:
+        p["excluded_from_ebitda_comp"] = True
+        p["ebitda_exclusion_reason"] = "missing_da"
+    else:
+        p["excluded_from_ebitda_comp"] = False
+
+n_excluded_ebitda = sum(1 for p in peer_objs if p.get("excluded_from_ebitda_comp"))
+
 # Peer distributions on current multiples
 peer_ev_sales = [(p["multiples"] or {}).get("ev_sales") for p in peer_objs]
-peer_ev_ebitda = [(p["multiples"] or {}).get("ev_ebitda") for p in peer_objs]
+peer_ev_ebitda = [(p["multiples"] or {}).get("ev_ebitda") for p in peer_objs
+                   if not p.get("excluded_from_ebitda_comp")]
 peer_p_e = [(p["multiples"] or {}).get("p_e") for p in peer_objs]
 
 p25_es, p50_es, p75_es, n_es = percentile_band(peer_ev_sales)
@@ -692,7 +907,7 @@ fv_at_median = fair_value_at_peer_median(
     exit_multiple=exit_multiple,
     wacc=WACC,
     horizon=args.horizon,
-    ltd=ltd,
+    ev_net_non_mcap=_ev_net_non_mcap,
     shares=shares,
 )
 
@@ -720,6 +935,10 @@ for p in peer_objs:
         "revenue_growth_ttm": (p["metrics"] or {}).get("revenue_growth_ttm"),
         "ebitda_margin": (p["metrics"] or {}).get("ebitda_margin"),
         "data_status": p["data_status"],
+        "ev_components": p.get("ev_components"),
+        "shares_source": p.get("shares_source"),
+        "excluded_from_ebitda_comp": p.get("excluded_from_ebitda_comp", False),
+        "ebitda_exclusion_reason": p.get("ebitda_exclusion_reason"),
     })
 
 
@@ -756,9 +975,22 @@ read = generate_read(subject_ticker, stretched, conservative,
 
 # ----- Payload -----
 
+tier_caveats = []
+if n_excluded_ebitda > 0:
+    tier_caveats.append(
+        f"{n_excluded_ebitda} peer(s) excluded from EV/EBITDA distribution "
+        f"due to missing D&A on filings (would have compared subject EBITDA "
+        f"to peer EBIT)."
+    )
+if subject.get("ev_components") and subject["ev_components"].get("missing_fields"):
+    miss = ", ".join(subject["ev_components"]["missing_fields"])
+    tier_caveats.append(
+        f"Subject EV defaulted optional components to 0: {miss}."
+    )
+
 payload = {
     "tier": "A",
-    "tier_caveats": [],
+    "tier_caveats": tier_caveats,
     "mode": "note",
     "run_at": NOW_UTC.isoformat(),
     "subject": {
@@ -767,7 +999,9 @@ payload = {
         "current_price": current_price,
         "current_mcap": current_mcap,
         "current_ev": current_ev,
+        "ev_components": subject.get("ev_components"),
         "shares_outstanding": shares,
+        "shares_source": shares_source,
         "long_term_debt": subject["metrics"].get("long_term_debt"),
         "revenue_ttm": revenue_ttm,
         "ebitda_margin_ttm": subject["metrics"].get("ebitda_margin"),
