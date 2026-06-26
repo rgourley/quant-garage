@@ -22,9 +22,16 @@ import sys
 import json
 import math
 import urllib.request
-import urllib.error
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
+
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage.timezones import utc_to_et
 
 if len(sys.argv) < 2:
     print("Usage: run-tier-b.py TICKER", file=sys.stderr)
@@ -32,15 +39,10 @@ if len(sys.argv) < 2:
 
 TICKER = sys.argv[1].upper().strip()
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
-
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+# SEC EDGAR is NOT a Massive endpoint, so it stays on raw urllib with the
+# personal User-Agent required by SEC's fair-use policy.
 SEC_HEADERS = {"User-Agent": "Rob Gourley rgourley@gmail.com"}
-TODAY = date(2026, 6, 23)
+TODAY = today()
 
 SKILL_DIR = os.path.normpath(
     os.path.join(os.path.dirname(__file__), "..", "skills", "earnings-drilldown")
@@ -79,34 +81,17 @@ def load_peer_overrides():
 
 PEER_OVERRIDES = load_peer_overrides()
 
-
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
+client = MassiveClient()
 
 
-def fetch_all(path):
-    """Follow next_url to collect paginated results."""
+def paginate_all(path, params=None):
+    """Collect every page from the Massive client and return (results, last_fetched_at)."""
     out = []
-    url = f"{BASE}{path}"
-    while url:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            doc = json.load(r)
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
+    last_fetched = utcnow_iso()
+    for page, fetched_at in client.paginate(path, params):
+        out.extend(page)
+        last_fetched = fetched_at
+    return out, last_fetched
 
 
 def fetch_sec(url):
@@ -139,7 +124,8 @@ def t_stat(xs):
 
 # 1. Ticker metadata (need CIK + sic for EDGAR + peer fallback)
 print(f"Fetching ticker metadata for {TICKER}...", file=sys.stderr)
-ticker_meta = fetch(f"/v3/reference/tickers/{TICKER}")["results"]
+ticker_meta_body, ticker_meta_fetched_at = client.get(f"/v3/reference/tickers/{TICKER}")
+ticker_meta = ticker_meta_body["results"]
 cik_raw = ticker_meta.get("cik")
 if not cik_raw:
     print("ERROR: no CIK in ticker metadata", file=sys.stderr)
@@ -150,7 +136,9 @@ sic_desc = ticker_meta.get("sic_description")
 
 # 2. SEC EDGAR submissions: pull recent 8-K filings filtered to item 2.02
 print(f"Fetching SEC EDGAR submissions for CIK {cik_padded}...", file=sys.stderr)
-sec_doc = fetch_sec(f"https://data.sec.gov/submissions/CIK{cik_padded}.json")
+sec_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+sec_doc = fetch_sec(sec_url)
+sec_fetched_at = utcnow_iso()
 recent = sec_doc["filings"]["recent"]
 
 
@@ -181,8 +169,9 @@ earnings_8ks = earnings_8ks[-8:]
 # (no quarterly Q4 record exists). For annual records we back out Q4 EPS as
 # annual_eps - sum(Q1+Q2+Q3) of the same fiscal year.
 print("Fetching financials for EPS actuals...", file=sys.stderr)
-fin_results = fetch_all(
-    f"/vX/reference/financials?ticker={TICKER}&limit=40&order=desc&sort=filing_date"
+fin_results, financials_fetched_at = paginate_all(
+    "/vX/reference/financials",
+    {"ticker": TICKER, "limit": 40, "order": "desc", "sort": "filing_date"},
 )
 
 # Normalize financials records. The financials `filing_date` is the 10-Q
@@ -272,8 +261,9 @@ for f8k in earnings_8ks:
 end_date = TODAY.isoformat()
 start_date = (TODAY - timedelta(days=365 * 3)).isoformat()
 print(f"Fetching {TICKER} daily aggregates {start_date} to {end_date}...", file=sys.stderr)
-aggs = fetch_all(
-    f"/v2/aggs/ticker/{TICKER}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000"
+aggs, aapl_aggs_fetched_at = paginate_all(
+    f"/v2/aggs/ticker/{TICKER}/range/1/day/{start_date}/{end_date}",
+    {"adjusted": "true", "sort": "asc", "limit": 50000},
 )
 agg_by_date = {}
 for a in aggs:
@@ -299,8 +289,9 @@ def next_trading_day(d_str, offset=1):
 
 # 6. SPY aggregates for PEAD beta-adjustment
 print("Fetching SPY aggregates for PEAD adjustment...", file=sys.stderr)
-spy_aggs = fetch_all(
-    f"/v2/aggs/ticker/SPY/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000"
+spy_aggs, spy_aggs_fetched_at = paginate_all(
+    f"/v2/aggs/ticker/SPY/range/1/day/{start_date}/{end_date}",
+    {"adjusted": "true", "sort": "asc", "limit": 50000},
 )
 spy_by_date = {
     datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date().isoformat(): a
@@ -311,18 +302,15 @@ spy_by_date = {
 # 7. Reaction window helpers
 def session_window(filing_dt_iso):
     """
-    Use the UTC acceptance time to classify AMC/BMO/Intraday.
-    AMC prints accept ~20:00-21:00 UTC = 16:00-17:00 ET (in EDT).
-    BMO prints accept ~10:30-12:30 UTC = 06:30-08:30 ET.
-    Translate to ET hour by subtracting 4 (EDT) most of the year.
+    Use the UTC acceptance time to classify AMC/BMO/Intraday. ET hour is
+    computed via zoneinfo so DST is handled correctly year-round (the prior
+    hand-rolled UTC-4/UTC-5 fork shifted the AMC boundary by an hour in
+    Nov-Mar; H1 in the 2026-06-26 audit).
     """
-    dt = datetime.fromisoformat(filing_dt_iso.replace("Z", "+00:00"))
-    filing_d_str = dt.date().isoformat()
-    # Approximate ET hour: subtract 4 in summer, 5 in winter
-    month = dt.month
-    is_dst = 3 <= month <= 10 or (month == 11 and dt.day < 6) or (month == 3 and dt.day >= 13)
-    et_offset = 4 if is_dst else 5
-    hour_et = (dt.hour - et_offset) % 24
+    dt_utc = datetime.fromisoformat(filing_dt_iso.replace("Z", "+00:00"))
+    dt_et = utc_to_et(dt_utc)
+    filing_d_str = dt_et.date().isoformat()
+    hour_et = dt_et.hour
 
     if hour_et < 9:
         reaction_d = filing_d_str
@@ -417,8 +405,14 @@ for bucket_key in ("on_positive_reactions", "on_negative_reactions"):
         bucket["significant"] = abs(bucket["t_stat"]) > 2.0
 
 # 10. Options snapshot for implied move + IV30 proxy
+# NOTE: Per-script use of lastQuote.p (quote-mid) for spot bypasses lastTrade.
+# `resolve_price()` from the lib doesn't currently cover lastQuote, so the
+# inline read stays. See AUDIT.md N2.
 print("Fetching options snapshot...", file=sys.stderr)
-spot_snap = fetch(f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}")["ticker"]
+spot_snap_body, spot_snap_fetched_at = client.get(
+    f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}"
+)
+spot_snap = spot_snap_body["ticker"]
 spot = spot_snap["lastQuote"]["p"] if spot_snap.get("lastQuote") else spot_snap["day"]["c"]
 if not spot:
     spot = spot_snap.get("prevDay", {}).get("c")
@@ -441,10 +435,15 @@ opt_to_date = (next_earnings_date + timedelta(days=14)).isoformat()
 opt_from_date = TODAY.isoformat()
 strike_band_lo = int(spot * 0.95)
 strike_band_hi = int(spot * 1.05)
-opts = fetch_all(
-    f"/v3/snapshot/options/{TICKER}?expiration_date.gte={opt_from_date}"
-    f"&expiration_date.lte={opt_to_date}&strike_price.gte={strike_band_lo}"
-    f"&strike_price.lte={strike_band_hi}&limit=250"
+opts, options_fetched_at = paginate_all(
+    f"/v3/snapshot/options/{TICKER}",
+    {
+        "expiration_date.gte": opt_from_date,
+        "expiration_date.lte": opt_to_date,
+        "strike_price.gte": strike_band_lo,
+        "strike_price.lte": strike_band_hi,
+        "limit": 250,
+    },
 )
 
 opts_by_exp = defaultdict(list)
@@ -507,12 +506,14 @@ if straddle_info and straddle_info["call_mid"] and straddle_info["put_mid"] and 
 # 11. Peer reaction using curated override
 peer_tickers = PEER_OVERRIDES.get(TICKER, [])
 peer_aggs = {}
+peer_aggs_fetched_at = None
 peer_reaction_block = None
 if peer_tickers:
     print(f"Fetching peer aggregates: {peer_tickers}...", file=sys.stderr)
     for peer in peer_tickers:
-        peer_data = fetch_all(
-            f"/v2/aggs/ticker/{peer}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000"
+        peer_data, peer_aggs_fetched_at = paginate_all(
+            f"/v2/aggs/ticker/{peer}/range/1/day/{start_date}/{end_date}",
+            {"adjusted": "true", "sort": "asc", "limit": 50000},
         )
         peer_aggs[peer] = {
             datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date().isoformat(): a
@@ -597,7 +598,7 @@ payload = {
     "tier": "B",
     "tier_caveats": tier_caveats,
     "mode": "full",
-    "run_at": datetime.now(timezone.utc).isoformat(),
+    "run_at": utcnow_iso(),
     "print": {
         "date": next_print_date_str,
         "session": projected_session,
@@ -649,14 +650,46 @@ payload = {
     "post_earnings_drift": pead,
     "peer_reaction": peer_reaction_block,
     "sources": [
-        {"endpoint": f"/v3/reference/tickers/{TICKER}", "context": "ticker metadata, CIK, SIC"},
-        {"endpoint": f"https://data.sec.gov/submissions/CIK{cik_padded}.json", "context": "8-K item 2.02 filings → print dates (free, public)"},
-        {"endpoint": f"/vX/reference/financials?ticker={TICKER}", "context": "EPS actuals matched by filing_date"},
-        {"endpoint": f"/v2/aggs/ticker/{TICKER}/range/1/day/...", "context": "daily closes for realized moves and PEAD"},
-        {"endpoint": "/v2/aggs/ticker/SPY/range/1/day/...", "context": "SPY for PEAD beta-adjustment"},
-        {"endpoint": f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}", "context": "current spot"},
-        {"endpoint": f"/v3/snapshot/options/{TICKER}?...", "context": "ATM straddle and IV"},
-        {"endpoint": "/v2/aggs/ticker/{PEER}/range/1/day/... (curated peers)", "context": "peer reaction & beta"},
+        {
+            "endpoint": f"https://api.polygon.io/v3/reference/tickers/{TICKER}",
+            "context": "ticker metadata, CIK, SIC",
+            "fetched_at": ticker_meta_fetched_at,
+        },
+        {
+            "endpoint": sec_url,
+            "context": "8-K item 2.02 filings → print dates (free, public)",
+            "fetched_at": sec_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/vX/reference/financials?ticker={TICKER}",
+            "context": "EPS actuals matched by filing_date",
+            "fetched_at": financials_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v2/aggs/ticker/{TICKER}/range/1/day/...",
+            "context": "daily closes for realized moves and PEAD",
+            "fetched_at": aapl_aggs_fetched_at,
+        },
+        {
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/...",
+            "context": "SPY for PEAD beta-adjustment",
+            "fetched_at": spy_aggs_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}",
+            "context": "current spot",
+            "fetched_at": spot_snap_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v3/snapshot/options/{TICKER}?...",
+            "context": "ATM straddle and IV",
+            "fetched_at": options_fetched_at,
+        },
+        {
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/{PEER}/range/1/day/... (curated peers)",
+            "context": "peer reaction & beta",
+            "fetched_at": peer_aggs_fetched_at,
+        },
     ],
 }
 
@@ -838,7 +871,7 @@ out_name = f"{TICKER.lower()}-tier-b-output.md"
 out_path = os.path.join(os.path.dirname(__file__), out_name)
 with open(out_path, "w") as f:
     f.write(f"# Tier B run: earnings-drilldown {TICKER}\n\n")
-    f.write(f"Generated: {datetime.now(timezone.utc).isoformat()}\n")
+    f.write(f"Generated: {utcnow_iso()}\n")
     f.write(f"Spot at run: ${spot:.2f}\n")
     f.write("Tier: B (SEC EDGAR submissions + Massive Stocks Starter, no Benzinga)\n\n")
     f.write("## Layer 1: canonical JSON (live data)\n\n")

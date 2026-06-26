@@ -30,8 +30,6 @@ import os
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from typing import Optional
@@ -42,6 +40,20 @@ except ImportError:
     print("ERROR: websocket-client not installed. Run: pip3 install websocket-client", file=sys.stderr)
     sys.exit(1)
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    ET,
+    utc_to_et,
+    utcnow_iso,
+    resolve_price,
+)
+
 
 # ----- Config -----
 
@@ -50,8 +62,6 @@ if not KEY:
     print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
     sys.exit(1)
 
-REST_BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
 WS_URL = "wss://business.polygon.io/stocks"
 
 # Channel preference order on a Business key (FMV/AM available, T gated).
@@ -66,7 +76,7 @@ MEDIUM_SPREAD_BPS = 50
 HIGH_ADV_SHARES = 10_000_000
 MEDIUM_ADV_SHARES = 500_000
 
-EASTERN = timezone(timedelta(hours=-4))  # ET is EDT (UTC-4) in June
+client = MassiveClient()
 
 # ----- CLI -----
 
@@ -98,49 +108,65 @@ def load_positions(path: str) -> list:
 
 
 # ----- REST helpers -----
+#
+# Snapshot reads use the lib's resolve_price() for the price-fallback chain
+# (D4/D5 audit items). The chain here matches resolve_price() (lastTrade.p →
+# min.c → day.c → prevDay.c). The old per-script chain had a redundant
+# "snapshot.last.price" step that always returned the same field as
+# "snapshot.lastTrade.p" — D5 dismissed.
+#
+# resolve_price() returns source as bare "lastTrade" etc. We re-map to the
+# "snapshot.*" prefixes the rest of this script (and the rendered output)
+# expects, so the SHORT_SOURCE table doesn't need to change.
 
-def http_get(path: str) -> dict:
-    url = f"{REST_BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.load(r)
+_PRICE_SOURCE_MAP = {
+    "lastTrade": "snapshot.lastTrade.p",
+    "min.c": "snapshot.min.c",
+    "day.c": "snapshot.day.c",
+    "prevDay.c": "snapshot.prevDay.c",
+    "no_price": None,
+}
 
 
 def snapshot_mark(ticker: str) -> dict:
     """Walk the fallback chain and return mark + source + freshness + quote."""
     try:
-        doc = http_get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
-    except urllib.error.HTTPError as e:
+        doc, _ = client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    except FetchError as e:
         return {"mark_price": None, "mark_source": None, "as_of_utc": None,
                 "bid": None, "ask": None, "day_volume": None,
-                "error": f"HTTP {e.code}"}
+                "error": f"HTTP {e.status_code}" if e.status_code else "fetch_error"}
 
     t = (doc.get("ticker") or {})
-    last_trade = t.get("lastTrade") or {}
     last_quote = t.get("lastQuote") or {}
     minute = t.get("min") or {}
     day = t.get("day") or {}
-    prev_day = t.get("prevDay") or {}
 
-    # Walk fallback chain. Some legacy snapshots return lastTrade.p == 0
-    # when the symbol hasn't traded today; treat 0 as null.
-    chain = [
-        ("snapshot.last.price", last_trade.get("p"), last_trade.get("t")),
-        ("snapshot.lastTrade.p", last_trade.get("p"), last_trade.get("t")),
-        ("snapshot.min.c", minute.get("c"), minute.get("t")),  # t is ms here
-        ("snapshot.day.c", day.get("c"), None),
-        ("snapshot.prevDay.c", prev_day.get("c"), None),
-    ]
-
-    mark_price = None
-    mark_source = None
-    mark_ts_ns = None
-    for source, price, ts in chain:
-        if price and price > 0:
-            mark_price = price
-            mark_source = source
-            mark_ts_ns = ts
-            break
+    resolution = resolve_price(doc)
+    mark_price = resolution.price
+    # Zero-price guard: legacy snapshots can return lastTrade.p == 0 when the
+    # symbol hasn't traded today. Treat as null and re-walk the chain manually.
+    if mark_price == 0:
+        # Re-walk: skip the lastTrade step, try min.c → day.c → prevDay.c
+        if minute.get("c"):
+            mark_price = float(minute["c"])
+            mark_source = "snapshot.min.c"
+            mark_ts_ns = minute.get("t")
+        elif day.get("c"):
+            mark_price = float(day["c"])
+            mark_source = "snapshot.day.c"
+            mark_ts_ns = None
+        elif (t.get("prevDay") or {}).get("c"):
+            mark_price = float(t["prevDay"]["c"])
+            mark_source = "snapshot.prevDay.c"
+            mark_ts_ns = None
+        else:
+            mark_price = None
+            mark_source = None
+            mark_ts_ns = None
+    else:
+        mark_source = _PRICE_SOURCE_MAP.get(resolution.source)
+        mark_ts_ns = resolution.timestamp_ns
 
     # Convert timestamp. lastTrade.t and lastQuote.t are ns; min.t is ms;
     # day/prevDay have no per-field timestamp so fall back to ticker.updated.
@@ -301,8 +327,8 @@ def run_delayed(positions: list) -> dict:
     out_positions = []
     flagged = []
     sources = [{
-        "endpoint": "/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
-        "fetched_at": marked_at.isoformat(),
+        "endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+        "fetched_at": utcnow_iso(),
         "context": "one snapshot per unique symbol",
     }]
 
@@ -615,7 +641,7 @@ def run_live(positions: list, listen_seconds: int) -> dict:
     out_positions = []
     flagged = []
     live_tape: list = []
-    sources = [{"endpoint": WS_URL, "fetched_at": marked_at.isoformat(),
+    sources = [{"endpoint": WS_URL, "fetched_at": utcnow_iso(),
                 "context": f"WebSocket stream, listen window {listen_seconds}s"}]
     snapshot_used = False
 
@@ -698,8 +724,8 @@ def run_live(positions: list, listen_seconds: int) -> dict:
 
     if snapshot_used:
         sources.append({
-            "endpoint": "/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
-            "fetched_at": marked_at.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+            "fetched_at": utcnow_iso(),
             "context": "REST backfill for symbols that received no ticks during the listen window",
         })
 
@@ -748,7 +774,7 @@ SHORT_SOURCE = {
 def fmt_et(dt: Optional[datetime]) -> str:
     if dt is None:
         return "n/a"
-    local = dt.astimezone(EASTERN)
+    local = utc_to_et(dt)
     return local.strftime("%H:%M:%S")
 
 

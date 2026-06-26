@@ -23,12 +23,16 @@ import sys
 import json
 import math
 import argparse
-import urllib.request
-import urllib.error
-import urllib.parse
 import re
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, ET, utc_to_et, utcnow_iso
 
 
 # -------- Args --------
@@ -54,13 +58,8 @@ WINDOW_HOURS = args.hours
 TOP_N = args.top
 SENT_MODE = args.sentiment_mode
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+client = MassiveClient()
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
 NOW_UTC = datetime.now(timezone.utc)
 WINDOW_START_UTC = NOW_UTC - timedelta(hours=WINDOW_HOURS)
 NOVELTY_BUCKET_START_UTC = NOW_UTC - timedelta(days=7)
@@ -69,7 +68,9 @@ REACTION_MINUTES_DEFAULT = 60
 MIN_REACTION_FOR_DIVERGENCE = 0.005
 MIN_SENTIMENT_FOR_DIVERGENCE = 0.4
 
-ET_OFFSET_HOURS = -4  # Run is in June so US/Eastern = UTC-4 (EDT). Good enough for headers.
+# Track fetched_at per source bucket so sources[] carries per-call provenance.
+news_last_fetched_at = utcnow_iso()
+aggs_last_fetched_at = utcnow_iso()
 
 
 # -------- Lexicons --------
@@ -108,61 +109,40 @@ STOPWORDS = {
 
 # -------- HTTP --------
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
 def fetch_news(ticker, gte_iso, limit_per_page=50, max_pages=4):
     """Pull /v2/reference/news for a ticker since gte_iso. Paginate."""
-    qs = urllib.parse.urlencode({
+    global news_last_fetched_at
+    params = {
         "ticker": ticker,
         "published_utc.gte": gte_iso,
         "order": "desc",
         "sort": "published_utc",
         "limit": limit_per_page,
-    })
-    path = f"/v2/reference/news?{qs}"
+    }
     out = []
-    page = 0
-    next_url = f"{BASE}{path}"
-    while next_url and page < max_pages:
-        page += 1
-        if next_url.startswith(BASE):
-            req = urllib.request.Request(next_url, headers=HEADERS)
-        else:
-            sep = "&" if "?" in next_url else "?"
-            req = urllib.request.Request(f"{next_url}{sep}apiKey={KEY}", headers=HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                doc = json.load(r)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:200].decode("utf-8", errors="replace")
-            raise RuntimeError(f"{e.code} fetching news for {ticker}: {body}")
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if not next_url:
+    pages_seen = 0
+    for page, fetched_at in client.paginate("/v2/reference/news", params):
+        out.extend(page)
+        news_last_fetched_at = fetched_at
+        pages_seen += 1
+        if pages_seen >= max_pages:
             break
     return out
 
 
 def fetch_minute_aggs(ticker, frm_date, to_date, resolution=5):
     """Pull range/{resolution}/minute aggs. Used for reaction + volume baseline."""
+    global aggs_last_fetched_at
     path = (
         f"/v2/aggs/ticker/{ticker}/range/{resolution}/minute/"
         f"{frm_date}/{to_date}?adjusted=true&sort=asc&limit=5000"
     )
     try:
-        doc = fetch(path)
-    except RuntimeError as e:
+        doc, fetched_at = client.get(path)
+    except Exception as e:
         print(f"  warn: aggs fetch failed for {ticker}: {e}", file=sys.stderr)
         return []
+    aggs_last_fetched_at = fetched_at
     return doc.get("results", []) or []
 
 
@@ -342,9 +322,9 @@ def compute_reaction(ticker, published_at):
     if base_bar is None or base_idx is None or base_idx < 0:
         return None
 
-    # Target window: publish + 60min, capped at 16:00 ET of the publish day
-    # Convert publish day to ET-ish (UTC-4)
-    pub_et = published_at + timedelta(hours=ET_OFFSET_HOURS)
+    # Target window: publish + 60min, capped at 16:00 ET of the publish day.
+    # zoneinfo handles DST so winter publishes no longer mis-bucket.
+    pub_et = utc_to_et(published_at)
     close_et_today = pub_et.replace(hour=16, minute=0, second=0, microsecond=0)
     if pub_et > close_et_today:
         # After-hours publish. Defer to next-day open.
@@ -354,8 +334,7 @@ def compute_reaction(ticker, published_at):
         target_et_cap = next_open_et.replace(hour=16, minute=0, second=0, microsecond=0)
         if target_dt > target_et_cap:
             target_dt = target_et_cap
-        # Convert back to UTC
-        target_utc = target_dt - timedelta(hours=ET_OFFSET_HOURS)
+        target_utc = target_dt.astimezone(timezone.utc)
         window_label = "overnight"
         is_overnight = True
     elif pub_et < close_et_today.replace(hour=9, minute=30):
@@ -364,7 +343,7 @@ def compute_reaction(ticker, published_at):
         target_dt = open_et + timedelta(minutes=REACTION_MINUTES_DEFAULT)
         if target_dt > close_et_today:
             target_dt = close_et_today
-        target_utc = target_dt - timedelta(hours=ET_OFFSET_HOURS)
+        target_utc = target_dt.astimezone(timezone.utc)
         window_label = "pre-market"
         is_overnight = False
     else:
@@ -372,7 +351,7 @@ def compute_reaction(ticker, published_at):
         target_et = pub_et + timedelta(minutes=REACTION_MINUTES_DEFAULT)
         if target_et > close_et_today:
             target_et = close_et_today
-        target_utc = target_et - timedelta(hours=ET_OFFSET_HOURS)
+        target_utc = target_et.astimezone(timezone.utc)
         window_label = None
         is_overnight = False
 
@@ -470,7 +449,7 @@ for t in TICKERS:
     print(f"  fetching news: {t}", file=sys.stderr)
     try:
         articles = fetch_news(t, NOVELTY_BUCKET_START_UTC.isoformat())
-    except RuntimeError as e:
+    except Exception as e:
         print(f"  warn: {t}: {e}", file=sys.stderr)
         articles = []
     ticker_news_raw[t] = articles
@@ -597,7 +576,7 @@ for t, a, art_idx in candidates:
     anom = rx["volume_anomaly_x"] if rx["volume_anomaly_x"] is not None else 1.0
     impact = rxn * anom * novelty_score
 
-    pub_et = pub + timedelta(hours=ET_OFFSET_HOURS)
+    pub_et = utc_to_et(pub)
     events.append({
         "id": a.get("id"),
         "ticker": t,
@@ -735,13 +714,13 @@ payload = {
     "skipped_tickers": skipped,
     "sources": [
         {
-            "endpoint": "/v2/reference/news",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/reference/news",
+            "fetched_at": news_last_fetched_at,
             "context": "Benzinga News, per-ticker, last 7 days for novelty bucket",
         },
         {
-            "endpoint": "/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}",
+            "fetched_at": aggs_last_fetched_at,
             "context": "5-minute aggregates for reaction window and volume anomaly baseline",
         },
     ],

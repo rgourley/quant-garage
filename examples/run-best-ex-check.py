@@ -23,23 +23,18 @@ import csv
 import json
 import os
 import sys
-import time
-import urllib.error
 import urllib.parse
-import urllib.request
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, FetchError, ET, utc_to_et, utcnow_iso
+
 # ----- Config -----
-
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
-
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-EASTERN = timezone(timedelta(hours=-4))  # June is EDT (UTC-4)
 
 # Flag thresholds (see references/flag-categories.md)
 WIDE_SPREAD_BPS = 50.0
@@ -48,22 +43,31 @@ ADVERSE_SELECTION_BPS = 5.0
 
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "best-ex-check-output.md")
 
+client = MassiveClient()
+
 
 # ----- HTTP helpers -----
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
+def fetch(path, params=None):
+    """Wrap client.get to preserve the old (doc, status) shape callers expect.
+    On HTTP errors returns ({}, status_code) so the tier probe can detect 403.
+    """
     try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r), r.status
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        return {"_error": body}, e.code
+        doc, _ = client.get(path, params=params)
+        return doc, 200
+    except FetchError as e:
+        return {"_error": str(e)}, (e.status_code or 0)
 
 
 def now_iso():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return utcnow_iso()
+
+
+def abs_url(path):
+    """Promote a /v3/... path to the canonical polygon.io URL for citations."""
+    if path.startswith("http://") or path.startswith("https://"):
+        return path
+    return f"https://api.polygon.io{path}"
 
 
 # ----- CSV loading -----
@@ -74,7 +78,9 @@ def load_fills(path):
         for row in csv.DictReader(f):
             ts = datetime.fromisoformat(row["timestamp"].strip())
             if ts.tzinfo is None:
-                ts = ts.replace(tzinfo=EASTERN)
+                # Naive timestamps are assumed ET. zoneinfo handles DST so
+                # winter-half-of-year fills no longer mis-bucket by an hour.
+                ts = ts.replace(tzinfo=ET)
             fills.append({
                 "ticker": row["ticker"].strip().upper(),
                 "side": row["side"].strip().upper(),
@@ -189,7 +195,7 @@ def fetch_session_vwap(ticker, ts_dt):
     Pull minute aggregates for the session and compute cumulative VWAP
     up to ts_dt. Cached per (ticker, date).
     """
-    date_str = ts_dt.astimezone(EASTERN).strftime("%Y-%m-%d")
+    date_str = utc_to_et(ts_dt).strftime("%Y-%m-%d")
     key = (ticker, date_str)
     if key not in _vwap_cache:
         path = (
@@ -298,7 +304,7 @@ def process_fill(fill, tier, sources):
         bid, ask, qts, qpath = fetch_nbbo_proxy_at(ticker, ts_dt)
 
     if bid is not None and ask is not None:
-        sources.append({"endpoint": qpath, "fetched_at": now_iso(), "ticker": ticker})
+        sources.append({"endpoint": abs_url(qpath), "fetched_at": now_iso(), "ticker": ticker})
 
     reference_price = ask if side == "BUY" else bid
 
@@ -307,12 +313,12 @@ def process_fill(fill, tier, sources):
 
     vwap, vpath = fetch_session_vwap(ticker, ts_dt)
     if vwap is not None:
-        sources.append({"endpoint": vpath, "fetched_at": now_iso(), "ticker": ticker})
+        sources.append({"endpoint": abs_url(vpath), "fetched_at": now_iso(), "ticker": ticker})
     vslip = signed_vwap_slip(side, fill_price, vwap) if vwap else None
 
     final_price, apath = fetch_adverse_drift(ticker, ts_dt)
     if final_price is not None:
-        sources.append({"endpoint": apath, "fetched_at": now_iso(), "ticker": ticker})
+        sources.append({"endpoint": abs_url(apath), "fetched_at": now_iso(), "ticker": ticker})
     adverse = signed_adverse(side, fill_price, final_price)
 
     # Apply flag categories
@@ -364,7 +370,7 @@ def process_fill(fill, tier, sources):
         "implementation_shortfall_usd": round(impl_shortfall, 2),
         "suggested_next_action": suggest,
         "source": {
-            "endpoint": qpath,
+            "endpoint": abs_url(qpath),
             "fetched_at": qts or now_iso(),
         },
     }
@@ -458,7 +464,7 @@ def render(payload):
     out.append("")
 
     for i, f in enumerate(payload["flagged"], 1):
-        ts_et = datetime.fromisoformat(f["timestamp"]).astimezone(EASTERN).strftime("%Y-%m-%d %H:%M:%S")
+        ts_et = utc_to_et(datetime.fromisoformat(f["timestamp"])).strftime("%Y-%m-%d %H:%M:%S")
         header = (
             f"BREAK {i}: {f['ticker']} {f['side']} {fmt_qty(f['qty'])} "
             f"@ ${f['price']:.2f} · {ts_et} ET"
@@ -473,7 +479,7 @@ def render(payload):
         else:
             ref_label = "ask" if f["side"] == "BUY" else "bid"
             sign = "+" if f["slippage_bps"] >= 0 else "-"
-            ref_ts = datetime.fromisoformat(f["source"]["fetched_at"].replace("Z", "+00:00")).astimezone(EASTERN).strftime("%H:%M:%S")
+            ref_ts = utc_to_et(datetime.fromisoformat(f["source"]["fetched_at"].replace("Z", "+00:00"))).strftime("%H:%M:%S")
             out.append(
                 f"  Slippage:    {sign}{abs(f['slippage_bps']):.1f} bps vs reference "
                 f"{ref_label} ${f['reference_price']:.2f} at {ref_ts}"
