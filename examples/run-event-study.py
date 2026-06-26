@@ -33,7 +33,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage import MassiveClient, today, utcnow_iso, is_significant
 from lib.quant_garage.timezones import utc_to_et
 
 # SEC EDGAR is NOT a Massive endpoint, so it stays on raw urllib with the
@@ -570,6 +570,15 @@ def compute_event_returns(
     t0_close = ticker_aggs[t0]["c"]
     spy_t0_close = spy_aggs.get(t0, {}).get("c")
 
+    # Find T+1 closes up front so post-announcement drift (T+1 → T+horizon)
+    # can be computed alongside the event-inclusive CAR (T0 → T+horizon).
+    # Per the 2026-06-26 audit (C5), measuring drift from the pre-event close
+    # mislabels the announcement reaction as drift; the two windows must be
+    # reported as separate fields.
+    t1_date = next_trading_day(ticker_dates, t0, 1)
+    t1_close = ticker_aggs.get(t1_date, {}).get("c") if t1_date else None
+    spy_t1_close = spy_aggs.get(t1_date, {}).get("c") if t1_date else None
+
     horizons = []
     ar = {}
     for label, offset in [("T+1", 1), ("T+3", 3), ("T+5", 5)]:
@@ -581,6 +590,8 @@ def compute_event_returns(
                 "spy_return_pct": None,
             })
             ar[f"ar_{label.lower().replace('+', '')}_pct"] = None
+            if offset > 1:
+                ar[f"post_announce_drift_{label.lower().replace('+', '')}_pct"] = None
             continue
         close = ticker_aggs[td]["c"]
         raw_ret = (close - t0_close) / t0_close if t0_close else None
@@ -605,12 +616,29 @@ def compute_event_returns(
         })
         ar[f"ar_{label.lower().replace('+', '')}_pct"] = abn
 
+        # Post-announcement drift: T+1 close → T+horizon close, SPY-adjusted.
+        # Defined only for horizons strictly after T+1.
+        if offset > 1:
+            if t1_close and spy_t1_close and spy_close is not None:
+                drift_raw = (close - t1_close) / t1_close
+                drift_spy = (spy_close - spy_t1_close) / spy_t1_close
+                drift_abn = drift_raw - drift_spy
+            else:
+                drift_abn = None
+            ar[f"post_announce_drift_{label.lower().replace('+', '')}_pct"] = drift_abn
+
     ar["car_t5_pct"] = ar.get("ar_t5_pct")
+    # Naming convenience: rendered output uses the explicit "event-inclusive"
+    # label. Keep the existing `ar_*` / `car_t5_pct` fields for backward
+    # compatibility and add a clearer alias per the C5 schema.
+    ar["event_inclusive_t5_pct"] = ar.get("ar_t5_pct")
     return {
         "t0_date": t0,
         "event_window_returns": {
             "t0_close": t0_close,
             "spy_t0_close": spy_t0_close,
+            "t1_close": t1_close,
+            "spy_t1_close": spy_t1_close,
             "horizons": horizons,
         },
         "abnormal_returns": ar,
@@ -696,18 +724,41 @@ def build_summary(subjects: list[dict[str, Any]], mode: str) -> dict[str, Any] |
         ]
         if not vals:
             continue
-        horizon_breakdown.append({
+        ts = t_stat_one_sample(vals)
+        entry = {
             "horizon": label,
             "mean_ar_pct": mean(vals),
             "median_ar_pct": median(vals),
             "std_ar_pct": std_sample(vals),
-            "t_stat": t_stat_one_sample(vals),
+            "t_stat": ts,
             "n": len(vals),
+            # Per C6: df-aware critical t (n=8 → 2.36, not 2.0) via
+            # is_significant(). The `n >= 8` floor is a separate
+            # sample-size guard and remains in place.
             "significant": (
-                abs(t_stat_one_sample(vals)) > 2.0 and len(vals) >= 8
-                if t_stat_one_sample(vals) is not None else False
+                is_significant(ts, len(vals)) and len(vals) >= 8
+                if ts is not None else False
             ),
-        })
+        }
+        # Post-announcement drift cross-section (T+1 → T+horizon) per C5.
+        # Defined only for horizons strictly after T+1.
+        if label != "T+1":
+            dkey = f"post_announce_drift_{label.lower().replace('+', '')}_pct"
+            drift_vals = [
+                sub["abnormal_returns"].get(dkey) for sub in subjects
+                if sub["abnormal_returns"] and sub["abnormal_returns"].get(dkey) is not None
+            ]
+            if drift_vals:
+                d_ts = t_stat_one_sample(drift_vals)
+                entry["mean_post_announce_drift_pct"] = mean(drift_vals)
+                entry["median_post_announce_drift_pct"] = median(drift_vals)
+                entry["drift_t_stat"] = d_ts
+                entry["drift_n"] = len(drift_vals)
+                entry["drift_significant"] = (
+                    is_significant(d_ts, len(drift_vals)) and len(drift_vals) >= 8
+                    if d_ts is not None else False
+                )
+        horizon_breakdown.append(entry)
 
     # Surprise vs reaction (earnings, Tier A)
     surprise_block = None
@@ -759,7 +810,9 @@ def build_summary(subjects: list[dict[str, Any]], mode: str) -> dict[str, Any] |
         "median_t5_car_pct": med,
         "std_t5_car_pct": s,
         "t_stat_avg_vs_zero": t,
-        "significant": (abs(t) > 2.0 and n >= 8) if t is not None else False,
+        # Per C6: df-aware critical t via is_significant(). The `n >= 8`
+        # floor is a separate sample-size guard and remains in place.
+        "significant": (is_significant(t, n) and n >= 8) if t is not None else False,
         "horizon_breakdown": horizon_breakdown,
         "percentiles": {
             "p10_pct": percentile(cars, 0.10),
@@ -927,6 +980,33 @@ def render_single(payload: dict[str, Any]) -> str:
             )
         lines.append("")
 
+        # Post-announcement drift: T+1 → T+horizon, SPY-adjusted. Reported
+        # separately from the event-inclusive CAR so the announcement
+        # reaction (T0 → T+1) is not mislabeled as drift (C5).
+        drift_keys = [
+            (h["horizon"], f"post_announce_drift_{h['horizon'].lower().replace('+', '')}_pct")
+            for h in ewr["horizons"] if h["horizon"] != "T+1"
+        ]
+        drift_lines = []
+        ar_t1 = ar.get("ar_t1_pct")
+        for hlabel, dkey in drift_keys:
+            d = ar.get(dkey)
+            if d is None:
+                continue
+            inclusive_key = f"ar_{hlabel.lower().replace('+', '')}_pct"
+            inclusive = ar.get(inclusive_key)
+            if inclusive is not None and ar_t1 is not None:
+                drift_lines.append(
+                    f"- Drift T+1→{hlabel}: {fmt_signed_pct(d)} "
+                    f"(CAR {fmt_signed_pct(inclusive)} minus announcement {fmt_signed_pct(ar_t1)})"
+                )
+            else:
+                drift_lines.append(f"- Drift T+1→{hlabel}: {fmt_signed_pct(d)}")
+        if drift_lines:
+            lines.append("Post-announcement drift (T+1 → T+horizon, SPY-adjusted)")
+            lines.extend(drift_lines)
+            lines.append("")
+
     hist = subject.get("t_stat_vs_history")
     if hist:
         ec_label = payload["event_class"].replace("_", " ")
@@ -1074,6 +1154,17 @@ def render_aggregate(payload: dict[str, Any]) -> str:
                 f"(median {fmt_signed_pct(hb['median_ar_pct'])}, "
                 f"{t_s}, n={hb['n']})"
             )
+            # Post-announcement drift line (T+1 → T+horizon), reported
+            # alongside the event-inclusive CAR per C5.
+            if hb.get("mean_post_announce_drift_pct") is not None:
+                d_t = hb.get("drift_t_stat")
+                d_ts = f"t-stat {d_t:+.2f}" if d_t is not None else "t-stat n/a"
+                lines.append(
+                    f"- {hb['horizon']} drift (T+1→{hb['horizon']}): "
+                    f"{fmt_signed_pct(hb['mean_post_announce_drift_pct'])} "
+                    f"(median {fmt_signed_pct(hb['median_post_announce_drift_pct'])}, "
+                    f"{d_ts}, n={hb['drift_n']})"
+                )
         p = summary["percentiles"]
         lines.append(
             f"- T+5 distribution: p10 {fmt_signed_pct(p['p10_pct'])} "

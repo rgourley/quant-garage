@@ -20,7 +20,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage import MassiveClient, today, utcnow_iso, is_significant
 from lib.quant_garage.timezones import utc_to_et
 
 TICKER = "AAPL"
@@ -205,6 +205,20 @@ for p in prints:
         t5_return = (agg_by_date[t5]["c"] - ref_close) / ref_close
         if ref_d in spy_by_date and t5 in spy_by_date:
             spy_t5_return = (spy_by_date[t5]["c"] - spy_by_date[ref_d]["c"]) / spy_by_date[ref_d]["c"]
+    # Per C5: post-announcement drift = T+1 close → T+5 close, SPY-adjusted.
+    # The existing abnormal_t5_pct is anchored at the pre-event close (ref_d)
+    # and is therefore the event-inclusive CAR (T0 → T+5), not drift. The
+    # rendered label has been "T+1 to T+5" all along; the math now matches.
+    drift_t5 = None
+    if (
+        t5 and t5 in agg_by_date and next_d in spy_by_date and t5 in spy_by_date
+        and next_close
+    ):
+        spy_next_close = spy_by_date[next_d]["c"]
+        if spy_next_close:
+            drift_raw = (agg_by_date[t5]["c"] - next_close) / next_close
+            drift_spy = (spy_by_date[t5]["c"] - spy_next_close) / spy_next_close
+            drift_t5 = drift_raw - drift_spy
     prints_with_reaction.append({
         **p,
         "ref_date": ref_d,
@@ -214,6 +228,7 @@ for p in prints:
         "t5_return_pct": t5_return,
         "spy_t5_return_pct": spy_t5_return,
         "abnormal_t5_pct": (t5_return - spy_t5_return) if t5_return is not None and spy_t5_return is not None else None,
+        "post_announce_drift_t5_pct": drift_t5,
     })
 
 realized_moves = [abs(p["reaction_pct"]) for p in prints_with_reaction if p["reaction_pct"] is not None]
@@ -237,9 +252,13 @@ avg_surprise_eps = (
 rev_surprise_vals = [p["revenue_surprise_pct"] for p in prints_with_reaction if p["revenue_surprise_pct"] is not None]
 avg_surprise_rev = sum(rev_surprise_vals) / len(rev_surprise_vals) if rev_surprise_vals else None
 
-# PEAD using true beat/miss buckets
+# PEAD using true beat/miss buckets.
+# `abnormal_*` is event-inclusive CAR (T0 → T+5); `drift_*` is the
+# post-announcement drift (T+1 → T+5), reported as a separate field per C5.
 abnormal_beats = [p["abnormal_t5_pct"] for p in beats if p["abnormal_t5_pct"] is not None]
 abnormal_misses = [p["abnormal_t5_pct"] for p in misses if p["abnormal_t5_pct"] is not None]
+drift_beats = [p["post_announce_drift_t5_pct"] for p in beats if p["post_announce_drift_t5_pct"] is not None]
+drift_misses = [p["post_announce_drift_t5_pct"] for p in misses if p["post_announce_drift_t5_pct"] is not None]
 
 pead = {
     "on_beats": {
@@ -247,18 +266,35 @@ pead = {
         "avg_t5_return_pct": sum(abnormal_beats) / len(abnormal_beats) if abnormal_beats else None,
         "t_stat": t_stat(abnormal_beats),
         "significant": False,
+        "post_announce_drift_n": len(drift_beats),
+        "avg_post_announce_drift_t5_pct": (
+            sum(drift_beats) / len(drift_beats) if drift_beats else None
+        ),
+        "drift_t_stat": t_stat(drift_beats) if drift_beats else None,
+        "drift_significant": False,
     } if abnormal_beats else None,
     "on_misses": {
         "n": len(abnormal_misses),
         "avg_t5_return_pct": sum(abnormal_misses) / len(abnormal_misses) if abnormal_misses else None,
         "t_stat": t_stat(abnormal_misses),
         "significant": False,
+        "post_announce_drift_n": len(drift_misses),
+        "avg_post_announce_drift_t5_pct": (
+            sum(drift_misses) / len(drift_misses) if drift_misses else None
+        ),
+        "drift_t_stat": t_stat(drift_misses) if drift_misses else None,
+        "drift_significant": False,
     } if abnormal_misses else None,
 }
+# Per C6: df-aware critical t via is_significant() (n=8 → 2.36, not 2.0).
 for bucket_key in ("on_beats", "on_misses"):
     bucket = pead[bucket_key]
     if bucket and bucket["t_stat"] is not None:
-        bucket["significant"] = abs(bucket["t_stat"]) > 2.0
+        bucket["significant"] = is_significant(bucket["t_stat"], bucket["n"])
+    if bucket and bucket["drift_t_stat"] is not None:
+        bucket["drift_significant"] = is_significant(
+            bucket["drift_t_stat"], bucket["post_announce_drift_n"]
+        )
 
 # 6. Options snapshot for implied move + IV30
 print("Fetching options snapshot...", file=sys.stderr)
@@ -414,6 +450,7 @@ payload = {
                 "eps_surprise_pct": p["eps_surprise_pct"],
                 "reaction_pct": p["reaction_pct"],
                 "t5_abnormal_pct": p["abnormal_t5_pct"],
+                "post_announce_drift_t5_pct": p["post_announce_drift_t5_pct"],
             }
             for p in prints_with_reaction
         ],
@@ -544,7 +581,7 @@ if worst_reaction:
 lines.append("")
 
 if pead.get("on_beats") or pead.get("on_misses"):
-    lines.append("Post-earnings drift (T+1 to T+5, SPY-adjusted)")
+    lines.append("Event-window CAR (T0 → T+5, SPY-adjusted)")
     if pead.get("on_beats") and pead["on_beats"]["avg_t5_return_pct"] is not None:
         b = pead["on_beats"]
         if b["n"] < 4:
@@ -567,6 +604,46 @@ if pead.get("on_beats") or pead.get("on_misses"):
         else:
             sig = "sample too small"
         lines.append(f"- On misses: {fmt_signed_pct(m['avg_t5_return_pct'])} avg (n={m['n']}, {sig})")
+    lines.append("")
+
+    # Post-announcement drift: T+1 → T+5, SPY-adjusted. Reported separately
+    # from event-inclusive CAR per C5 so the announcement reaction is not
+    # mislabeled as drift.
+    lines.append("Post-announcement drift (T+1 to T+5, SPY-adjusted)")
+    if (
+        pead.get("on_beats")
+        and pead["on_beats"].get("avg_post_announce_drift_t5_pct") is not None
+    ):
+        b = pead["on_beats"]
+        nb = b["post_announce_drift_n"]
+        if nb < 4:
+            sig = "sample too small"
+        elif b["drift_significant"]:
+            sig = "significant"
+        elif b["drift_t_stat"] is not None:
+            sig = f"t-stat {b['drift_t_stat']:.2f}, not significant"
+        else:
+            sig = "sample too small"
+        lines.append(
+            f"- On beats: {fmt_signed_pct(b['avg_post_announce_drift_t5_pct'])} avg (n={nb}, {sig})"
+        )
+    if (
+        pead.get("on_misses")
+        and pead["on_misses"].get("avg_post_announce_drift_t5_pct") is not None
+    ):
+        m = pead["on_misses"]
+        nm = m["post_announce_drift_n"]
+        if nm < 4:
+            sig = "sample too small"
+        elif m["drift_significant"]:
+            sig = "significant"
+        elif m["drift_t_stat"] is not None:
+            sig = f"t-stat {m['drift_t_stat']:.2f}, not significant"
+        else:
+            sig = "sample too small"
+        lines.append(
+            f"- On misses: {fmt_signed_pct(m['avg_post_announce_drift_t5_pct'])} avg (n={nm}, {sig})"
+        )
     lines.append("")
 
 lines.append("Per-print detail (for inspection)")

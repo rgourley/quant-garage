@@ -24,7 +24,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage import MassiveClient, today, utcnow_iso, is_significant
 from lib.quant_garage.timezones import utc_to_et
 
 # SEC EDGAR is NOT a Massive endpoint, so it stays on raw urllib with the
@@ -307,6 +307,20 @@ for p in prints:
             spy_t5_return = (
                 spy_by_date[t5]["c"] - spy_by_date[ref_d]["c"]
             ) / spy_by_date[ref_d]["c"]
+    # Per C5: post-announcement drift = T+1 close → T+5 close, SPY-adjusted.
+    # The existing abnormal_t5_pct is anchored at the pre-event close (ref_d)
+    # and is therefore the event-inclusive CAR (T0 → T+5), not drift. The
+    # rendered label has been "T+1 to T+5" all along; the math now matches.
+    drift_t5 = None
+    if (
+        t5 and t5 in agg_by_date and next_d in spy_by_date and t5 in spy_by_date
+        and next_close
+    ):
+        spy_next_close = spy_by_date[next_d]["c"]
+        if spy_next_close:
+            drift_raw = (agg_by_date[t5]["c"] - next_close) / next_close
+            drift_spy = (spy_by_date[t5]["c"] - spy_next_close) / spy_next_close
+            drift_t5 = drift_raw - drift_spy
     prints_with_reaction.append({
         **p,
         "ref_date": ref_d,
@@ -320,6 +334,7 @@ for p in prints:
             if t5_return is not None and spy_t5_return is not None
             else None
         ),
+        "post_announce_drift_t5_pct": drift_t5,
     })
 
 # 8. Print history aggregates (Tier B: reaction distribution only, no beat rate)
@@ -335,12 +350,22 @@ negative_reactions = [p for p in prints_with_reaction if p["reaction_pct"] <= 0]
 best_reaction = max(prints_with_reaction, key=lambda p: p["reaction_pct"], default=None)
 worst_reaction = min(prints_with_reaction, key=lambda p: p["reaction_pct"], default=None)
 
-# 9. PEAD bucketed by reaction sign (Tier B substitute)
+# 9. PEAD bucketed by reaction sign (Tier B substitute).
+# `abnormal_*` is event-inclusive CAR (T0 → T+5); `drift_*` is the
+# post-announcement drift (T+1 → T+5), reported as a separate field per C5.
 abnormal_pos = [
     p["abnormal_t5_pct"] for p in positive_reactions if p["abnormal_t5_pct"] is not None
 ]
 abnormal_neg = [
     p["abnormal_t5_pct"] for p in negative_reactions if p["abnormal_t5_pct"] is not None
+]
+drift_pos = [
+    p["post_announce_drift_t5_pct"] for p in positive_reactions
+    if p["post_announce_drift_t5_pct"] is not None
+]
+drift_neg = [
+    p["post_announce_drift_t5_pct"] for p in negative_reactions
+    if p["post_announce_drift_t5_pct"] is not None
 ]
 
 pead = {
@@ -349,18 +374,35 @@ pead = {
         "avg_t5_return_pct": sum(abnormal_pos) / len(abnormal_pos) if abnormal_pos else None,
         "t_stat": t_stat(abnormal_pos),
         "significant": False,
+        "post_announce_drift_n": len(drift_pos),
+        "avg_post_announce_drift_t5_pct": (
+            sum(drift_pos) / len(drift_pos) if drift_pos else None
+        ),
+        "drift_t_stat": t_stat(drift_pos) if drift_pos else None,
+        "drift_significant": False,
     } if abnormal_pos else None,
     "on_negative_reactions": {
         "n": len(abnormal_neg),
         "avg_t5_return_pct": sum(abnormal_neg) / len(abnormal_neg) if abnormal_neg else None,
         "t_stat": t_stat(abnormal_neg),
         "significant": False,
+        "post_announce_drift_n": len(drift_neg),
+        "avg_post_announce_drift_t5_pct": (
+            sum(drift_neg) / len(drift_neg) if drift_neg else None
+        ),
+        "drift_t_stat": t_stat(drift_neg) if drift_neg else None,
+        "drift_significant": False,
     } if abnormal_neg else None,
 }
+# Per C6: df-aware critical t via is_significant() (n=8 → 2.36, not 2.0).
 for bucket_key in ("on_positive_reactions", "on_negative_reactions"):
     bucket = pead[bucket_key]
     if bucket and bucket["t_stat"] is not None:
-        bucket["significant"] = abs(bucket["t_stat"]) > 2.0
+        bucket["significant"] = is_significant(bucket["t_stat"], bucket["n"])
+    if bucket and bucket["drift_t_stat"] is not None:
+        bucket["drift_significant"] = is_significant(
+            bucket["drift_t_stat"], bucket["post_announce_drift_n"]
+        )
 
 # 10. Options snapshot for implied move + IV30 proxy
 print("Fetching options snapshot...", file=sys.stderr)
@@ -593,6 +635,7 @@ payload = {
                 "eps_actual": p["eps_actual"],
                 "reaction_pct": p["reaction_pct"],
                 "t5_abnormal_pct": p["abnormal_t5_pct"],
+                "post_announce_drift_t5_pct": p["post_announce_drift_t5_pct"],
             }
             for p in prints_with_reaction
         ],
@@ -725,7 +768,7 @@ if worst_reaction:
 lines.append("")
 
 if pead.get("on_positive_reactions") or pead.get("on_negative_reactions"):
-    lines.append("Post-earnings drift (T+1 to T+5, SPY-adjusted, bucketed by reaction sign)")
+    lines.append("Event-window CAR (T0 → T+5, SPY-adjusted, bucketed by reaction sign)")
     if pead.get("on_positive_reactions") and pead["on_positive_reactions"]["avg_t5_return_pct"] is not None:
         b = pead["on_positive_reactions"]
         if b["n"] < 4:
@@ -748,6 +791,46 @@ if pead.get("on_positive_reactions") or pead.get("on_negative_reactions"):
         else:
             sig = "sample too small"
         lines.append(f"- After negative reactions: {fmt_signed_pct(m['avg_t5_return_pct'])} avg (n={m['n']}, {sig})")
+    lines.append("")
+
+    # Post-announcement drift: T+1 → T+5, SPY-adjusted. Reported separately
+    # from event-inclusive CAR per C5 so the announcement reaction is not
+    # mislabeled as drift.
+    lines.append("Post-announcement drift (T+1 to T+5, SPY-adjusted, bucketed by reaction sign)")
+    if (
+        pead.get("on_positive_reactions")
+        and pead["on_positive_reactions"].get("avg_post_announce_drift_t5_pct") is not None
+    ):
+        b = pead["on_positive_reactions"]
+        nb = b["post_announce_drift_n"]
+        if nb < 4:
+            sig = "sample too small"
+        elif b["drift_significant"]:
+            sig = "significant"
+        elif b["drift_t_stat"] is not None:
+            sig = f"t-stat {b['drift_t_stat']:.2f}, not significant"
+        else:
+            sig = "sample too small"
+        lines.append(
+            f"- After positive reactions: {fmt_signed_pct(b['avg_post_announce_drift_t5_pct'])} avg (n={nb}, {sig})"
+        )
+    if (
+        pead.get("on_negative_reactions")
+        and pead["on_negative_reactions"].get("avg_post_announce_drift_t5_pct") is not None
+    ):
+        m = pead["on_negative_reactions"]
+        nm = m["post_announce_drift_n"]
+        if nm < 4:
+            sig = "sample too small"
+        elif m["drift_significant"]:
+            sig = "significant"
+        elif m["drift_t_stat"] is not None:
+            sig = f"t-stat {m['drift_t_stat']:.2f}, not significant"
+        else:
+            sig = "sample too small"
+        lines.append(
+            f"- After negative reactions: {fmt_signed_pct(m['avg_post_announce_drift_t5_pct'])} avg (n={nm}, {sig})"
+        )
     lines.append("")
 
 if peer_reaction_block:
