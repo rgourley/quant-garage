@@ -1,6 +1,6 @@
 # quant-garage
 
-![quant-garage](./assets/og.png)
+<img width="1200" height="630" alt="og" src="https://github.com/user-attachments/assets/cbd8979c-1896-422d-bc24-45416970a1fc" />
 
 Quant and equity research tools that run inside Claude, or behind your
 own UI. You ask Claude "preview NVDA earnings" or "screen for momentum
