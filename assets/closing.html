@@ -10,16 +10,16 @@
   :root {
     --ink: #0d0d0d;
     --surface: #fafaf7;
-    --muted: #6b6b6b;
-    --border: #e8e5df;
+    --muted: #a8a39a;
+    --border: rgba(250, 250, 247, 0.18);
     --accent: #e84d1a;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     width: 1200px;
     height: 630px;
-    background: var(--surface);
-    color: var(--ink);
+    background: var(--ink);
+    color: var(--surface);
     font-family: "IBM Plex Sans Condensed", system-ui, sans-serif;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
@@ -41,7 +41,7 @@
     font-weight: 500;
     letter-spacing: 0.16em;
     text-transform: uppercase;
-    color: var(--ink);
+    color: var(--surface);
   }
   .brand {
     display: flex;
@@ -75,7 +75,7 @@
     font-weight: 700;
     line-height: 1.04;
     letter-spacing: -0.025em;
-    color: var(--ink);
+    color: var(--surface);
     max-width: 1080px;
   }
   .title .accent { color: var(--accent); }
@@ -94,7 +94,7 @@
     font-family: "IBM Plex Sans Condensed", sans-serif;
     font-size: 64px;
     font-weight: 700;
-    color: var(--ink);
+    color: var(--surface);
     line-height: 1;
     letter-spacing: -0.02em;
   }
@@ -141,7 +141,7 @@
 
   <div class="stat-row">
     <div class="big-value">Fork it.</div>
-    <div class="meta">Ship it. Charge for it. Attribution welcome, not required.</div>
+    <div class="meta">Ship it. Attribution welcome, not required.</div>
   </div>
 
   <div class="footer">
