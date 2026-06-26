@@ -23,11 +23,16 @@ differs.
 
 Audit cleanup (2026-06-26):
 - H1, H2, L3, D3, D4, D5, M8: all routed through lib.quant_garage.
-- C8 (no NBBO at trade time) remains open as a domain fix.
+- C8: closed. Each contributing trade is classified against the NBBO at
+  that trade's sip_timestamp (fetch_nbbo_at), not against a day-VWAP vs
+  a single most-recent quote. Spike-window trades are pulled by
+  timestamp.gte/lte so sweeps outside the most-recent 200 prints are no
+  longer silently downgraded.
 """
 import os
 import sys
 import json
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 # Make `lib.quant_garage` importable when running this script from any cwd.
@@ -139,25 +144,112 @@ def get_30d_avg_volume(occ_ticker):
     return sum(vols[:30]) / min(len(vols), 30)
 
 
-def get_trades(occ_ticker, limit=200):
-    """Pull recent trades for sweep/block classification."""
-    path = f"/v3/trades/{occ_ticker}?limit={limit}&order=desc"
+# Session-window pull cap. Liquid weeklies on big names can print
+# thousands of trades a session; 5000 keeps the fan-out bounded while
+# still catching sweeps that fall outside the most-recent 200 prints
+# (the bug C8 closed).
+TRADES_WINDOW_HARD_CAP = 5000
+
+
+def _session_window_ns():
+    """Return (start_ns, end_ns) covering today's session in UTC.
+
+    Uses a wide window (00:00 UTC -> now) rather than ET market hours so
+    extended-hours options prints aren't dropped. Bounded by
+    TRADES_WINDOW_HARD_CAP downstream so this isn't a runaway pull.
+    """
+    start_dt = datetime(TODAY.year, TODAY.month, TODAY.day, tzinfo=timezone.utc)
+    start_ns = int(start_dt.timestamp() * 1_000_000_000)
+    end_ns = int(NOW_UTC.timestamp() * 1_000_000_000)
+    return start_ns, end_ns
+
+
+def get_trades_window(occ_ticker, start_ns, end_ns, hard_cap=TRADES_WINDOW_HARD_CAP):
+    """Pull trades inside [start_ns, end_ns] for one OCC ticker.
+
+    Replaces the old `limit=200&order=desc` pull. Using timestamp.gte/lte
+    means sweeps that landed earlier in the session are still considered
+    rather than being silently truncated when the contract printed >200
+    trades after the spike.
+    """
+    path = (
+        f"/v3/trades/{occ_ticker}"
+        f"?timestamp.gte={start_ns}&timestamp.lte={end_ns}"
+        f"&order=asc&sort=timestamp&limit=1000"
+    )
+    out = []
+    try:
+        for results, _ in client.paginate(path):
+            out.extend(results)
+            if len(out) >= hard_cap:
+                out = out[:hard_cap]
+                break
+    except FetchError:
+        return out
+    return out
+
+
+def fetch_nbbo_at(occ_ticker, ts_ns):
+    """Return the most-recent quote at or before ts_ns as (bid, ask, qts_iso).
+
+    Lifted from examples/run-best-ex-check.py's fetch_nbbo_at. Same
+    pattern: pull a small window of quotes ending at ts_ns, take the
+    last one whose sip_timestamp <= ts_ns. The window approach (vs a
+    single limit=1&order=desc with timestamp.lte) protects against
+    sparse-quote contracts where the most-recent inside-the-window quote
+    may sit a few hundred ms before the trade.
+    """
+    if ts_ns is None or ts_ns <= 0:
+        return None, None, None
+    # 30-second lookback. Options NBBOs tick every quote update; thin
+    # weeklies might go a few seconds without a print, so 30s is enough
+    # to find the active inside quote without burning pages.
+    window_ns = 30 * 1_000_000_000
+    start_ns = ts_ns - window_ns
+    ts_minus_iso = (
+        datetime.fromtimestamp(start_ns / 1_000_000_000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    ts_at_iso = (
+        datetime.fromtimestamp(ts_ns / 1_000_000_000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+    path = (
+        f"/v3/quotes/{occ_ticker}"
+        f"?timestamp.gte={urllib.parse.quote(ts_minus_iso)}"
+        f"&timestamp.lte={urllib.parse.quote(ts_at_iso)}"
+        f"&order=desc&sort=timestamp&limit=50"
+    )
     try:
         doc, _ = client.get(path)
     except FetchError:
-        return []
-    return doc.get("results") or []
-
-
-def get_last_quote(occ_ticker):
-    """Pull the most recent quote (NBBO) for the contract."""
-    path = f"/v3/quotes/{occ_ticker}?limit=1&order=desc"
-    try:
-        doc, _ = client.get(path)
-    except FetchError:
-        return None
-    results = doc.get("results") or []
-    return results[0] if results else None
+        return None, None, None
+    chosen = None
+    for q in (doc.get("results") or []):
+        sip_ts = q.get("sip_timestamp") or q.get("participant_timestamp")
+        if sip_ts is None:
+            continue
+        if sip_ts <= ts_ns:
+            chosen = q
+            break
+    if chosen is None:
+        results = doc.get("results") or []
+        if not results:
+            return None, None, None
+        chosen = results[-1]
+    bid = chosen.get("bid_price")
+    ask = chosen.get("ask_price")
+    sip_ns = chosen.get("sip_timestamp") or chosen.get("participant_timestamp")
+    qts = (
+        datetime.fromtimestamp(sip_ns / 1_000_000_000, tz=timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+        if sip_ns
+        else None
+    )
+    return bid, ask, qts
 
 
 def price_vs_nbbo(price, bid, ask):
@@ -208,7 +300,12 @@ def position_signal(vol_oi_ratio, oi_pre):
 
 
 def classify_kind(trades, ticker, contract_volume):
-    """Return (kind, contributing_trades, vwap)."""
+    """Return (kind, contributing_trades, vwap).
+
+    `trades` is the windowed session pull from get_trades_window. It
+    can be unordered relative to sip_timestamp depending on the API
+    page order, so each detection path sorts what it needs.
+    """
     if not trades:
         # No trade history available; classify as 'other' with chain VWAP
         return "other", [], None
@@ -252,13 +349,97 @@ def classify_kind(trades, ticker, contract_volume):
         biggest = max(blocks, key=lambda t: t.get("size", 0))
         return "block", [biggest], biggest.get("price")
 
-    # Otherwise: 'other' (qualifying volume but no sweep/block)
+    # Otherwise: 'other' (qualifying volume but no sweep/block).
+    # Cap the contributing-trade sample at the 10 largest by size to
+    # bound the per-print NBBO-fetch fan-out (each contrib trade costs
+    # one /v3/quotes call below).
     if clean:
         total_size = sum(t.get("size", 0) for t in clean)
         if total_size > 0:
             vwap = sum(t.get("size", 0) * t.get("price", 0) for t in clean) / total_size
-            return "other", clean[:10], vwap
+            biggest = sorted(clean, key=lambda t: t.get("size", 0), reverse=True)[:10]
+            return "other", biggest, vwap
     return "other", [], None
+
+
+def classify_trades_against_nbbo(occ_ticker, contract_type, contrib):
+    """For each contributing trade, fetch NBBO at trade time and tag it.
+
+    Returns a dict:
+      {
+        "nbbo_tag": dominant_tag,          # volume-weighted majority
+        "direction": dominant_direction,
+        "nbbo_bid": representative_bid,    # from the largest trade
+        "nbbo_ask": representative_ask,
+        "per_trade": [{ ... }, ...],       # one entry per contrib trade
+      }
+
+    Replaces the old day-VWAP vs single most-recent quote comparison.
+    Each trade is judged against the inside quote that was active at
+    that trade's sip_timestamp.
+    """
+    if not contrib:
+        return {
+            "nbbo_tag": "unknown",
+            "direction": "unknown",
+            "nbbo_bid": None,
+            "nbbo_ask": None,
+            "per_trade": [],
+        }
+
+    per_trade = []
+    # Volume-weighted tag tallies and a parallel direction tally
+    tag_weight = {}
+    dir_weight = {}
+    for t in contrib:
+        ts_ns = t.get("sip_timestamp") or t.get("participant_timestamp")
+        bid, ask, _qts = fetch_nbbo_at(occ_ticker, ts_ns)
+        price = t.get("price")
+        size = t.get("size") or 0
+        if bid is None or ask is None or price is None:
+            tag = "unknown"
+        else:
+            tag = price_vs_nbbo(price, bid, ask)
+        direction = inferred_direction(contract_type, tag)
+        per_trade.append({
+            "sip_timestamp": ts_ns,
+            "price": price,
+            "size": size,
+            "bid": bid,
+            "ask": ask,
+            "tag": tag,
+            "direction": direction,
+        })
+        tag_weight[tag] = tag_weight.get(tag, 0) + size
+        dir_weight[direction] = dir_weight.get(direction, 0) + size
+
+    # Dominant by volume, ignoring "unknown" if any concrete tag won size
+    def dominant(weights):
+        concrete = {k: v for k, v in weights.items() if k != "unknown" and v > 0}
+        if concrete:
+            return max(concrete.items(), key=lambda kv: kv[1])[0]
+        return "unknown"
+
+    nbbo_tag = dominant(tag_weight)
+    direction = dominant(dir_weight)
+
+    # Representative bid/ask from the largest contributing trade with a
+    # real quote, so the rendered output still shows a single NBBO band.
+    rep = sorted(
+        [p for p in per_trade if p["bid"] is not None and p["ask"] is not None],
+        key=lambda p: p["size"],
+        reverse=True,
+    )
+    rep_bid = rep[0]["bid"] if rep else None
+    rep_ask = rep[0]["ask"] if rep else None
+
+    return {
+        "nbbo_tag": nbbo_tag,
+        "direction": direction,
+        "nbbo_bid": rep_bid,
+        "nbbo_ask": rep_ask,
+        "per_trade": per_trade,
+    }
 
 
 def compute_score(vol_avg_ratio, vol_oi_ratio, premium_usd, chain_share):
@@ -369,10 +550,13 @@ def scan_ticker(ticker):
         if vol_avg_ratio < MIN_VOL_AVG_RATIO:
             continue
 
-        # Pull trades and last quote for sweep/block + NBBO classification
-        trades = get_trades(c["occ"], limit=200)
+        # Pull all trades inside today's session window and classify the
+        # qualifying subset (sweep / block / other). Using timestamp.gte/lte
+        # means sweeps outside the most-recent 200 prints are no longer
+        # silently downgraded (audit item C8).
+        start_ns, end_ns = _session_window_ns()
+        trades = get_trades_window(c["occ"], start_ns, end_ns)
         kind, contrib, vwap_classified = classify_kind(trades, ticker, c["vol"])
-        quote = get_last_quote(c["occ"])
 
         # Use the classified print's price if available, else day vwap
         print_price = vwap_classified if vwap_classified else c["avg_price"]
@@ -383,20 +567,13 @@ def scan_ticker(ticker):
         # to determine kind (sweep / block / other).
         premium_render = c["premium_usd"]
 
-        bid = quote.get("bid_price") if quote else None
-        ask = quote.get("ask_price") if quote else None
-        # Only classify NBBO when the quote and the day's VWAP are in the
-        # same order of magnitude. A $0.40 print vs a stale $30 quote
-        # would produce garbage direction tags.
-        if bid and ask and print_price and bid > 0:
-            mid = (bid + ask) / 2
-            if mid > 0 and 0.2 <= (print_price / mid) <= 5.0:
-                nbbo_tag = price_vs_nbbo(print_price, bid, ask)
-            else:
-                nbbo_tag = "unknown"
-        else:
-            nbbo_tag = "unknown"
-        direction = inferred_direction(c["type"], nbbo_tag)
+        # NBBO at trade time, per contributing trade. Replaces the old
+        # day-VWAP vs single most-recent quote comparison.
+        nbbo = classify_trades_against_nbbo(c["occ"], c["type"], contrib)
+        nbbo_tag = nbbo["nbbo_tag"]
+        direction = nbbo["direction"]
+        bid = nbbo["nbbo_bid"]
+        ask = nbbo["nbbo_ask"]
 
         score = compute_score(
             vol_avg_ratio=vol_avg_ratio,
@@ -474,7 +651,7 @@ payload = {
     "tier": "B",
     "tier_caveats": [
         "15-min delayed tape (Options Developer plan).",
-        "NBBO from last quote on the contract, not the exact print millisecond.",
+        "NBBO is the inside quote at each contributing trade's sip_timestamp, fetched via /v3/quotes?timestamp.lte={ns} (30s lookback window). Tag and direction are volume-weighted across contributing trades.",
         "Volume/avg ratio computed against the 30-day daily aggregate; new weeklies use chain-median fallback.",
     ],
     "mode": "stream",
@@ -493,8 +670,8 @@ payload = {
         {"endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}", "fetched_at": utcnow_iso(), "context": "spot price per ticker"},
         {"endpoint": "https://api.polygon.io/v3/snapshot/options/{ticker}", "fetched_at": utcnow_iso(), "context": "chain snapshot for volume/OI/IV/greeks"},
         {"endpoint": "https://api.polygon.io/v2/aggs/ticker/{occ_ticker}/range/1/day/{from}/{to}", "fetched_at": utcnow_iso(), "context": "30-day daily volume baseline per contract"},
-        {"endpoint": "https://api.polygon.io/v3/trades/{occ_ticker}", "fetched_at": utcnow_iso(), "context": "tick trades for sweep/block classification"},
-        {"endpoint": "https://api.polygon.io/v3/quotes/{occ_ticker}", "fetched_at": utcnow_iso(), "context": "last NBBO for direction inference"},
+        {"endpoint": "https://api.polygon.io/v3/trades/{occ_ticker}?timestamp.gte={start_ns}&timestamp.lte={end_ns}", "fetched_at": utcnow_iso(), "context": "session-window trades for sweep/block classification"},
+        {"endpoint": "https://api.polygon.io/v3/quotes/{occ_ticker}?timestamp.lte={trade_ns}", "fetched_at": utcnow_iso(), "context": "NBBO at each contributing trade's sip_timestamp for direction inference"},
     ],
 }
 
