@@ -176,35 +176,46 @@ with a one-line read at the bottom on the broader regime (this week's
 read: "quiet regime, BTC realized vol at 30% sitting in the 25th
 percentile of trailing year, setup-watch day not entry day").
 
-## Why Massive
+## What to sign up for
 
-Massive is the new name for Polygon.io, the API a lot of fintechs,
-quant shops, and indie traders use for US market data. They cover
-stocks, options, crypto, forex, indices, and futures via REST,
-WebSocket, and S3 flat files. Pricing starts free (Basic tier, 5
-calls per minute) and scales up through Starter ($29), Developer
-($79), Advanced ($199), and Business plans.
+Use **Massive** (formerly Polygon.io). It's the API quant-garage is
+built against and the one we recommend you run the tools on. Get a key
+at [massive.com/pricing](https://massive.com/pricing).
 
-A few quant-garage tools also use Benzinga add-ons for analyst-grade
-data (earnings consensus + surprise, news with sentiment, analyst
-ratings). Each Benzinga product is a separate ~$99/month add-on on
-top of the asset class plan.
+The free **Basic** tier (5 calls per minute, end-of-day data) runs
+five of the tools end to end, including earnings previews on any US
+name via the SEC EDGAR fallback. Good place to try the framework.
 
-Why this provider: it's the broadest US market data API with a
-consistent shape across asset classes. Cheap free tier so anyone can
-try the tools. Real entitlement quirks documented in the skill
-references as workarounds.
+Most people end up wanting **Stocks Starter at $29 per month**. That
+unlocks unlimited rate, 15-minute delayed real-time quotes, options
+contract reference data, and the bulk grouped-aggregates endpoint
+that powers the universe screeners. Eleven of the fourteen tools run
+on this tier.
 
-Three of the tools (`earnings-drilldown`, `event-study`, `news-
-scanner`) also use SEC EDGAR's free public submissions API for 8-K
-filing dates as a fallback when the paid Benzinga add-on isn't
-available. The 8-K acceptance time IS the press release time, within
-minutes, for US filers; we verified 8 of 8 of Apple's last 8 prints
-matched. So you can run those tools without the Benzinga subscription
-and still get press-release-accurate dates.
+Specific tools need specific add-ons:
 
-The [PLAN-MATRIX.md](./PLAN-MATRIX.md) file tells you exactly which
-Massive plan each tool needs.
+- **Options data** for `options-flow` and full-mode `earnings-drilldown`:
+  Options Developer at $79/month
+- **Benzinga Earnings** (consensus EPS + surprise %) for full-fidelity
+  `earnings-drilldown` and `event-study`: ~$99/month add-on. Without it,
+  these tools fall back to SEC EDGAR for press release dates, which we
+  verified matches the Benzinga date to the day on 8 of 8 of Apple's
+  last 8 prints. So the SEC fallback works, you just lose the
+  consensus number.
+- **Benzinga News** for `news-scanner`: ~$99/month
+- **Crypto Starter** for `crypto-vol-scanner`: $29/month
+- **Stocks Advanced** for live-mode `portfolio-mark` with real-time
+  WebSocket: $199/month. Delayed-mode portfolio-mark runs fine on
+  Starter.
+
+Why Massive over the alternatives: broadest US market data coverage
+in one account (stocks, options, crypto, FX, indices, futures), REST
++ WebSocket + S3 flat files all included, cheap free tier so anyone
+can try, and the SEC EDGAR fallback we built lets you run the earnings
+tools without paying for Benzinga at all.
+
+The [PLAN-MATRIX.md](./PLAN-MATRIX.md) file maps every tool to the
+exact plan + add-ons it needs.
 
 ## Setup
 
