@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>quant-garage</title>
+<title>quant-garage · skills</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap" rel="stylesheet">
@@ -10,13 +10,9 @@
   :root {
     --ink: #0d0d0d;
     --surface: #fafaf7;
-    --muted: #6b6b6b;
     --muted-dark: #a8a39a;
-    --border: #e8e5df;
     --border-dark: rgba(250, 250, 247, 0.18);
     --accent: #e84d1a;
-    --green: #0d7e4f;
-    --red: #9f1212;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
@@ -24,7 +20,7 @@
     height: 630px;
     background: var(--ink);
     color: var(--surface);
-    font-family: "IBM Plex Sans Condensed", system-ui, -apple-system, sans-serif;
+    font-family: "IBM Plex Sans Condensed", system-ui, sans-serif;
     overflow: hidden;
     -webkit-font-smoothing: antialiased;
   }
@@ -35,7 +31,6 @@
     display: flex;
     flex-direction: column;
   }
-  /* Top branding bar */
   .topbar {
     display: flex;
     justify-content: space-between;
@@ -47,26 +42,12 @@
     text-transform: uppercase;
     color: var(--surface);
   }
-  .brand {
-    display: flex;
-    gap: 14px;
-    align-items: center;
-  }
-  .brand-name {
-    font-weight: 500;
-    opacity: 0.85;
-  }
-  .brand-tag {
-    color: var(--accent);
-    opacity: 1;
-  }
-  .brand-url {
-    color: var(--surface);
-    opacity: 0.5;
-  }
-  /* Kicker */
+  .brand { display: flex; gap: 14px; align-items: center; }
+  .brand-name { opacity: 0.85; }
+  .brand-tag { color: var(--accent); }
+  .brand-url { opacity: 0.5; }
   .kicker {
-    margin-top: 56px;
+    margin-top: 44px;
     font-family: "IBM Plex Mono", ui-monospace, monospace;
     font-size: 22px;
     font-weight: 500;
@@ -74,52 +55,34 @@
     text-transform: uppercase;
     color: var(--accent);
   }
-  /* Title */
-  .title {
-    margin-top: 18px;
+  .skills {
+    margin-top: 26px;
     font-family: "IBM Plex Sans Condensed", sans-serif;
-    font-size: 120px;
+    font-size: 38px;
     font-weight: 700;
-    line-height: 1.04;
-    letter-spacing: -0.025em;
+    line-height: 1.22;
+    letter-spacing: -0.018em;
     color: var(--surface);
-    max-width: 1080px;
+    word-spacing: 4px;
   }
-  .title .accent { color: var(--accent); }
-  /* Spacer */
+  .skills .name {
+    white-space: nowrap;
+    display: inline-block;
+  }
+  .skills .sep {
+    color: var(--accent);
+    font-weight: 600;
+    padding: 0 10px;
+    display: inline-block;
+  }
   .spacer { flex: 1; }
-  /* Stat row above hairline */
-  .stat-row {
-    display: flex;
-    align-items: baseline;
-    gap: 28px;
-    border-top: 1px solid var(--border-dark);
-    padding-top: 26px;
-    margin-top: 16px;
-  }
-  .big-value {
-    font-family: "IBM Plex Sans Condensed", sans-serif;
-    font-size: 64px;
-    font-weight: 700;
-    color: var(--surface);
-    line-height: 1;
-    letter-spacing: -0.02em;
-  }
-  .meta {
-    font-family: "IBM Plex Mono", ui-monospace, monospace;
-    font-size: 18px;
-    font-weight: 500;
-    letter-spacing: 0.12em;
-    text-transform: uppercase;
-    color: var(--muted-dark);
-    padding-bottom: 6px;
-  }
-  /* Footer */
   .footer {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-top: 24px;
+    border-top: 1px solid var(--border-dark);
+    padding-top: 22px;
+    margin-top: 18px;
     font-family: "IBM Plex Mono", ui-monospace, monospace;
     font-size: 14px;
     font-weight: 500;
@@ -140,19 +103,16 @@
     <span class="brand-url">github.com/rgourley/quant-garage</span>
   </div>
 
-  <div class="kicker">// CLAUDE SKILLS · MIT · OPEN SOURCE</div>
+  <div class="kicker">// 14 SKILLS · ONE FRAMEWORK</div>
 
-  <div class="title">Sell-side analysis.<br>Without the<span class="accent"> desk.</span></div>
+  <div class="skills">
+    <span class="name">earnings-drilldown</span><span class="sep">·</span><span class="name">factor-research</span><span class="sep">·</span><span class="name">pitch-comps</span><span class="sep">·</span><span class="name">options-flow</span><span class="sep">·</span><span class="name">news-scanner</span><span class="sep">·</span><span class="name">universe-builder</span><span class="sep">·</span><span class="name">portfolio-mark</span><span class="sep">·</span><span class="name">event-study</span><span class="sep">·</span><span class="name">valuation-sanity-check</span><span class="sep">·</span><span class="name">crypto-vol-scanner</span><span class="sep">·</span><span class="name">corp-actions-reconciler</span><span class="sep">·</span><span class="name">backtest-data-prep</span><span class="sep">·</span><span class="name">best-ex-check</span><span class="sep">·</span><span class="name">t+1-settlement-prep</span>
+  </div>
 
   <div class="spacer"></div>
 
-  <div class="stat-row">
-    <div class="big-value">14 tools.</div>
-    <div class="meta">Every output cited to a live API call</div>
-  </div>
-
   <div class="footer">
-    <span>QUANT GARAGE · v0.1 · MIT</span>
+    <span>NOTE · TABLE · STREAM · HYBRID · EXCEPTION · DATASET</span>
     <span>GITHUB.COM/RGOURLEY/QUANT-GARAGE</span>
   </div>
 

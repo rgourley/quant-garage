@@ -68,6 +68,8 @@ workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
 alpha, you build on top of this; you don't deploy this.
 
+![14 skills, one framework](./assets/skills.png)
+
 ## The 14 tools, with real use cases
 
 ### Earnings work
