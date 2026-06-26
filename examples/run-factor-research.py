@@ -54,7 +54,7 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, FetchError, today, utcnow_iso
+from lib.quant_garage import MassiveClient, FetchError, today, utcnow_iso, newey_west_se
 
 
 TODAY = today()
@@ -187,8 +187,14 @@ def trading_days(start, end):
 # ----- Universe construction -----
 
 
-def build_universe(target_size):
-    """Pull top-N by current market cap. Returns list of {ticker, name, market_cap}."""
+def _build_factor_universe(target_size):
+    """Pull top-N by current market cap. Returns list of {ticker, name, market_cap}.
+
+    Renamed from `build_universe` (N6) to avoid shadowing
+    `lib.quant_garage.build_universe`, which builds a point-in-time
+    universe from grouped aggs. The factor-research script needs the
+    enriched, market-cap-ranked variant, so we keep a script-local
+    helper rather than swapping in the lib version."""
     print(f"Building universe (top {target_size} by market cap)...", file=sys.stderr)
     cache_path = os.path.join(CACHE_DIR, f"universe_top_{target_size}.json")
     if os.path.exists(cache_path):
@@ -282,36 +288,101 @@ def build_price_panel(universe, start, end, s3=None):
 # ----- Fundamentals (value + quality) -----
 
 
+# Shares-outstanding fallback chain (matches C12 in run-valuation-sanity-check.py).
+# Income-statement keys, ordered from preferred (point-in-time, diluted) to last-resort.
+_SHARES_FIELDS = (
+    "weighted_average_diluted_shares_outstanding",
+    "weighted_average_basic_shares_outstanding",
+    "weighted_shares_outstanding",
+    "share_class_shares_outstanding",
+)
+
+
+def _pick_shares_from_filing(fin):
+    """Extract a shares value from one filing's `financials` blob.
+    Returns (value, source_field) or (None, None)."""
+    inc = (fin or {}).get("income_statement") or {}
+    for field in _SHARES_FIELDS:
+        node = inc.get(field) or {}
+        v = node.get("value")
+        if v is not None:
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                continue
+            if fv > 0:
+                return fv, field
+    return None, None
+
+
 def fetch_fundamentals(universe):
-    """One annual filing per ticker. Returns dict[ticker] -> {book_equity, net_income, shares}."""
-    print(f"Pulling fundamentals for {len(universe)} names...", file=sys.stderr)
-    cache_path = os.path.join(CACHE_DIR, "fundamentals.json")
+    """Pull up to ~5 years of quarterly filings per ticker for point-in-time use.
+
+    C2/C4: prior implementation pulled a single most-recent annual filing per
+    ticker, which forced both the value factor (mcap proxy) and the quality
+    factor (ROE) to be either look-ahead-biased or constant across all
+    historical months. The fix pulls the filing history once per ticker and
+    lets callers select the latest filing with
+    `period_of_report_date <= rebalance_date` at each monthly rebalance.
+
+    Returns
+    -------
+    dict[ticker] -> list[dict] (most-recent first), where each dict has:
+        period_of_report_date: ISO date string ('YYYY-MM-DD')
+        shares: float or None  (via _SHARES_FIELDS fallback chain)
+        shares_source: str or None
+        book_equity: float or None
+        net_income: float or None  (TTM as available from this filing)
+
+    Cache is keyed by ticker; bump the filename when the schema changes
+    so a stale single-annual cache from a prior run isn't reused.
+    """
+    print(f"Pulling point-in-time fundamentals for {len(universe)} names...", file=sys.stderr)
+    cache_path = os.path.join(CACHE_DIR, "fundamentals_pit.json")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             return json.load(f)
 
     def get_one(tk):
         try:
-            d = fetch_rest(f"/vX/reference/financials?ticker={tk}&timeframe=annual&limit=2&order=desc")
+            # quarterly cadence x 80 rows = up to ~20 years of history per ticker;
+            # period_of_report_date filter is applied client-side at each rebalance.
+            d = fetch_rest(
+                f"/vX/reference/financials?ticker={tk}&timeframe=quarterly&limit=80&order=desc"
+            )
             rows = d.get("results") or []
-            if not rows:
-                return tk, None
-            fin = rows[0].get("financials") or {}
-            bs = fin.get("balance_sheet") or {}
-            inc = fin.get("income_statement") or {}
-            equity = (bs.get("equity") or {}).get("value")
-            ni = (inc.get("net_income_loss") or {}).get("value")
-            return tk, {"book_equity": equity, "net_income": ni}
+            filings = []
+            for r in rows:
+                porp = r.get("period_of_report_date")
+                if not porp:
+                    continue
+                fin = r.get("financials") or {}
+                bs = fin.get("balance_sheet") or {}
+                inc = fin.get("income_statement") or {}
+                equity_node = bs.get("equity") or {}
+                ni_node = inc.get("net_income_loss") or {}
+                shares_val, shares_source = _pick_shares_from_filing(fin)
+                filings.append({
+                    "period_of_report_date": porp,
+                    "shares": shares_val,
+                    "shares_source": shares_source,
+                    "book_equity": equity_node.get("value"),
+                    "net_income": ni_node.get("value"),
+                })
+            # Most-recent first (the API returns desc, but be explicit so
+            # the lookup helpers can stop at the first hit).
+            filings.sort(key=lambda x: x["period_of_report_date"], reverse=True)
+            return tk, filings
         except Exception:
-            return tk, None
+            return tk, []
 
     out = {}
     with ThreadPoolExecutor(max_workers=20) as pool:
         futures = {pool.submit(get_one, t["ticker"]): t["ticker"] for t in universe}
         done = 0
         for f in as_completed(futures):
-            tk, v = f.result()
-            out[tk] = v
+            tk, filings = f.result()
+            out[tk] = filings
             done += 1
             if done % 50 == 0:
                 print(f"  {done}/{len(universe)} fundamentals fetched", file=sys.stderr)
@@ -320,10 +391,31 @@ def fetch_fundamentals(universe):
     return out
 
 
+def _latest_filing_before(filings, rebal_date):
+    """Pick the most recent filing with period_of_report_date <= rebal_date.
+    `filings` must be sorted most-recent first. Returns the filing dict or None."""
+    if not filings:
+        return None
+    cutoff = rebal_date.strftime("%Y-%m-%d") if hasattr(rebal_date, "strftime") else str(rebal_date)[:10]
+    for f in filings:
+        if f["period_of_report_date"] <= cutoff:
+            return f
+    return None
+
+
 # ----- Factor computation -----
 
 
-def winsorize(s, low=0.01, high=0.99):
+def _winsorize_series(s, low=0.01, high=0.99):
+    """Winsorize a pandas Series at given percentiles.
+
+    Renamed from `winsorize` (N6) to avoid shadowing
+    `lib.quant_garage.winsorize`. The lib version takes Sequence[float]
+    and returns list[float]; this one operates on pandas Series and
+    preserves the index, which the factor panel code depends on. The
+    two are not signature-compatible, so we keep this local helper
+    rather than swapping.
+    """
     if s.dropna().empty:
         return s
     lo, hi = s.quantile(low), s.quantile(high)
@@ -357,7 +449,7 @@ def compute_factor_panel(prices, fundamentals, universe):
         p_far = prices.iloc[t_loc - 252]    # ~12M back
         score = (p_recent / p_far) - 1.0
         raw_s = score.copy(); raw_s.name = t
-        score = winsorize(score)
+        score = _winsorize_series(score)
         score.name = t
         mom_scores.append(score)
         mom_raw.append(raw_s)
@@ -377,90 +469,87 @@ def compute_factor_panel(prices, fundamentals, universe):
         vol = window.std() * math.sqrt(252)
         score = 1.0 / vol.replace(0, np.nan)
         raw_s = score.copy(); raw_s.name = t
-        score = winsorize(score)
+        score = _winsorize_series(score)
         score.name = t
         lv_scores.append(score)
         lv_raw.append(raw_s)
     factors["Low-Vol (1/realiz)"] = pd.DataFrame(lv_scores) if lv_scores else pd.DataFrame()
     raw["Low-Vol (1/realiz)"] = pd.DataFrame(lv_raw) if lv_raw else pd.DataFrame()
 
-    # Value: 1 / (P/B). For each month: book_value_per_share / price[t]
-    # P/B = price * shares / book_equity, so 1/(P/B) = book_equity / (price * shares)
-    # We don't have shares per ticker per month; using mcap proxy from current universe is a simplification.
-    # Better proxy: 1/(P/B) ratio across tickers is rank-equivalent to book_equity / market_cap
-    # because price*shares = market_cap. We use that ratio recomputed each month with the
-    # current latest book_equity (the fundamental-lag caveat documented in SKILL.md).
-    by_ticker_mc = {u["ticker"]: u["market_cap"] for u in universe}
+    # Value: 1 / (P/B) = book_equity / market_cap, computed POINT-IN-TIME at each rebalance.
+    # C2: prior code did `mc_t = mc_now * (pt / pl)` — today's market cap scaled by the
+    # historical price ratio. That uses today's shares-outstanding (which has been
+    # changed by buybacks and issuance since each rebalance) and is therefore
+    # look-ahead biased. Fix: at each rebalance, pick the most recent filing with
+    # period_of_report_date <= rebalance_date, take historical
+    # weighted_average_diluted_shares_outstanding (with the documented fallback
+    # chain), and compute mcap_t = historical_shares_t * close_at_rebalance.
+    # Tickers with no pre-rebalance filing are dropped for that rebalance only
+    # (typically recent IPOs that hadn't filed yet).
     val_scores, val_raw = [], []
     for t in monthly_idx:
-        # current-mcap normalization (price at t * shares_today ≈ current_mcap * price[t]/price[today])
-        latest = prices.iloc[-1]
-        p_t = prices.loc[t] if t in prices.index else None
-        if p_t is None:
+        if t not in prices.index:
             continue
-        # Implied per-period mcap = current_mcap * (price_t / price_latest)
+        p_t = prices.loc[t]
         scores = {}
         for tk in prices.columns:
-            f = fundamentals.get(tk)
-            mc_now = by_ticker_mc.get(tk)
-            if not f or not mc_now:
+            filings = fundamentals.get(tk) or []
+            filing = _latest_filing_before(filings, t)
+            if filing is None:
                 continue
-            be = f.get("book_equity")
+            be = filing.get("book_equity")
+            shares_t = filing.get("shares")
             pt = p_t.get(tk)
-            pl = latest.get(tk)
-            if be is None or pt is None or pl is None or pl == 0 or be <= 0:
+            if (be is None or shares_t is None or pt is None
+                    or be <= 0 or shares_t <= 0 or not (pt > 0)):
                 continue
-            mc_t = mc_now * (pt / pl)
-            scores[tk] = be / mc_t if mc_t > 0 else None
+            mcap_t = float(shares_t) * float(pt)
+            if mcap_t <= 0:
+                continue
+            scores[tk] = float(be) / mcap_t
         s = pd.Series(scores)
         raw_s = s.copy(); raw_s.name = t
-        s = winsorize(s)
+        s = _winsorize_series(s)
         s.name = t
         val_scores.append(s)
         val_raw.append(raw_s)
     factors["Value (1/(P/B))"] = pd.DataFrame(val_scores) if val_scores else pd.DataFrame()
     raw["Value (1/(P/B))"] = pd.DataFrame(val_raw) if val_raw else pd.DataFrame()
 
-    # Quality: ROE = net_income / book_equity (no time-varying numerator from a single annual)
-    # So the quality score is constant across months per ticker for v1.
-    # Documented as the fundamental-lag caveat in SKILL.md.
-    roe_static = {}
-    for tk in prices.columns:
-        f = fundamentals.get(tk)
-        if not f:
+    # Quality: ROE = net_income / book_equity, computed POINT-IN-TIME at each rebalance.
+    # C4: prior code was `np.tile(quality_now, n_months)` — today's ROE replicated
+    # across every month — which made the "decay" pattern a return-autocorrelation
+    # artifact, not a real signal. Fix: select the most recent pre-rebalance filing
+    # per ticker per month. Same filing-history cache as value; no extra API calls.
+    qual_scores, qual_raw = [], []
+    for t in monthly_idx:
+        scores = {}
+        for tk in prices.columns:
+            filings = fundamentals.get(tk) or []
+            filing = _latest_filing_before(filings, t)
+            if filing is None:
+                continue
+            ni = filing.get("net_income")
+            be = filing.get("book_equity")
+            if ni is None or be is None or be <= 0:
+                continue
+            roe = float(ni) / float(be)
+            # Same +150% / -100% sanity bounds the prior static version used.
+            # Buyback-shrunken equity (CL, MCD historically) produces ROE > 2 that
+            # dominates the cross-sectional rank without any economic meaning.
+            if roe > 1.5 or roe < -1.0:
+                continue
+            scores[tk] = roe
+        if not scores:
             continue
-        ni = f.get("net_income")
-        be = f.get("book_equity")
-        if ni is None or be is None or be <= 0:
-            continue
-        # Filter out names with extreme book/equity ratios (buyback-shrunken equity
-        # like CL, MCD historically produce ROE > 200% which dominates the rank).
-        # Sales/equity ratio > 10 flags a denominator collapse situation; we keep
-        # those names in the universe for momentum/value/low-vol but exclude from
-        # the quality factor specifically because the metric loses its meaning.
-        roe = ni / be
-        if roe > 1.5 or roe < -1.0:  # Cap at +150% / -100% sensible bounds
-            continue
-        roe_static[tk] = roe
-    # Replicate across all months for the panel
-    if roe_static:
-        roe_s_raw = pd.Series(roe_static)
-        roe_s = winsorize(roe_s_raw)
-        qual_df = pd.DataFrame(
-            np.tile(roe_s.values, (len(monthly_idx), 1)),
-            index=monthly_idx,
-            columns=roe_s.index,
-        )
-        qual_raw_df = pd.DataFrame(
-            np.tile(roe_s_raw.values, (len(monthly_idx), 1)),
-            index=monthly_idx,
-            columns=roe_s_raw.index,
-        )
-    else:
-        qual_df = pd.DataFrame()
-        qual_raw_df = pd.DataFrame()
-    factors["Quality (ROE)"] = qual_df
-    raw["Quality (ROE)"] = qual_raw_df
+        s = pd.Series(scores)
+        raw_s = s.copy(); raw_s.name = t
+        s = _winsorize_series(s)
+        s.name = t
+        qual_scores.append(s)
+        qual_raw.append(raw_s)
+    factors["Quality (ROE)"] = pd.DataFrame(qual_scores) if qual_scores else pd.DataFrame()
+    raw["Quality (ROE)"] = pd.DataFrame(qual_raw) if qual_raw else pd.DataFrame()
 
     return factors, raw, monthly_idx
 
@@ -488,7 +577,17 @@ def forward_returns(prices, rebal_dates, horizon_months):
 
 
 def compute_ics(factor_df, prices, horizons=(1, 3, 6, 12)):
-    """For a given factor panel (month_end x ticker), compute mean IC and t-stat per horizon."""
+    """For a given factor panel (month_end x ticker), compute mean IC, SE, t-stat per horizon.
+
+    C3: forward returns at horizon k months on a MONTHLY rebalance overlap by
+    k-1 months, so the per-month IC series is serially correlated. Treating it
+    as iid (mean*sqrt(n)/std) inflates the t-stat by roughly sqrt(k) at long
+    horizons. Fix: Newey-West HAC SE with lag = k - 1 (academic convention;
+    for k=1 the lag is 0 = the iid case, identical to the old formula). The
+    helper raises on degenerate inputs (n < 2 or non-positive long-run
+    variance); on raise we report None for `t` and `ic_se` but still surface
+    the count so the caller can flag "sample too small".
+    """
     out = {}
     rebal = factor_df.index
     for h in horizons:
@@ -504,13 +603,25 @@ def compute_ics(factor_df, prices, horizons=(1, 3, 6, 12)):
             rho, _ = spearmanr(score[mask], ret[mask])
             if not math.isnan(rho):
                 ics.append(rho)
-        if len(ics) < 6:
-            out[h] = {"ic": None, "t": None, "n_months": len(ics)}
+        n_months = len(ics)
+        if n_months < 6:
+            out[h] = {"ic": None, "t": None, "ic_se": None, "n_months": n_months}
             continue
         mean_ic = float(np.mean(ics))
-        std_ic = float(np.std(ics, ddof=1))
-        t_stat = mean_ic * math.sqrt(len(ics)) / std_ic if std_ic > 0 else None
-        out[h] = {"ic": mean_ic, "t": t_stat, "n_months": len(ics)}
+        # Newey-West lag = horizon - 1 covers exactly the overlap horizon.
+        # At h=1 (no overlap), lag=0 reduces to the iid sample SE.
+        nw_lag = max(0, h - 1)
+        # Bartlett kernel requires lag < n_months; cap defensively.
+        nw_lag = min(nw_lag, n_months - 1)
+        try:
+            ic_se = float(newey_west_se(ics, lag=nw_lag))
+            t_stat = mean_ic / ic_se if ic_se > 0 else None
+        except ValueError:
+            # Pathological short series or non-positive long-run variance.
+            # Report None for SE / t-stat rather than crashing the whole run.
+            ic_se = None
+            t_stat = None
+        out[h] = {"ic": mean_ic, "t": t_stat, "ic_se": ic_se, "n_months": n_months}
     return out
 
 
@@ -889,7 +1000,7 @@ def main():
                 sys.exit(2)
 
     # Universe
-    universe = build_universe(args.universe_size)
+    universe = _build_factor_universe(args.universe_size)
     print(f"Universe: {len(universe)} names", file=sys.stderr)
 
     # Price panel
@@ -934,7 +1045,21 @@ def main():
             "ic_6m": ics[6]["ic"],
             "ic_12m": ics[12]["ic"],
             "ic_tstat_1m": ics[1]["t"],
-            "ic_se_1m": None,
+            # C3: t-stat at each horizon now reflects Newey-West HAC SE with
+            # lag = horizon - 1. Emit SE and t per horizon, and the per-horizon
+            # month count, so consumers see the inflation that the old
+            # mean*sqrt(n)/std formula hid.
+            "ic_tstat_3m": ics[3]["t"],
+            "ic_tstat_6m": ics[6]["t"],
+            "ic_tstat_12m": ics[12]["t"],
+            "ic_se_1m": ics[1]["ic_se"],
+            "ic_se_3m": ics[3]["ic_se"],
+            "ic_se_6m": ics[6]["ic_se"],
+            "ic_se_12m": ics[12]["ic_se"],
+            "n_months_1m": ics[1]["n_months"],
+            "n_months_3m": ics[3]["n_months"],
+            "n_months_6m": ics[6]["n_months"],
+            "n_months_12m": ics[12]["n_months"],
             "decile_spread_1m": ds_1m,
             "decile_spread_3m": ds_3m,
             "decile_spread_12m": ds_12m,
@@ -942,7 +1067,11 @@ def main():
             "top_5_current": top_5,
             "bottom_5_current": bot_5,
         })
-        print(f"  {name}: IC1M={ics[1]['ic']}, t={ics[1]['t']}, n_months={ics[1]['n_months']}", file=sys.stderr)
+        print(
+            f"  {name}: IC1M={ics[1]['ic']}, t={ics[1]['t']}, "
+            f"se={ics[1]['ic_se']}, n_months={ics[1]['n_months']}",
+            file=sys.stderr,
+        )
 
     # Correlation matrix on signals
     corr_names, corr_matrix = compute_signal_correlation(factor_panels)
@@ -982,8 +1111,21 @@ def main():
         "tier": "A",
         "tier_caveats": [
             f"Interface used: {interface_used}",
-            "Fundamentals are single most-recent annual filing; for a true point-in-time "
-            "factor, use the filing available as of each rebalance date (PR queued).",
+            # C2/C4: prior caveat that fundamentals were a single most-recent annual
+            # filing is no longer true. Per-rebalance quarterly filings now drive
+            # value (historical mcap from weighted-diluted shares) and quality
+            # (historical ROE). Tickers without a pre-rebalance filing are dropped
+            # from the cross-section at that rebalance only.
+            "Value and quality factors use point-in-time fundamentals: at each "
+            "rebalance, the most recent quarterly filing with "
+            "period_of_report_date <= rebalance_date drives shares-outstanding, "
+            "book_equity, and net_income. Tickers without a pre-rebalance filing "
+            "are excluded from the cross-section for that month only.",
+            # C3: prior caveat omitted SE inflation entirely. State the convention.
+            "IC t-stats use Newey-West HAC standard errors with lag = horizon - 1 "
+            "months to correct for the overlap induced by k-month forward returns "
+            "on a monthly rebalance. ic_se_<h>m and n_months_<h>m emitted per "
+            "factor per horizon.",
         ],
         "mode": "table",
         "run_at": run_at,
