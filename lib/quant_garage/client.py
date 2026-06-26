@@ -94,17 +94,21 @@ class MassiveClient:
         timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
         max_attempts: int = DEFAULT_MAX_ATTEMPTS,
     ):
+        # Lazy-validate: capture the key here but DO NOT raise on missing.
+        # Scripts that instantiate at import time (e.g., for argparse --help)
+        # should still be runnable. The actual RuntimeError fires the moment
+        # an HTTP call is attempted, via _headers(). Fixes N7.
         self.api_key = api_key or os.environ.get("MASSIVE_API_KEY")
-        if not self.api_key:
-            raise RuntimeError(
-                "MASSIVE_API_KEY not set. Export it before running, or pass api_key= explicitly."
-            )
         self.host = host.rstrip("/")
         self.user_agent = user_agent
         self.timeout_seconds = timeout_seconds
         self.max_attempts = max_attempts
 
     def _headers(self) -> dict[str, str]:
+        if not self.api_key:
+            raise RuntimeError(
+                "MASSIVE_API_KEY not set. Export it before running, or pass api_key= explicitly."
+            )
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Accept": "application/json",
