@@ -2,223 +2,281 @@
 
 ![quant-garage](./assets/og.png)
 
-**Built in the garage, not the trading floor. Quant and equity research
-workflows packaged as Claude skills, with the analyst methodology baked in.**
+Quant and equity research tools that run inside Claude, or behind your
+own UI. You ask Claude "preview NVDA earnings" or "screen for momentum
+names that pulled back this week" and you get back what a sell-side
+analyst would write at 6am, with the supporting numbers and citations
+to the API calls underneath.
 
-Anyone can pull a stock price. The hard part is the analysis on top:
-implied-vs-realized move with the right historical analog, post-earnings
-drift with SPY-adjusted t-stats, factor IC and decay curves, regression-
-adjusted comp multiples, news-sentiment-reaction divergence detection,
-peer baskets that mean something (NVDA → AMD/AVGO/TSM, not SIC's IBM/HPE).
+Or you skip Claude entirely. Call the same tool from your code, parse
+the structured JSON it returns, and render it wherever you want. A
+research dashboard, a notebook, an agent that drops alerts into Slack.
+Both ways work because every skill ships the same compute as two
+layers: the JSON contract for developers and a rendered note, table,
+stream, or report for humans.
 
-Each skill encodes a workflow a real analyst, trader, or PM already runs
-manually. The methodology references inside each skill (statistical
-methods, sample-size rules, base rates, edge cases) are where the IP
-lives. The Massive API just provides the inputs. This is an analyst
-workflow framework, not an alpha factory: structurally honest about
-sample sizes, statistical limits, and what the takes do and don't prove.
+Fourteen tools. One framework. Built in the garage, not the trading
+floor.
 
-**Use them two ways.** Drop into Claude Code to run a skill in chat
-("preview NVDA earnings", "reconcile my positions", "screen the universe
-for momentum"). Or call the same skill from your own code and parse the
-structured JSON for a dashboard, agent, notebook, or research pipeline.
-Every skill ships both: JSON payload + rendered note/table/stream from
-one analysis.
+## The idea
 
-Example: `earnings-drilldown` on NVDA, in real time, with the take + the
-supporting stats + the sample sizes:
+LLMs are confidently wrong about market data. They quote stock prices
+from a year ago, hallucinate peer baskets, invent beat rates. The fix
+isn't a better LLM. The fix is wrapping the LLM in a workflow that's
+grounded in real data with the methodology baked in.
 
-```
-NVDA: Q2 2026 Preview · Spot $202.55 · Next print 2026-08-19 AMC
+That's what each tool here does. It pulls live market data from the
+Massive API (Polygon.io's new name), runs the actual analyst workflow,
+and returns a result you can trace back to the calls it made and the
+timestamps it made them at. No guesses. No hallucinated peer baskets.
 
-Take: Straddle prices 6.6pp above 8q realized (implied ±10.3%, realized ±3.7%).
-Premium sellers have a setup.
+The methodology references inside each skill folder are where the IP
+lives: statistical methods, sample-size rules, base rates, edge cases,
+honest caveats about what the take does and doesn't prove. The Massive
+API just provides the inputs.
 
-Implied vs realized
-- Implied move (0.85-adj):  ±10.3% (raw straddle ±12.1%)
-- Realized 8q avg:          ±3.7%
-- IV30:                     37.3
+## Who this is for
 
-Post-earnings drift (T+1 to T+5, SPY-adjusted)
-- After negative reactions: −7.5% avg (n=6, significant)
+Buy-side junior analysts who want to prototype faster. Sell-side
+analysts who want their morning notes drafted by the time they sit
+down. PMs who want a sanity check on a model before the meeting. Quant
+data engineers who want a working framework to fork and put their own
+methodology behind. Armchair quants who want a real workflow to build
+intuition on.
 
-Cross-asset
-- Top peer betas: MU 0.71, AVGO 0.62, TSM 0.54
-```
+Not for: people looking for alpha. These tools encode analyst workflow,
+not strategy. The takes are pattern-matchers grounded in methodology;
+they aren't a trading model. If you want production alpha, you build
+on top of this; you don't deploy this.
 
-Every number traces back to a `api.polygon.io` call with a timestamp.
-Built on the Massive API (formerly Polygon.io) for data + SEC EDGAR
-for free fallbacks where they work.
+## The 14 tools, with real use cases
 
-## Status
+### Earnings work
 
-All fourteen planned workflow skills are built end-to-end, each verified
-against real Massive API data with both layers shipped (canonical JSON +
-rendered output). Three foundation skills capture the REST, flat-files,
-and WebSocket patterns the suite shares; all three foundations have been
-exercised against the live API, and two surfaced real entitlement gaps
-that are now documented as workarounds (see flat-files in factor-research
-and channel-entitlement in portfolio-mark). All five output modes
-(note, stream, table, exception-report, hybrid, dataset) have working
-templates. Contributions still welcome for v2 extensions called out in
-each skill's "doesn't handle yet" section.
+**[`earnings-drilldown`](skills/earnings-drilldown)**
+You're long NVDA into Thursday's print. Trim, hold, or fade the
+straddle? Run the tool. You get the implied move vs the 8-quarter
+realized average, the post-earnings drift t-stat conditional on the
+reaction direction, and which semis trade with NVDA on print days.
+Output reads like a sell-side morning note: bold take at the top,
+supporting numbers below.
 
-| Status | Skill | Validated against |
-|---|---|---|
-| Built | `earnings-drilldown` (Tier A + Tier B) | AAPL + NVDA live |
-| Built | `corp-actions-reconciler` | 4 real splits (AAPL/GOOGL/NVDA/TSLA) |
-| Built | `options-flow` | Live OPRA tape |
-| Built | `universe-builder` | Top-100 + concentration + ETF filter |
-| Built | `pitch-comps` | CRM software comp set |
-| Built | `factor-research` | 5y × top-500, 4 factors |
-| Built | `news-scanner` | Today's NVDA/TSLA/AAPL news |
-| Built | `portfolio-mark` (delayed + live) | 7-position sample book, WebSocket validated |
-| Built | `crypto-vol-scanner` | BTC/ETH/SOL + 7 alts, cross-exchange basis |
-| Built | `event-study` (single + cross-section + aggregate) | Mega-cap tech earnings, n=20 trailing 4q |
-| Built | `valuation-sanity-check` | NVDA $250 target vs semi peer set |
-| Built | `backtest-data-prep` | Top-100 × 4y window, parquet output, 18 splits applied |
-| Built | `best-ex-check` | 20-fill TCA, 8 seeded violations caught, microsecond NBBO via REST |
-| Built | `t+1-settlement-prep` | 12-trade blotter, 6 flags across all six reason codes (holiday, weekend, locate, ex-div, split, half-day) |
+**[`event-study`](skills/event-study)**
+You want to measure abnormal returns around any event class:
+earnings, dividend changes, large volume spikes. Single event for
+one ticker (gets you a note), the same event across many tickers
+(cross-section table), or all events in a window (aggregate stats
+with t-stats). Last month's run on mega-cap tech Q1 prints surfaced
+that the cross-section average is negative despite all five beating
+on EPS. Guidance is dominating headlines this regime.
 
-## Two ways to use these
+### Banking and research
 
-**In Claude Code.** Type `/<skill-name>` and read the rendered output
-inline. The format matches what the workflow's users already consume:
-sell-side morning note for earnings, Cheddar Flow-style stream for
-options activity, screener-table for filters, exception report for
-reconciliations.
+**[`pitch-comps`](skills/pitch-comps)**
+You're a junior banker building a CRM pitch deck. You need the
+software comp set with multiples, growth, EBITDA margin, plus a
+regression-adjusted view that controls for the growth differential.
+Run it, get a table you can drop straight into the deck. The one-
+sentence read at the bottom is the take the MD wants on page two.
 
-**As a data layer for your own UI.** Call Claude via the API with the
-skill loaded, parse the structured JSON payload (every skill ships an
-`output-schema.json`), and render it in your dashboard, terminal,
-notebook, or agent. The JSON is the contract; the rendering is a default,
-not a constraint.
+**[`valuation-sanity-check`](skills/valuation-sanity-check)**
+The analyst on your team has a $250 NVDA target with assumed 28%
+growth and 60% margin. Does it survive a peer-distribution sanity
+check? The tool runs the reverse-DCF at the current price and tells
+you what CAGR is actually priced in. When I ran it, the $250 target
+came back understated against the semi peer set, which was the
+opposite of what I expected.
 
-## Three interfaces, not one
+**[`universe-builder`](skills/universe-builder)**
+You want every US common stock above $20 with quarterly +10% momentum
+that pulled back this week. Run the screen. The tool walks the full
+12,000-name universe, applies your filter chain, ranks the survivors
+by composite z-score, and flags sector concentration. Last week's run
+surfaced a trucking cluster (ARCB, RXO, SNDR, TFII, WERN, SAIA) all
+off the same macro freight pullback. Real mean-reversion candidates.
 
-Each skill picks the right route for its job:
+**[`factor-research`](skills/factor-research)**
+You want to know what factor is working in the current regime. Run
+the tool on the S&P 500 over a 5-year window. You get the per-factor
+IC at 1M/3M/6M/12M horizons, t-stats, decile long-short spreads, hit
+rates, and the cross-factor correlation matrix. Quality at +3.1
+t-stat is the only single factor with statistical significance right
+now. Low-vol is negative across every horizon (recent regime rewards
+risk-taking).
 
-- **REST** for current state and small lookups. Auth, fallback chain, and
-  rate-limit handling live in [`massive-api-patterns`](skills/massive-api-patterns).
-- **Flat files (S3)** for bulk historical pulls. Daily files of trades,
-  quotes, and aggregates across all asset classes. Included in every paid
-  plan at no extra cost. Patterns in [`massive-flat-files`](skills/massive-flat-files).
-- **WebSockets** for live streams. OPRA options, NBBO stocks, crypto, FMV.
-  Needs a real-time tier. Patterns in [`massive-websockets`](skills/massive-websockets).
+### Trading and execution
 
-You don't need to know which is which. The skill picks. You get the result
-plus a citation showing exactly where each number came from.
+**[`options-flow`](skills/options-flow)**
+You're scanning a watchlist for unusual options activity. Premium
+size, volume vs open interest, above-ask vs below-bid, repeat-strike
+clustering. Output is a tight stream of the top 10-20 prints with a
+sentiment tag per block. Yesterday's run surfaced a TSLA bullish read
+where someone sold $400 puts on the bid AND bought $385 calls above
+the ask. Two trades, same direction.
 
-## The skills
+**[`news-scanner`](skills/news-scanner)**
+You want today's notable news cross-referenced against the price
+reaction and sentiment. Each event ships with sentiment score,
+novelty score (is this a re-run or a new angle), and a price-vs-
+sentiment divergence flag. A "positive" article that the stock sold
+off on means the market already knew; that's a flag worth surfacing.
 
-See [PLAN-MATRIX.md](./PLAN-MATRIX.md) for the full matrix of which Massive
-plan each skill needs.
-
-### Quant research
-
-| Skill | What you can do with it | Status |
-|---|---|---|
-| [`universe-builder`](skills/universe-builder) | Filter the full US universe by liquidity, market cap, sector, or any combination | **Built** |
-| [`factor-research`](skills/factor-research) | Run value, momentum, quality screens with IC + decile spreads + concentration check | **Built** |
-| [`options-flow`](skills/options-flow) | Surface unusual activity, large prints, IV crush around catalysts | **Built** |
-| [`news-scanner`](skills/news-scanner) | Cross-reference news, sentiment, novelty, and price action on the same surface | **Built** |
-| [`crypto-vol-scanner`](skills/crypto-vol-scanner) | Catch cross-exchange basis, realized-vol spikes, and 24h move z-scores in crypto | **Built** |
-| [`event-study`](skills/event-study) | Abnormal returns (AR, CAR) with t-stats around earnings, dividends, or volume spikes — single event, cross-section, or aggregate | **Built** |
-| [`backtest-data-prep`](skills/backtest-data-prep) | Emit a clean parquet dataset for backtesting: corporate-action adjustments, survivorship-clean universe, point-in-time correctness, edge-case logging | **Built** |
-
-### Banker workflows
-
-| Skill | What you can do with it | Status |
-|---|---|---|
-| [`earnings-drilldown`](skills/earnings-drilldown) | Brief a print with filings, estimates, price action, and IV crush in one pull | **Built** (AAPL + NVDA verified) |
-| [`pitch-comps`](skills/pitch-comps) | Build a comp set with live EV/EBITDA, P/E, growth, plus regression-adjusted multiples | **Built** (CRM verified) |
-| [`valuation-sanity-check`](skills/valuation-sanity-check) | Stress-test an analyst's target/growth/margin assumptions against peer-distribution bands plus reverse-DCF implied CAGR | **Built** |
+**[`best-ex-check`](skills/best-ex-check)**
+You hand the tool yesterday's executed fills. It pulls the microsecond
+NBBO at each trade time, computes slippage vs the inside, and flags
+fills that crossed the spread, printed off-NBBO, hit a wide spread
+moment, or showed adverse selection in the 30 seconds after fill.
+Compliance teams use this kind of post-trade TCA. The exception report
+is short by design: only the broken stuff surfaces.
 
 ### Risk and operations
 
-| Skill | What you can do with it | Status |
-|---|---|---|
-| [`portfolio-mark`](skills/portfolio-mark) | Mark a book to last trade with a documented fallback chain (delayed REST + live WebSocket) | **Built** |
-| [`corp-actions-reconciler`](skills/corp-actions-reconciler) | Catch splits, dividends, and spinoffs against a position file before they break P&L | **Built** |
-| [`best-ex-check`](skills/best-ex-check) | TCA against NBBO at trade time: crossed-spread, off-NBBO, VWAP slippage, adverse selection | **Built** |
-| [`t+1-settlement-prep`](skills/t+1-settlement-prep) | Walk a trade blotter against the US holiday + corp-action calendar to flag holiday adjacency, weekend crossing, short-sale locate prompts, ex-dividend timing, mid-settlement splits, and half-day DTCC cutoffs | **Built** |
+**[`portfolio-mark`](skills/portfolio-mark)**
+You need end-of-day marks for a position book. Run the tool. It pulls
+the snapshot per name, walks the fallback chain (last trade → snapshot
+last → minute close → day close → prior close), reports per-position
+confidence (high/medium/low), and flags any name where the mark looks
+stale or the spread is wide enough to need a manual check. Two modes:
+delayed REST for end-of-day reports, live WebSocket for intraday.
+
+**[`corp-actions-reconciler`](skills/corp-actions-reconciler)**
+An ops desk inherits a position file from 2024. Did the share counts
+get adjusted for AAPL's 4-for-1 split? GOOGL's 20-for-1? NVDA's 10-
+for-1? Run the tool. The exception report lists every position whose
+recorded share count doesn't match the expected post-split share count,
+with the source endpoint and verified-at timestamp on every flag.
+
+**[`t+1-settlement-prep`](skills/t+1-settlement-prep)**
+You're an ops manager looking at tonight's trades. Which ones have
+settlement risk crossing this weekend? Which ones need a short-sale
+locate confirmed before tomorrow's cutoff? Which ones cross an ex-
+dividend date? The tool walks each trade against the US holiday and
+corporate-action calendar and flags six failure modes, with a
+suggested next action per flag.
+
+### Backtesting and infrastructure
+
+**[`backtest-data-prep`](skills/backtest-data-prep)**
+You're building a momentum backtest. You need a 4-year OHLCV dataset
+that's properly split-adjusted, survivorship-clean, and free of
+look-ahead bias. The tool emits a parquet file (1,003 trading days x
+99 tickers in the standard run), a manifest documenting every
+corporate action applied, and an edge-cases log noting any IPOs,
+delistings, or symbol changes inside the window. Drop the parquet
+into pandas and start backtesting.
+
+### Crypto
+
+**[`crypto-vol-scanner`](skills/crypto-vol-scanner)**
+You watch BTC/ETH/SOL plus a handful of alts. The tool surfaces vol
+spikes (vs trailing 30d distribution), volume anomalies, cross-
+exchange basis (Coinbase vs Bitfinex vs Bitstamp vs Binance vs
+Kraken), and 24h move z-scores. Output is a stream of the top events,
+with a one-line read at the bottom on the broader regime (this week's
+read: "quiet regime, BTC realized vol at 30% sitting in the 25th
+percentile of trailing year, setup-watch day not entry day").
+
+## Why Massive
+
+Massive is the new name for Polygon.io, the API a lot of fintechs,
+quant shops, and indie traders use for US market data. They cover
+stocks, options, crypto, forex, indices, and futures via REST,
+WebSocket, and S3 flat files. Pricing starts free (Basic tier, 5
+calls per minute) and scales up through Starter ($29), Developer
+($79), Advanced ($199), and Business plans.
+
+A few quant-garage tools also use Benzinga add-ons for analyst-grade
+data (earnings consensus + surprise, news with sentiment, analyst
+ratings). Each Benzinga product is a separate ~$99/month add-on on
+top of the asset class plan.
+
+Why this provider: it's the broadest US market data API with a
+consistent shape across asset classes. Cheap free tier so anyone can
+try the tools. Real entitlement quirks documented in the skill
+references as workarounds.
+
+Three of the tools (`earnings-drilldown`, `event-study`, `news-
+scanner`) also use SEC EDGAR's free public submissions API for 8-K
+filing dates as a fallback when the paid Benzinga add-on isn't
+available. The 8-K acceptance time IS the press release time, within
+minutes, for US filers; we verified 8 of 8 of Apple's last 8 prints
+matched. So you can run those tools without the Benzinga subscription
+and still get press-release-accurate dates.
+
+The [PLAN-MATRIX.md](./PLAN-MATRIX.md) file tells you exactly which
+Massive plan each tool needs.
 
 ## Setup
 
-1. Grab a [Massive API key](https://massive.com/pricing). The free Basic
-   tier runs five of the skills end to end. Paid plans start at $29.
-2. Clone into your Claude Code skills directory:
-   ```bash
-   git clone https://github.com/rgourley/quant-garage.git ~/.claude/skills/quant-garage
-   ```
-3. Set the key:
-   ```bash
-   export MASSIVE_API_KEY=your_key_here
-   ```
-4. In Claude Code, invoke any skill with `/<skill-name>` or describe what
-   you want and Claude will pick.
+Get a [Massive API key](https://massive.com/pricing). The free Basic
+tier runs five of the tools end to end. Most users want Stocks Starter
+at $29/month.
 
-## Trying earnings-drilldown right now
-
-This is the one skill that's actually implemented. To run it directly:
+Clone into your Claude Code skills directory:
 
 ```bash
-git clone https://github.com/rgourley/quant-garage.git
+git clone https://github.com/rgourley/quant-garage.git \
+  ~/.claude/skills/quant-garage
+```
+
+Set the key:
+
+```bash
+export MASSIVE_API_KEY=your_key_here
+```
+
+In Claude Code, invoke any tool with `/<skill-name>` (for example,
+`/earnings-drilldown NVDA`). Or describe what you want and Claude will
+pick.
+
+To run a tool directly from Python instead:
+
+```bash
 cd quant-garage
 pip install -r requirements.txt
 export MASSIVE_API_KEY=your_key_here
-python3 examples/run-aapl-tier-b.py    # AAPL preview, Tier B (free SEC EDGAR + Stocks Starter)
-```
 
-Or for any ticker:
-
-```bash
+# Earnings preview, free tier (SEC EDGAR fallback)
+python3 examples/run-aapl-tier-b.py
 python3 examples/run-tier-b.py NVDA
-python3 examples/run-tier-b.py TSLA
-python3 examples/run-tier-b.py JPM
+
+# Universe screen (price + 3M momentum + week pullback + ETFs out)
+python3 examples/run-universe-builder.py \
+  --min-price 20 --min-adv 400000 --min-mom-3m 0.10 --max-week-return 0.0
+
+# Options flow stream on a watchlist
+python3 examples/run-options-flow.py
+
+# Crypto vol scan
+python3 examples/run-crypto-vol-scanner.py
 ```
 
-Sample outputs live in `examples/`. The script writes to `examples/{ticker}-tier-b-output.md`
-(gitignored) with both the canonical JSON and the rendered note.
+Sample outputs go to `examples/*-output.md` (gitignored). Each includes
+the canonical JSON payload alongside the rendered human-readable view.
 
-## Why this exists
+## What this isn't
 
-Anthropic shipped ten banker-workflow agents (pitch decks, KYC, month-end
-close) without market data grounding. Those agents will confidently quote
-a stock price that's a year stale because nothing in the loop hits a live
-quote.
+Not a trading model. The "takes" are sensible pattern-matchers
+grounded in methodology; they're not a strategy. n=8 quarterly t-stats
+are statistically thin, and the rendered output flags this honestly.
 
-This repo is the other half: workflows where every claim cites the
-endpoint and timestamp it came from. Use them standalone, wire them into
-Anthropic's agents as the data layer, or fork the patterns for your own
-suite.
+Not a backtest framework with PnL accounting. `backtest-data-prep`
+gets you a clean dataset; you write the strategy on top.
 
-## Plan tiers and cost
+Not a production execution system. `portfolio-mark` reports marks;
+`best-ex-check` reports TCA exceptions. Neither places orders.
 
-The skill matrix in [PLAN-MATRIX.md](./PLAN-MATRIX.md) tells you what
-Massive plan each skill needs. Highlights:
-
-- **Free Basic ($0):** Five skills work end to end with 5 calls/min throttle.
-- **Stocks Starter ($29/m):** Eleven skills work, plus flat-file S3 access
-  (included). Most users should start here.
-- **Plus Benzinga Earnings ($99/m):** Unlocks Tier A of `earnings-drilldown`
-  (classical beat/miss bucketing with consensus EPS). Tier B works without it.
-- **Stocks Advanced ($199/m):** Real-time and WebSocket streaming.
-
-`earnings-drilldown` specifically supports two tiers:
-
-- **Tier A** (Stocks Starter + Benzinga Earnings, ~$130/m): full fidelity
-  with consensus EPS, surprise %, classical beat/miss bucketing
-- **Tier B** (Stocks Starter alone, $29/m): SEC EDGAR for press release
-  dates (free), Massive for prices. Substitutes reaction-sign bucketing
-  for beat/miss bucketing. Production-credible for trading workflows.
+Not a regulated advisor. None of the outputs are investment advice.
 
 ## License
 
-MIT. Fork it, ship it, charge for it. Attribution appreciated, not required.
+MIT. Fork it, ship it, charge for it. Attribution appreciated, not
+required.
 
 ## Contributing
 
-See [CONTRIBUTING.md](./CONTRIBUTING.md). Open a PR with a new skill or an
-improvement to an existing one. The audit script enforces the shape; the
-methodology references are where the IP lives.
+See [CONTRIBUTING.md](./CONTRIBUTING.md). Open a PR with a new tool
+or an extension. Each tool needs a `SKILL.md`, a `requires.yml`, an
+`output-schema.json`, a `references/` folder with the methodology,
+and one working example. The audit script (`npm run audit:requires`)
+enforces the shape; the methodology references are where the IP lives.
