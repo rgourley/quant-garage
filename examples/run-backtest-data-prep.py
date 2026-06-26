@@ -558,23 +558,17 @@ def compute_universe_stats(universe_meta, ohlcv_df, expected_days, window_start,
     retrieved = int((rows_per_ticker > 0).sum())
     continuous = int((rows_per_ticker >= actual_trading_days).sum())
     partial = int(((rows_per_ticker > 0) & (rows_per_ticker < actual_trading_days)).sum())
-    delisted_in_window = 0
-    for u in universe_meta:
-        du_str = u.get("delisted_utc")
-        if not du_str:
-            continue
-        try:
-            du = date.fromisoformat(du_str[:10])
-            if window_start <= du <= window_end:
-                delisted_in_window += 1
-        except ValueError:
-            pass
+    # delisted_during_window_count is intentionally None: we never pulled
+    # the active=false universe, so we don't know how many names delisted
+    # in-window. Zero would falsely suggest "we looked and found none."
+    # null says "we didn't look." When the active=false fetch lands, this
+    # becomes a real count.
     return {
         "tickers_requested": requested,
         "tickers_retrieved": retrieved,
         "continuous_coverage_count": continuous,
         "partial_coverage_count": partial,
-        "delisted_during_window_count": delisted_in_window,
+        "delisted_during_window_count": None,
     }
 
 
@@ -659,7 +653,10 @@ def enrich_dataset(df, universe_meta, splits_by_ticker, trading_dates, window_st
 
 def build_take(universe_def, stats, spinoffs, edge_cases, window_start, window_end):
     sentences = []
-    has_delist = stats["delisted_during_window_count"] > 0
+    # None means we didn't pull active=false; treat as "unknown" (falsy
+    # for narrative purposes since we can't claim retention).
+    delist_count = stats["delisted_during_window_count"]
+    has_delist = delist_count is not None and delist_count > 0
     has_partials = any(e["type"] == "ipo_partial_coverage" for e in edge_cases)
     pre_2024 = window_start < date(2024, 1, 1)
     universe_size = universe_def["size"]
@@ -682,21 +679,26 @@ def build_take(universe_def, stats, spinoffs, edge_cases, window_start, window_e
         "factor-research helpers if fundamentals are needed."
     )
 
-    # Survivorship caveat
+    # Survivorship caveat. has_delist is currently always False because
+    # the active=false fetch isn't implemented; the branch is kept for
+    # when that lands. Until then, every run is biased and the only
+    # honest framing is "current-snapshot only."
     if has_delist:
         sentences.append(
-            f"{stats['delisted_during_window_count']} delisted-in-window names retained for "
+            f"{delist_count} delisted-in-window names retained for "
             "survivorship cleanliness; backtest sees their final pre-delisting bars."
         )
-    elif universe_def.get("survivorship_mode") == "biased" and pre_2024:
+    elif pre_2024:
         sentences.append(
             f"The {seed} seed is current-snapshot and the window touches pre-2024 territory; "
-            "for a properly survivorship-clean run use --survivorship clean and a wider seed (top500 or top1000)."
+            "results will overstate returns until the active=false fetch lands "
+            "(queued for a follow-up sprint)."
         )
-    elif universe_def.get("survivorship_mode") == "biased":
+    else:
         sentences.append(
-            f"The {seed} seed is current-snapshot, but the window has no delistings within it, "
-            "so the survivorship caveat is academic here."
+            f"The {seed} seed is current-snapshot. Whether the window saw "
+            "any delistings can't be known until the active=false fetch lands; "
+            "for a post-2024 window this gap is usually small."
         )
 
     if spinoffs:
@@ -754,14 +756,9 @@ def render_summary(payload, out_dir_label):
 
     # Universe construction
     lines.append("Universe construction")
-    survship = ""
-    if udef.get("survivorship_mode") == "biased":
-        survship = " (forward-looking biased; see survivorship note below)"
+    survship = " (forward-looking biased; see survivorship note below)"
     lines.append(f"- {udef['label'].capitalize()}{survship}")
-    if udef.get("survivorship_mode") == "clean":
-        lines.append("- Active and delisted both included for survivorship cleanliness")
-    else:
-        lines.append("- Active only (current snapshot)")
+    lines.append("- Active only (current snapshot)")
     type_filter = udef.get("type_filter") or "CS"
     if type_filter == "CS":
         lines.append(f"- Excluded: ETFs, ETNs, ADRCs, units, warrants, rights (type filter = CS only)")
@@ -817,13 +814,16 @@ def render_summary(payload, out_dir_label):
             lines.append(f"- {other_partial} other partial: see edge-cases.log")
     else:
         lines.append(f"- {us['partial_coverage_count']} with partial coverage; see edge-cases.log")
-    if us["delisted_during_window_count"] == 0:
+    delist_n = us["delisted_during_window_count"]
+    if delist_n is None:
+        lines.append("- Delisted during window: not measured (active=false fetch not implemented)")
+    elif delist_n == 0:
         if udef.get("seed", "").startswith("top"):
             lines.append(f"- 0 delisted during window (the current {udef['seed']} is a clean window for this universe)")
         else:
             lines.append("- 0 delisted during window")
     else:
-        lines.append(f"- {us['delisted_during_window_count']} delisted during window (retained for survivorship cleanliness)")
+        lines.append(f"- {delist_n} delisted during window (retained for survivorship cleanliness)")
     lines.append("")
 
     # Edge cases
@@ -916,7 +916,11 @@ def render_manifest(payload, out_dir_label):
     lines.append(f"- Retrieved: {us['tickers_retrieved']}")
     lines.append(f"- Continuous coverage: {us['continuous_coverage_count']}")
     lines.append(f"- Partial coverage: {us['partial_coverage_count']}")
-    lines.append(f"- Delisted during window: {us['delisted_during_window_count']}")
+    delist_n = us["delisted_during_window_count"]
+    if delist_n is None:
+        lines.append("- Delisted during window: not measured (active=false fetch not implemented; null, not zero)")
+    else:
+        lines.append(f"- Delisted during window: {delist_n}")
     lines.append("")
 
     lines.append("## Corporate actions")
@@ -995,8 +999,11 @@ def main():
                    help="YYYY-MM-DD..YYYY-MM-DD inclusive both ends")
     p.add_argument("--out", type=str, required=True,
                    help="Output directory (will be created if missing)")
-    p.add_argument("--survivorship", choices=["clean", "biased"], default="biased",
-                   help="clean: include delisted-in-window names. biased: current snapshot only (default for current top-N seeds).")
+    p.add_argument("--survivorship", choices=["biased"], default="biased",
+                   help="biased: current snapshot only (today's active=true tickers). "
+                        "Note: 'clean' (active=false union for delisted-in-window names) "
+                        "is not implemented in this release; the active=false fetch is "
+                        "queued for a follow-up sprint.")
     p.add_argument("--interface", choices=["auto", "flat-files", "rest"], default="auto")
     args = p.parse_args()
 
@@ -1143,21 +1150,24 @@ def main():
         },
     ]
 
-    # Survivorship mode
+    # Survivorship mode. Only 'biased' is supported right now: we pull
+    # today's active=true snapshot, so any name that delisted in-window
+    # was filtered out before we ever saw it. Whether that count is
+    # zero or non-zero is unknown without the active=false fetch.
     survivorship_mode = args.survivorship
-    if survivorship_mode == "biased":
-        if stats["delisted_during_window_count"] == 0 and ws >= date(2024, 1, 1):
-            survivorship_note = (
-                f"Current {args.universe} seed; window has no delistings within it, "
-                "so the survivorship bias is academic for this window."
-            )
-        else:
-            survivorship_note = (
-                f"Current {args.universe} seed; pre-2024 backtests over this set will overstate returns. "
-                "Re-run with --survivorship clean and a wider seed for true point-in-time."
-            )
+    if ws >= date(2024, 1, 1):
+        survivorship_note = (
+            f"Current {args.universe} seed (today's active=true snapshot). "
+            "Post-2024 windows usually see few delistings, so the practical "
+            "bias is small, but the count is not measured here."
+        )
     else:
-        survivorship_note = "Delisted-during-window names retained for survivorship cleanliness."
+        survivorship_note = (
+            f"Current {args.universe} seed (today's active=true snapshot); "
+            "pre-2024 backtests over this set will overstate returns. "
+            "active=false union for delisted-in-window names is queued for "
+            "a follow-up sprint."
+        )
 
     universe_def = {
         "label": u_label,

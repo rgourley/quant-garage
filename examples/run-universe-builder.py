@@ -906,33 +906,57 @@ if N >= 10 and starting_universe_total > 0:
 concentration_findings.sort(key=lambda f: abs(f["std_devs_overweight"]), reverse=True)
 
 # ----- Survivorship -----
+#
+# Honest labeling: 'clean' only when active=false tickers were actually
+# fetched. None of the candidate sources here (curated, reference,
+# grouped) pull active=false today, so the answer is always 'biased'.
+# Keep the branches structured so that when the active=false fetch
+# lands, flipping a single flag per source is enough.
 
 has_lookback = (
     args.mom_3m_top_quartile
     or args.min_mom_3m is not None
     or args.ocf_yield_min is not None
 )
-if args.candidate_source == "curated":
-    survivorship = {
-        "mode": "biased",
-        "delisted_in_window": 0,
-        "note": ("Curated seed list is current-only. Re-run with "
-                 "--candidate-source reference and active=false expansion "
-                 "for a survivorship-clean cohort."),
-    }
-elif has_lookback:
-    survivorship = {
-        "mode": "clean",
-        "delisted_in_window": 0,
-        "note": ("Lookback predicates applied. Delisted-name retention "
-                 "currently scoped to next PR; active=false pull queued."),
-    }
+# Set to True only after a path that actually retrieves delisted names
+# (e.g. /v3/reference/tickers?active=false union'd into the candidate
+# pool). No path does this yet.
+fetched_inactive = False
+delisted_in_window = 0  # would be a real count once fetched_inactive=True
+
+if fetched_inactive and delisted_in_window > 0:
+    survivorship_mode = "clean"
 else:
-    survivorship = {
-        "mode": "clean",
-        "delisted_in_window": 0,
-        "note": "Current-snapshot screen; no lookback so no survivorship bias to flag.",
-    }
+    survivorship_mode = "biased"
+
+if args.candidate_source == "curated":
+    note = ("Curated seed list is current-only (active=true). Re-run with "
+            "--candidate-source reference plus active=false expansion "
+            "for a survivorship-clean cohort. The active=false fetch is "
+            "queued for a follow-up sprint.")
+elif args.candidate_source == "reference":
+    if has_lookback:
+        note = ("Lookback predicates applied over today's active=true "
+                "reference pool; delisted-in-window names were not pulled, "
+                "so the cohort is forward-biased. The active=false fetch "
+                "is queued for a follow-up sprint.")
+    else:
+        note = ("Current-snapshot reference screen (active=true only); "
+                "the active=false fetch is queued for a follow-up sprint.")
+else:  # grouped
+    if has_lookback:
+        note = ("Lookback predicates applied over today's grouped-daily "
+                "active pool; delisted-in-window names were not pulled, "
+                "so the cohort is forward-biased.")
+    else:
+        note = ("Current-snapshot grouped-daily screen; no lookback "
+                "predicates, so no point-in-time replay is attempted.")
+
+survivorship = {
+    "mode": survivorship_mode,
+    "delisted_in_window": delisted_in_window,
+    "note": note,
+}
 
 # ----- Payload -----
 
@@ -1119,12 +1143,17 @@ def render_table(payload, want_week=False, want_adv=False, want_price=False, wan
         lines.append("")
 
     surv = payload["survivorship"]
+    note = surv.get("note", "")
     if surv["mode"] == "clean":
-        lines.append("Survivorship: clean. Delisted names retained for the lookback window.")
+        delisted_n = surv.get("delisted_in_window") or 0
+        lines.append(
+            f"Survivorship: clean. {delisted_n} delisted name(s) retained "
+            f"for the lookback window. {note}".rstrip()
+        )
     elif surv["mode"] == "biased":
-        lines.append(f"Survivorship: biased. {surv['note']}")
+        lines.append(f"Survivorship: biased. {note}")
     else:
-        lines.append(f"Survivorship: {surv['mode']}. {surv.get('note', '')}")
+        lines.append(f"Survivorship: {surv['mode']}. {note}")
 
     return "\n".join(lines)
 
