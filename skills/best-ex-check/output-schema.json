@@ -1,0 +1,214 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "best-ex-check output",
+  "description": "Canonical output of the best-ex-check skill. Layer 1 (structured) consumed by UIs and downstream agents. Claude Code rendering described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "scan_params", "fills_checked", "flagged_count", "flagged", "summary", "quote_source", "take", "sources"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "A = full NBBO tick history from /v3/quotes; B = 1-second aggregate band as NBBO proxy"
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["exception-report"],
+      "description": "Always exception-report; only flagged fills surface in the rendered output"
+    },
+    "scan_params": {
+      "type": "object",
+      "required": ["file_in", "date_range"],
+      "properties": {
+        "file_in": {
+          "type": "string",
+          "description": "Path to the input fill CSV"
+        },
+        "date_range": {
+          "type": "object",
+          "required": ["from", "to"],
+          "properties": {
+            "from": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Earliest fill timestamp in the input"
+            },
+            "to": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Latest fill timestamp in the input"
+            }
+          }
+        }
+      }
+    },
+    "fills_checked": {
+      "type": "integer",
+      "description": "Total fills processed"
+    },
+    "flagged_count": {
+      "type": "integer",
+      "description": "Fills that hit one or more flag categories"
+    },
+    "flagged": {
+      "type": "array",
+      "description": "Fills that hit one or more flag categories. Empty array if no breaks.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "side", "qty", "price", "timestamp", "reference_price", "slippage_bps", "reasons", "suggested_next_action", "source"],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Stock ticker symbol"
+          },
+          "side": {
+            "type": "string",
+            "enum": ["BUY", "SELL"],
+            "description": "Order side"
+          },
+          "qty": {
+            "type": "number",
+            "description": "Filled quantity in shares"
+          },
+          "price": {
+            "type": "number",
+            "description": "Fill price per share"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Fill timestamp from the input CSV"
+          },
+          "reference_price": {
+            "type": "number",
+            "description": "Reference inside quote at the fill timestamp (ask on a BUY, bid on a SELL)"
+          },
+          "reference_bid": {
+            "type": ["number", "null"],
+            "description": "Inside bid at the fill timestamp; null if no quote was found"
+          },
+          "reference_ask": {
+            "type": ["number", "null"],
+            "description": "Inside ask at the fill timestamp; null if no quote was found"
+          },
+          "slippage_bps": {
+            "type": "number",
+            "description": "Signed slippage versus reference_price in basis points. Positive on a BUY = bad; negative on a SELL = bad."
+          },
+          "spread_bps_at_fill": {
+            "type": ["number", "null"],
+            "description": "Bid-ask spread in basis points at the fill timestamp"
+          },
+          "session_vwap": {
+            "type": ["number", "null"],
+            "description": "Session VWAP up to (and including) the fill timestamp"
+          },
+          "vwap_slippage_bps": {
+            "type": ["number", "null"],
+            "description": "Slippage versus session VWAP in basis points, signed by side"
+          },
+          "adverse_selection_bps": {
+            "type": ["number", "null"],
+            "description": "Price movement against the trader in the 30 seconds AFTER fill, in basis points. Positive = adverse."
+          },
+          "reasons": {
+            "type": "array",
+            "description": "Flag categories triggered for this fill. At least one entry.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "crossed_spread",
+                "wide_spread_at_fill",
+                "off_nbbo_buy",
+                "off_nbbo_sell",
+                "high_vwap_slippage",
+                "adverse_selection"
+              ]
+            },
+            "minItems": 1
+          },
+          "implementation_shortfall_usd": {
+            "type": "number",
+            "description": "Dollar cost of the slippage on this fill: abs(slippage_bps) / 10000 * price * qty"
+          },
+          "suggested_next_action": {
+            "type": "string",
+            "description": "Action-relevant prose for the operator (one sentence)"
+          },
+          "source": {
+            "type": "object",
+            "required": ["endpoint", "fetched_at"],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "description": "Massive API endpoint that produced the reference quote"
+              },
+              "fetched_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["by_reason", "total_implementation_shortfall_usd"],
+      "properties": {
+        "by_reason": {
+          "type": "object",
+          "description": "Count of flagged fills by reason code (fills can appear under multiple reasons)",
+          "properties": {
+            "crossed_spread": {"type": "integer"},
+            "wide_spread_at_fill": {"type": "integer"},
+            "off_nbbo_buy": {"type": "integer"},
+            "off_nbbo_sell": {"type": "integer"},
+            "high_vwap_slippage": {"type": "integer"},
+            "adverse_selection": {"type": "integer"}
+          }
+        },
+        "avg_crossed_spread_bps": {
+          "type": ["number", "null"],
+          "description": "Average slippage in bps across all crossed-spread fills; null if no crossed-spread fills"
+        },
+        "total_implementation_shortfall_usd": {
+          "type": "number",
+          "description": "Sum of implementation_shortfall_usd across all flagged fills"
+        },
+        "break_rate_pct": {
+          "type": "number",
+          "description": "flagged_count / fills_checked * 100"
+        }
+      }
+    },
+    "quote_source": {
+      "type": "string",
+      "enum": ["v3_quotes", "1s_aggs_proxy"],
+      "description": "Which endpoint produced the reference NBBO. v3_quotes = Tier A; 1s_aggs_proxy = Tier B."
+    },
+    "take": {
+      "type": "string",
+      "description": "One-line desk-ready summary of the run"
+    },
+    "sources": {
+      "type": "array",
+      "description": "Distinct Massive endpoints called during the run for audit trail",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": {
+            "type": "string"
+          },
+          "fetched_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "ticker": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

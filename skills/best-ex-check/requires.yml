@@ -1,0 +1,58 @@
+name: best-ex-check
+kind: skill
+interface: rest
+output_mode: exception-report
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: preferred
+tiers:
+  a_full_nbbo:
+    label: "Tier A: historical NBBO ticks (Stocks Developer or higher)"
+    needs:
+      - product: stocks
+        tier: developer
+    enables: [microsecond_nbbo_at_fill, true_inside_spread, true_off_nbbo_detection]
+    loses: []
+  b_aggs_proxy:
+    label: "Tier B: 1-second aggregate band as NBBO proxy (Stocks Starter)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [reference_price_band, vwap_slippage, adverse_selection_check]
+    loses: [microsecond_nbbo_at_fill, true_inside_spread, exact_off_nbbo_calls]
+endpoints:
+  - GET /v3/quotes/{ticker} (preferred; Tier A NBBO ticks)
+  - GET /v2/aggs/ticker/{ticker}/range/1/second/{from}/{to} (Tier B proxy)
+  - GET /v2/aggs/ticker/{ticker}/range/1/minute/{from}/{to} (VWAP and session aggregates)
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{date}/{date} (session VWAP fallback)
+notes: |
+  Probes /v3/quotes/{ticker} at startup. If the call returns 200 with
+  NBBO data, runs as Tier A: microsecond-precise NBBO at the fill
+  timestamp, true spread, true off-NBBO detection. If 403 or
+  not_authorized, downgrades to Tier B: a 1-second aggregate band
+  (low of [T, T+1s], high of [T, T+1s]) as the NBBO proxy. Both tiers
+  compute slippage, VWAP slippage, and adverse selection identically.
+
+  Verified 2026-06-25 on a Stocks Business + Options Business + Benzinga
+  key: /v3/quotes/{ticker} returns full NBBO tick data (this contrasts
+  with the WebSocket Q channel which returns "not_authorized" on the
+  same key, see portfolio-mark's live-vs-delayed.md). Tier A is the
+  default path on any paid plan that includes historical quote access.
+
+  Massive's "Stocks Developer" tier and higher includes historical
+  quote access by default. Stocks Starter does not. If a Starter key
+  hits 403 on /v3/quotes, the skill auto-downgrades to Tier B and
+  prints the entitlement gap loudly in the report header.
+
+  Flat-files (s3://flatfiles/us_stocks_sip/quotes_v1/...) would be
+  the bulk-historical path. They are NOT used by this skill because
+  the same Business key returned 403 on every flat-files request
+  (verified 2026-06-23, documented in massive-flat-files SKILL.md).
+  When flat-files entitlement is confirmed on the operator's key, a
+  future v2 of the skill can switch to bulk-day quote files for
+  full-portfolio TCA at lower per-call cost.
+fallbacks: []
