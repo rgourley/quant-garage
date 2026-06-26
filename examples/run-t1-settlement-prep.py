@@ -20,23 +20,19 @@ import csv
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, FetchError, utcnow_iso
+from lib.quant_garage.timezones import utc_to_et
+
 # ----- Config -----
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
-
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-
-# ET offset: June and November are both during EDT/EST; the close-time
-# math uses a fixed conversion below.
 OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "t1-settlement-prep-output.md")
 
 # DTCC half-day cutoff (hard-coded per references/holiday-calendar.md)
@@ -71,43 +67,20 @@ NYSE_HOLIDAYS_FALLBACK = {
 }
 
 
-# ----- HTTP helpers -----
-
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r), r.status
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        return {"_error": body}, e.code
+client = MassiveClient()
 
 
-def fetch_all(path):
+def paginate_all(path, params=None):
+    """Collect every page from the Massive client. Returns (results, last_fetched_at)."""
     out = []
-    url = f"{BASE}{path}"
-    while url:
-        req = urllib.request.Request(url, headers=HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                doc = json.load(r)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:400].decode("utf-8", errors="replace")
-            print(f"  WARN: paginated fetch failed on {url}: {e.code} {body}", file=sys.stderr)
-            break
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    last_fetched = utcnow_iso()
+    try:
+        for page, fetched_at in client.paginate(path, params):
+            out.extend(page)
+            last_fetched = fetched_at
+    except FetchError as e:
+        print(f"  WARN: paginated fetch failed on {path}: {e}", file=sys.stderr)
+    return out, last_fetched
 
 
 # ----- CSV loading -----
@@ -136,19 +109,31 @@ def load_trades(path):
 def fetch_holiday_calendar():
     """
     Pull /v1/marketstatus/upcoming and return:
-      { "YYYY-MM-DD": {"name": ..., "status": "closed"|"early-close",
-                       "close_et": "HH:MM" or None } }
+      ({ "YYYY-MM-DD": {"name": ..., "status": "closed"|"early-close",
+                        "close_et": "HH:MM" or None } },
+       "path",
+       "fetched_at")
     De-dupes NYSE/NASDAQ rows by date (treats NYSE as canonical).
-    Falls back to NYSE_HOLIDAYS_FALLBACK if the endpoint returns non-200.
+    Falls back to NYSE_HOLIDAYS_FALLBACK if the endpoint fails.
+
+    UTC → ET conversion of `close` timestamps uses zoneinfo via utc_to_et
+    so DST is correct year-round (H1 in the 2026-06-26 audit).
     """
     path = "/v1/marketstatus/upcoming"
-    doc, status = fetch(path)
-    if status != 200 or not isinstance(doc, list):
-        print(f"  WARN: /v1/marketstatus/upcoming returned {status}; using fallback", file=sys.stderr)
-        return _build_calendar_from_fallback(), "fallback"
+    try:
+        body, fetched_at = client.get(path)
+    except FetchError as e:
+        print(f"  WARN: /v1/marketstatus/upcoming failed ({e}); using fallback", file=sys.stderr)
+        return _build_calendar_from_fallback(), "fallback", utcnow_iso()
+
+    # The endpoint returns a bare JSON array, not a {results: [...]} envelope.
+    # `client.get` returns whatever the API returned, so `body` is the list.
+    if not isinstance(body, list):
+        print(f"  WARN: /v1/marketstatus/upcoming returned non-list; using fallback", file=sys.stderr)
+        return _build_calendar_from_fallback(), "fallback", fetched_at
 
     cal = {}
-    for ev in doc:
+    for ev in body:
         d = ev.get("date")
         if not d or d in cal:
             continue  # First-occurrence wins; NYSE precedes NASDAQ in the response
@@ -156,31 +141,14 @@ def fetch_holiday_calendar():
         close_et = None
         if status_str == "early-close" and ev.get("close"):
             close_dt = datetime.fromisoformat(ev["close"].replace("Z", "+00:00"))
-            # Convert UTC close to ET. November is EST (UTC-5); July is EDT (UTC-4).
-            # The Massive close timestamp is in UTC; ET wall-clock is what ops reads.
-            close_et_dt = close_dt.astimezone(_et_zone_for(close_dt.date()))
+            close_et_dt = utc_to_et(close_dt)
             close_et = close_et_dt.strftime("%H:%M")
         cal[d] = {
             "name": ev.get("name", ""),
             "status": status_str,
             "close_et": close_et,
         }
-    return cal, path
-
-
-def _et_zone_for(d):
-    """
-    Return a fixed-offset tzinfo for Eastern Time on date `d`. EDT (UTC-4)
-    runs from the second Sunday in March to the first Sunday in November.
-    Simple month-based heuristic covers all US equity holidays.
-    """
-    if 3 < d.month < 11:
-        return timezone(timedelta(hours=-4))  # EDT
-    if d.month == 3 and d.day >= 8:
-        return timezone(timedelta(hours=-4))
-    if d.month == 11 and d.day <= 7:
-        return timezone(timedelta(hours=-4))
-    return timezone(timedelta(hours=-5))  # EST
+    return cal, path, fetched_at
 
 
 def _build_calendar_from_fallback():
@@ -238,33 +206,39 @@ def fetch_dividends_for_ticker(ticker, window_start):
     """
     Pull dividends with ex_dividend_date.gte=window_start - 30 days
     (some slack to catch ex-dates announced after as well as before).
-    Returns the result list and the endpoint path.
+    Returns (results, endpoint_path, fetched_at).
     """
     if ticker in _div_cache:
         return _div_cache[ticker]
     cutoff = (window_start - timedelta(days=30)).isoformat()
-    path = (
-        f"/v3/reference/dividends?ticker={ticker}"
-        f"&ex_dividend_date.gte={cutoff}&limit=100"
-        f"&order=asc&sort=ex_dividend_date"
-    )
-    results = fetch_all(path)
-    _div_cache[ticker] = (results, path)
-    return results, path
+    path = "/v3/reference/dividends"
+    params = {
+        "ticker": ticker,
+        "ex_dividend_date.gte": cutoff,
+        "limit": 100,
+        "order": "asc",
+        "sort": "ex_dividend_date",
+    }
+    results, fetched_at = paginate_all(path, params)
+    _div_cache[ticker] = (results, path, fetched_at)
+    return _div_cache[ticker]
 
 
 def fetch_splits_for_ticker(ticker, window_start):
     if ticker in _split_cache:
         return _split_cache[ticker]
     cutoff = (window_start - timedelta(days=7)).isoformat()
-    path = (
-        f"/v3/reference/splits?ticker={ticker}"
-        f"&execution_date.gte={cutoff}&limit=50"
-        f"&order=asc&sort=execution_date"
-    )
-    results = fetch_all(path)
-    _split_cache[ticker] = (results, path)
-    return results, path
+    path = "/v3/reference/splits"
+    params = {
+        "ticker": ticker,
+        "execution_date.gte": cutoff,
+        "limit": 50,
+        "order": "asc",
+        "sort": "execution_date",
+    }
+    results, fetched_at = paginate_all(path, params)
+    _split_cache[ticker] = (results, path, fetched_at)
+    return _split_cache[ticker]
 
 
 # ----- Per-trade flagging -----
@@ -325,7 +299,7 @@ def flag_trade(trade, calendar, fetched_at_calendar):
         }
 
     # Ex-dividend in window
-    divs, div_path = fetch_dividends_for_ticker(ticker, td)
+    divs, div_path, _ = fetch_dividends_for_ticker(ticker, td)
     div_in_window = None
     for d in divs:
         ex_str = d.get("ex_dividend_date")
@@ -356,7 +330,7 @@ def flag_trade(trade, calendar, fetched_at_calendar):
         }
 
     # Corp-action overlap (splits)
-    splits, split_path = fetch_splits_for_ticker(ticker, td)
+    splits, split_path, _ = fetch_splits_for_ticker(ticker, td)
     split_in_window = None
     for s in splits:
         ex_str = s.get("execution_date")
@@ -569,12 +543,11 @@ def main():
     print(f"Loaded {len(trades)} trades from {csv_path}", file=sys.stderr)
 
     # Fetch the holiday calendar once.
-    calendar, calendar_path = fetch_holiday_calendar()
-    cal_fetched_at = now_iso()
+    calendar, calendar_path, cal_fetched_at = fetch_holiday_calendar()
     print(f"Holiday calendar: {len(calendar)} events from {calendar_path}", file=sys.stderr)
 
     sources = [{
-        "endpoint": calendar_path,
+        "endpoint": f"https://api.polygon.io{calendar_path}" if calendar_path.startswith("/") else calendar_path,
         "fetched_at": cal_fetched_at,
         "ticker": None,
     }]
@@ -600,11 +573,19 @@ def main():
             flagged.append(result)
             print(f"    FLAG: {', '.join(result['reason_codes'])}", file=sys.stderr)
 
-    # Record dividend + split sources actually hit
-    for ticker, (_, path) in _div_cache.items():
-        sources.append({"endpoint": path, "fetched_at": cal_fetched_at, "ticker": ticker})
-    for ticker, (_, path) in _split_cache.items():
-        sources.append({"endpoint": path, "fetched_at": cal_fetched_at, "ticker": ticker})
+    # Record dividend + split sources actually hit (per-call fetched_at, M8)
+    for ticker, (_, path, fetched_at) in _div_cache.items():
+        sources.append({
+            "endpoint": f"https://api.polygon.io{path}",
+            "fetched_at": fetched_at,
+            "ticker": ticker,
+        })
+    for ticker, (_, path, fetched_at) in _split_cache.items():
+        sources.append({
+            "endpoint": f"https://api.polygon.io{path}",
+            "fetched_at": fetched_at,
+            "ticker": ticker,
+        })
 
     # Build summary
     by_reason = defaultdict(int)
@@ -660,7 +641,7 @@ def main():
 
     with open(OUTPUT_PATH, "w") as f:
         f.write("# Run: t+1-settlement-prep\n\n")
-        f.write(f"Generated: {now_iso()}\n")
+        f.write(f"Generated: {utcnow_iso()}\n")
         f.write(f"Input: `{csv_path}`\n\n")
         f.write("## Layer 2: rendered exception report\n\n")
         f.write("```\n")

@@ -3,55 +3,40 @@
 Run the earnings-drilldown skill against AAPL using a live Massive key.
 Reads MASSIVE_API_KEY from env, never from a file.
 Writes output to examples/aapl-real-output.md (gitignored).
+
+Tier A = Stocks Starter + Benzinga earnings add-on. Print dates +
+consensus + actuals + surprises all come from Benzinga; the Tier B
+variant (run-aapl-tier-b.py) substitutes SEC EDGAR for print dates.
 """
 import os
 import sys
 import json
 import math
-import urllib.request
-import urllib.error
-import urllib.parse
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage.timezones import utc_to_et
+
 TICKER = "AAPL"
-TODAY = date(2026, 6, 23)
+TODAY = today()
+
+client = MassiveClient()
 
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
-def fetch_all(path):
-    """Follow next_url to collect paginated results."""
+def paginate_all(path, params=None):
+    """Collect every page from the Massive client and return (results, last_fetched_at)."""
     out = []
-    url = f"{BASE}{path}"
-    while url:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            doc = json.load(r)
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
+    last_fetched = utcnow_iso()
+    for page, fetched_at in client.paginate(path, params):
+        out.extend(page)
+        last_fetched = fetched_at
+    return out, last_fetched
 
 
 def median(xs):
@@ -78,13 +63,18 @@ def t_stat(xs):
 
 # 1. Ticker metadata
 print("Fetching ticker metadata...", file=sys.stderr)
-ticker_meta = fetch(f"/v3/reference/tickers/{TICKER}")["results"]
+ticker_meta_body, ticker_meta_fetched_at = client.get(f"/v3/reference/tickers/{TICKER}")
+ticker_meta = ticker_meta_body["results"]
 sic_code = ticker_meta.get("sic_code")
 sic_desc = ticker_meta.get("sic_description")
 
 # 2. Benzinga earnings (primary source for print dates + consensus + actuals)
 print("Fetching Benzinga earnings...", file=sys.stderr)
-bz = fetch(f"/benzinga/v1/earnings?ticker={TICKER}&limit=20&order=desc&sort=date")["results"]
+bz_body, bz_fetched_at = client.get(
+    "/benzinga/v1/earnings",
+    {"ticker": TICKER, "limit": 20, "order": "desc", "sort": "date"},
+)
+bz = bz_body["results"]
 
 # Split into upcoming (no actual) and historical (has actual)
 upcoming = [r for r in bz if r.get("actual_eps") is None]
@@ -96,20 +86,21 @@ historical = historical[-8:]
 
 prints = []
 for r in historical:
-    # Build ISO timestamp from date + time + ET assumption
-    # Benzinga time is typically America/New_York. Treat as ET → UTC.
+    # Build acceptance ISO timestamp from date + time. Benzinga time is
+    # America/New_York; we treat the (date, time) pair as ET wall-clock and
+    # convert to UTC via zoneinfo (DST-correct year-round). The earlier
+    # version of this script hand-rolled the offset which broke for prints
+    # near the DST transitions; that's H1 in the 2026-06-26 audit and is
+    # now fixed by routing through utc_to_et's inverse via ET.localize.
     time_str = r.get("time") or "16:30:00"
-    dt_et = datetime.fromisoformat(f"{r['date']}T{time_str}")
-    # Crude ET → UTC: EDT in summer (Mar-Nov) is +4, EST otherwise +5.
-    # AAPL prints in Jan/Feb (EST), Apr/May (EDT), Jul/Aug (EDT), Oct/Nov (EDT/EST).
-    # The 1-hr error around DST shifts the BMO/AMC bucket cleanly either way.
-    month = dt_et.month
-    is_dst = 3 <= month <= 10 or (month == 11 and dt_et.day < 6) or (month == 3 and dt_et.day >= 13)
-    utc_offset_hours = 4 if is_dst else 5
-    filing_dt = dt_et + timedelta(hours=utc_offset_hours)
+    naive = datetime.fromisoformat(f"{r['date']}T{time_str}")
+    # Attach ET, then convert to UTC for storage.
+    from zoneinfo import ZoneInfo
+    dt_et = naive.replace(tzinfo=ZoneInfo("America/New_York"))
+    filing_dt = dt_et.astimezone(timezone.utc)
     prints.append({
         "fiscal_period": f"{r['fiscal_period']} {r['fiscal_year']}",
-        "filing_dt": filing_dt.isoformat() + "Z",
+        "filing_dt": filing_dt.isoformat().replace("+00:00", "Z"),
         "filing_date": r["date"],
         "eps_actual": r.get("actual_eps"),
         "eps_estimate": r.get("estimated_eps"),
@@ -127,8 +118,9 @@ next_print = upcoming[0] if upcoming else None
 end_date = TODAY.isoformat()
 start_date = (TODAY - timedelta(days=365 * 3)).isoformat()
 print(f"Fetching daily aggregates {start_date} to {end_date}...", file=sys.stderr)
-aggs = fetch_all(
-    f"/v2/aggs/ticker/{TICKER}/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000"
+aggs, aapl_aggs_fetched_at = paginate_all(
+    f"/v2/aggs/ticker/{TICKER}/range/1/day/{start_date}/{end_date}",
+    {"adjusted": "true", "sort": "asc", "limit": 50000},
 )
 agg_by_date = {}
 for a in aggs:
@@ -155,8 +147,9 @@ def next_trading_day(d_str, offset=1):
 
 # 4. SPY aggregates for PEAD beta-adjustment
 print("Fetching SPY aggregates for PEAD adjustment...", file=sys.stderr)
-spy_aggs = fetch_all(
-    f"/v2/aggs/ticker/SPY/range/1/day/{start_date}/{end_date}?adjusted=true&sort=asc&limit=50000"
+spy_aggs, spy_aggs_fetched_at = paginate_all(
+    f"/v2/aggs/ticker/SPY/range/1/day/{start_date}/{end_date}",
+    {"adjusted": "true", "sort": "asc", "limit": 50000},
 )
 spy_by_date = {datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date().isoformat(): a for a in spy_aggs}
 
@@ -169,10 +162,12 @@ def date_after_filing(filing_dt_iso):
       - AMC (hour_et >= 16): ref_date = print date, reaction_date = next trading day
       - BMO (hour_et < 9):   ref_date = prior trading day, reaction_date = print date
       - Intraday:            same-day reaction window
+    ET hour comes from zoneinfo via utc_to_et so DST is correct year-round.
     """
-    dt = datetime.fromisoformat(filing_dt_iso.replace("Z", "+00:00"))
-    filing_d_str = dt.date().isoformat()
-    hour_et = (dt.hour - 4) % 24  # crude; we built it from ET above
+    dt_utc = datetime.fromisoformat(filing_dt_iso.replace("Z", "+00:00"))
+    dt_et = utc_to_et(dt_utc)
+    filing_d_str = dt_et.date().isoformat()
+    hour_et = dt_et.hour
 
     if hour_et < 9:
         reaction_d = filing_d_str
@@ -267,7 +262,10 @@ for bucket_key in ("on_beats", "on_misses"):
 
 # 6. Options snapshot for implied move + IV30
 print("Fetching options snapshot...", file=sys.stderr)
-spot_snap = fetch(f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}")["ticker"]
+spot_snap_body, spot_snap_fetched_at = client.get(
+    f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}"
+)
+spot_snap = spot_snap_body["ticker"]
 spot = spot_snap["lastQuote"]["p"] if spot_snap.get("lastQuote") else spot_snap["day"]["c"]
 
 # Use Benzinga's next print date to find the earnings-capturing expiry
@@ -277,10 +275,15 @@ opt_to_date = (next_earnings_date + timedelta(days=14)).isoformat()
 opt_from_date = TODAY.isoformat()
 strike_band_lo = int(spot * 0.95)
 strike_band_hi = int(spot * 1.05)
-opts = fetch_all(
-    f"/v3/snapshot/options/{TICKER}?expiration_date.gte={opt_from_date}"
-    f"&expiration_date.lte={opt_to_date}&strike_price.gte={strike_band_lo}"
-    f"&strike_price.lte={strike_band_hi}&limit=250"
+opts, options_fetched_at = paginate_all(
+    f"/v3/snapshot/options/{TICKER}",
+    {
+        "expiration_date.gte": opt_from_date,
+        "expiration_date.lte": opt_to_date,
+        "strike_price.gte": strike_band_lo,
+        "strike_price.lte": strike_band_hi,
+        "limit": 250,
+    },
 )
 
 opts_by_exp = defaultdict(list)
@@ -354,7 +357,7 @@ peer_reaction_note = (
 payload = {
     "ticker": TICKER,
     "mode": "full",
-    "run_at": datetime.now(timezone.utc).isoformat(),
+    "run_at": utcnow_iso(),
     "print": {
         "date": next_print["date"] if next_print else None,
         "session": "AMC",
@@ -419,12 +422,36 @@ payload = {
     "peer_reaction": None,
     "peer_reaction_note": peer_reaction_note,
     "sources": [
-        {"endpoint": f"/v3/reference/tickers/{TICKER}", "context": "ticker metadata, sic_code"},
-        {"endpoint": f"/benzinga/v1/earnings?ticker={TICKER}", "context": "earnings dates, consensus EPS/revenue, actuals, surprise"},
-        {"endpoint": f"/v2/aggs/ticker/{TICKER}/range/1/day/...", "context": "daily closes for realized moves and PEAD"},
-        {"endpoint": "/v2/aggs/ticker/SPY/range/1/day/...", "context": "SPY for PEAD beta-adjustment"},
-        {"endpoint": f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}", "context": "current spot"},
-        {"endpoint": f"/v3/snapshot/options/{TICKER}?...", "context": "ATM straddle and IV"},
+        {
+            "endpoint": f"https://api.polygon.io/v3/reference/tickers/{TICKER}",
+            "context": "ticker metadata, sic_code",
+            "fetched_at": ticker_meta_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/benzinga/v1/earnings?ticker={TICKER}",
+            "context": "earnings dates, consensus EPS/revenue, actuals, surprise",
+            "fetched_at": bz_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v2/aggs/ticker/{TICKER}/range/1/day/...",
+            "context": "daily closes for realized moves and PEAD",
+            "fetched_at": aapl_aggs_fetched_at,
+        },
+        {
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/...",
+            "context": "SPY for PEAD beta-adjustment",
+            "fetched_at": spy_aggs_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}",
+            "context": "current spot",
+            "fetched_at": spot_snap_fetched_at,
+        },
+        {
+            "endpoint": f"https://api.polygon.io/v3/snapshot/options/{TICKER}?...",
+            "context": "ATM straddle and IV",
+            "fetched_at": options_fetched_at,
+        },
     ],
 }
 
@@ -559,7 +586,7 @@ rendered = "\n".join(lines)
 out_path = os.path.join(os.path.dirname(__file__), "aapl-real-output.md")
 with open(out_path, "w") as f:
     f.write("# Real run: earnings-drilldown AAPL\n\n")
-    f.write(f"Generated: {datetime.now(timezone.utc).isoformat()}\n")
+    f.write(f"Generated: {utcnow_iso()}\n")
     f.write(f"Spot at run: ${spot:.2f}\n\n")
     f.write("## Layer 1: canonical JSON (live data)\n\n")
     f.write("```json\n")
@@ -573,7 +600,6 @@ with open(out_path, "w") as f:
     f.write("- Benzinga `/benzinga/v1/earnings` is the right source for print dates + consensus + actuals. Replaced vX/financials usage. SKILL.md and references should be updated to call it out as the canonical earnings endpoint.\n")
     f.write(f"- Peer reaction skipped: {peer_reaction_note}\n")
     f.write("- No dedicated IV30 endpoint discovered; using ATM call+put average IV as proxy.\n")
-    f.write("- DST handling for ET → UTC is heuristic; a proper zoneinfo conversion would be cleaner. The 1-hr error doesn't change AMC/BMO bucketing for AAPL.\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
 print(rendered)

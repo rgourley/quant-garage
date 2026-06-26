@@ -22,11 +22,15 @@ import sys
 import json
 import math
 import argparse
-import urllib.request
-import urllib.error
-import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
+
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, FetchError, utcnow_iso
 
 
 # -------- Args --------
@@ -49,13 +53,6 @@ TICKERS_RESOLVED = [f"X:{base}USD" for base in UNIVERSE]
 WINDOW_HOURS = args.hours
 TOP_N = args.top
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
-
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
 NOW_UTC = datetime.now(timezone.utc)
 
 # Thresholds (kept as constants; mirrored in scan_params)
@@ -69,17 +66,7 @@ QUIET_VOLUME_RATIO = 0.7
 EXCHANGE_NAMES = {1: "Coinbase", 2: "Bitfinex", 6: "Bitstamp", 10: "Binance", 23: "Kraken"}
 
 
-# -------- HTTP --------
-
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
+client = MassiveClient()
 
 
 # -------- Math helpers --------
@@ -135,13 +122,15 @@ def humanize_price(p):
 # -------- Step 1: bulk snapshot --------
 
 def fetch_bulk_snapshot(tickers):
-    qs = urllib.parse.quote(",".join(tickers), safe=":,")
-    path = f"/v2/snapshot/locale/global/markets/crypto/tickers?tickers={qs}"
-    doc = fetch(path)
+    qs = ",".join(tickers)
+    body, fetched_at = client.get(
+        "/v2/snapshot/locale/global/markets/crypto/tickers",
+        {"tickers": qs},
+    )
     by_ticker = {}
-    for t in doc.get("tickers") or []:
+    for t in body.get("tickers") or []:
         by_ticker[t.get("ticker")] = t
-    return by_ticker
+    return by_ticker, fetched_at
 
 
 # -------- Step 2: daily aggs (TTM) for return distribution + volume baseline --------
@@ -149,16 +138,15 @@ def fetch_bulk_snapshot(tickers):
 def fetch_daily_aggs(ticker, days_back=365):
     frm = (NOW_UTC - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to = NOW_UTC.strftime("%Y-%m-%d")
-    path = (
-        f"/v2/aggs/ticker/{ticker}/range/1/day/{frm}/{to}"
-        f"?adjusted=true&sort=asc&limit=5000"
-    )
     try:
-        doc = fetch(path)
-    except RuntimeError as e:
+        body, fetched_at = client.get(
+            f"/v2/aggs/ticker/{ticker}/range/1/day/{frm}/{to}",
+            {"adjusted": "true", "sort": "asc", "limit": 5000},
+        )
+    except FetchError as e:
         print(f"  warn: daily aggs failed for {ticker}: {e}", file=sys.stderr)
-        return []
-    return doc.get("results") or []
+        return [], None
+    return body.get("results") or [], fetched_at
 
 
 # -------- Step 3: hourly aggs for realized vol --------
@@ -166,28 +154,29 @@ def fetch_daily_aggs(ticker, days_back=365):
 def fetch_hourly_aggs(ticker, days_back=32):
     frm = (NOW_UTC - timedelta(days=days_back)).strftime("%Y-%m-%d")
     to = NOW_UTC.strftime("%Y-%m-%d")
-    path = (
-        f"/v2/aggs/ticker/{ticker}/range/1/hour/{frm}/{to}"
-        f"?adjusted=true&sort=asc&limit=50000"
-    )
     try:
-        doc = fetch(path)
-    except RuntimeError as e:
+        body, fetched_at = client.get(
+            f"/v2/aggs/ticker/{ticker}/range/1/hour/{frm}/{to}",
+            {"adjusted": "true", "sort": "asc", "limit": 50000},
+        )
+    except FetchError as e:
         print(f"  warn: hourly aggs failed for {ticker}: {e}", file=sys.stderr)
-        return []
-    return doc.get("results") or []
+        return [], None
+    return body.get("results") or [], fetched_at
 
 
 # -------- Step 4: per-exchange trades --------
 
 def fetch_recent_trades(ticker, limit=200):
-    path = f"/v3/trades/{ticker}?limit={limit}&order=desc"
     try:
-        doc = fetch(path)
-    except RuntimeError as e:
+        body, fetched_at = client.get(
+            f"/v3/trades/{ticker}",
+            {"limit": limit, "order": "desc"},
+        )
+    except FetchError as e:
         print(f"  warn: trades fetch failed for {ticker}: {e}", file=sys.stderr)
-        return []
-    return doc.get("results") or []
+        return [], None
+    return body.get("results") or [], fetched_at
 
 
 def per_exchange_basis(trades):
@@ -269,12 +258,19 @@ print(f"Scanning {len(TICKERS_RESOLVED)} crypto tickers...", file=sys.stderr)
 
 # 1. Bulk snapshot
 print("  fetching bulk snapshot", file=sys.stderr)
-snapshots = fetch_bulk_snapshot(TICKERS_RESOLVED)
+snapshots, snapshot_fetched_at = fetch_bulk_snapshot(TICKERS_RESOLVED)
 print(f"  got {len(snapshots)} snapshots", file=sys.stderr)
 
 # Per-ticker compute
 events = []
 skipped = []
+
+# Track per-endpoint last fetched_at for the sources block. Per-call provenance
+# (M8) is the right pattern; we record the latest landing of each endpoint
+# class across the loop.
+last_daily_fetched_at = None
+last_hourly_fetched_at = None
+last_trades_fetched_at = None
 
 for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     print(f"  processing {ticker}", file=sys.stderr)
@@ -288,7 +284,12 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     prev_day = snap.get("prevDay") or {}
     minute = snap.get("min") or {}
 
-    # Spot via fallback chain
+    # Spot via fallback chain. Crypto snapshot uses the same shape as stocks,
+    # so the canonical fallback (lastTrade.p → min.c → day.c → prevDay.c) holds.
+    # We inline it here rather than calling resolve_price() because resolve_price
+    # expects the v2/snapshot/locale/.../tickers/{T} response shape (with a
+    # top-level `ticker` key); the bulk crypto endpoint returns the ticker
+    # blocks directly under `tickers`.
     spot = None
     spot_source = None
     for field, src in [
@@ -315,7 +316,9 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     log_ret_24h = math.log(spot / prev_close) if prev_close > 0 else 0
 
     # 2. Daily aggs for return distribution + volume baseline
-    daily = fetch_daily_aggs(ticker, days_back=60)
+    daily, daily_fetched_at = fetch_daily_aggs(ticker, days_back=60)
+    if daily_fetched_at:
+        last_daily_fetched_at = daily_fetched_at
     daily_closes = [b.get("c") for b in daily if b.get("c")]
     daily_log_rets = []
     for i in range(1, len(daily_closes)):
@@ -341,7 +344,9 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     volume_vs_avg_ratio = (volume_24h_usd / volume_30d_avg) if (volume_24h_usd and volume_30d_avg) else 1.0
 
     # 3. Hourly aggs for realized vol
-    hourly = fetch_hourly_aggs(ticker, days_back=32)
+    hourly, hourly_fetched_at = fetch_hourly_aggs(ticker, days_back=32)
+    if hourly_fetched_at:
+        last_hourly_fetched_at = hourly_fetched_at
     hourly_closes = [b.get("c") for b in hourly if b.get("c")]
     rv_24h = realized_vol_from_closes(hourly_closes[-25:], 24 * 365) if len(hourly_closes) >= 25 else None
     rv_distribution_30d = rolling_realized_vol_distribution(hourly, window=24)
@@ -350,7 +355,9 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     vol_vs_avg_ratio = (rv_24h / rv_avg_30d) if (rv_24h and rv_avg_30d) else 1.0
 
     # 4. Per-exchange trades
-    trades = fetch_recent_trades(ticker, limit=200)
+    trades, trades_fetched_at = fetch_recent_trades(ticker, limit=200)
+    if trades_fetched_at:
+        last_trades_fetched_at = trades_fetched_at
     basis_bps, exchanges_compared, high_ex, low_ex = per_exchange_basis(trades)
 
     # Signals fired
@@ -476,7 +483,7 @@ payload = {
     "tier": tier,
     "tier_caveats": tier_caveats,
     "mode": "stream",
-    "run_at": NOW_UTC.isoformat(),
+    "run_at": utcnow_iso(),
     "scan_params": {
         "universe": RAW_UNIVERSE,
         "tickers_resolved": TICKERS_RESOLVED,
@@ -497,23 +504,23 @@ payload = {
     "skipped_tickers": skipped,
     "sources": [
         {
-            "endpoint": "/v2/snapshot/locale/global/markets/crypto/tickers",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/snapshot/locale/global/markets/crypto/tickers",
+            "fetched_at": snapshot_fetched_at,
             "context": "Bulk snapshot for the resolved universe",
         },
         {
-            "endpoint": "/v2/aggs/ticker/{X:BASEUSD}/range/1/day/{from}/{to}",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/{X:BASEUSD}/range/1/day/{from}/{to}",
+            "fetched_at": last_daily_fetched_at,
             "context": "Daily aggregates per ticker for return distribution and volume baseline",
         },
         {
-            "endpoint": "/v2/aggs/ticker/{X:BASEUSD}/range/1/hour/{from}/{to}",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/{X:BASEUSD}/range/1/hour/{from}/{to}",
+            "fetched_at": last_hourly_fetched_at,
             "context": "Hourly aggregates per ticker for current 24h realized vol and trailing 30d distribution",
         },
         {
-            "endpoint": "/v3/trades/{X:BASEUSD}?limit=200&order=desc",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v3/trades/{X:BASEUSD}?limit=200&order=desc",
+            "fetched_at": last_trades_fetched_at,
             "context": "Recent tick-level trades per ticker for cross-exchange basis",
         },
     ],
@@ -645,7 +652,7 @@ out_name = "crypto-vol-scanner-output.md"
 out_path = os.path.join(os.path.dirname(__file__), out_name)
 with open(out_path, "w") as f:
     f.write("# crypto-vol-scanner run\n\n")
-    f.write(f"Generated: {NOW_UTC.isoformat()}\n")
+    f.write(f"Generated: {utcnow_iso()}\n")
     f.write(f"Universe: {', '.join(RAW_UNIVERSE)}\n")
     f.write(f"Window: last {WINDOW_HOURS}h\n")
     f.write(f"Tier: {tier}\n\n")

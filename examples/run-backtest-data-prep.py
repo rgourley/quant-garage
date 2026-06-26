@@ -33,8 +33,6 @@ import json
 import math
 import time
 import argparse
-import urllib.request
-import urllib.error
 from io import BytesIO
 from datetime import datetime, date, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -42,78 +40,69 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+from lib.quant_garage import MassiveClient, FetchError, today, utcnow_iso
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-NOW_UTC = datetime.now(timezone.utc)
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "backtest-data-prep")
 os.makedirs(CACHE_DIR, exist_ok=True)
 
 
+client = MassiveClient()
+# Used for the flat-files S3 probe (which uses MASSIVE_API_KEY as the S3 key+secret).
+# Read here only to pass into boto3; routine HTTP goes through `client`.
+_KEY = client.api_key
+
+
 # ----- HTTP helpers -----
 
 
-def fetch_rest(path, retries=2):
-    url = f"{BASE}{path}"
-    for attempt in range(retries + 1):
-        req = urllib.request.Request(url, headers=HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.load(r)
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries:
-                time.sleep(1 + attempt)
-                continue
-            body = e.read()[:400].decode("utf-8", errors="replace")
-            raise RuntimeError(f"{e.code} on {path}: {body}")
-        except urllib.error.URLError as e:
-            if attempt < retries:
-                time.sleep(1)
-                continue
-            raise RuntimeError(f"network error on {path}: {e}")
+def fetch_rest(path, params=None, retries=2):
+    """Single GET via the shared client. Returns parsed JSON only.
+    `retries` is kept in the signature for backwards compatibility but the
+    client now handles 429/5xx/socket.timeout retry centrally (L3).
+    """
+    try:
+        body, _ = client.get(path, params)
+    except FetchError as e:
+        raise RuntimeError(f"{e.status_code} on {path}: {e}")
+    return body
 
 
-def fetch_all_rest(path, hard_cap=2000):
+def fetch_all_rest(path, params=None, hard_cap=2000):
     out = []
-    url = f"{BASE}{path}"
-    while url and len(out) < hard_cap:
-        req = urllib.request.Request(url, headers=HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                doc = json.load(r)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:400].decode("utf-8", errors="replace")
-            raise RuntimeError(f"{e.code} on {url}: {body}")
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
+    try:
+        for page, _ in client.paginate(path, params):
+            out.extend(page)
+            if len(out) >= hard_cap:
+                break
+    except FetchError as e:
+        raise RuntimeError(f"{e.status_code} on {path}: {e}")
     return out
 
 
 def probe_flat_files():
-    """Return (entitled: bool, s3_client) for flat-files access."""
+    """Return (entitled: bool, s3_client) for flat-files access.
+
+    Flat-files lives behind an S3-compatible boto3 client, not a REST host,
+    so MassiveClient does not wrap it. The probe stays on raw boto3.
+    """
     try:
         import boto3
         from botocore.config import Config
         s3 = boto3.client(
             "s3",
             endpoint_url="https://files.polygon.io",
-            aws_access_key_id=KEY,
-            aws_secret_access_key=KEY,
+            aws_access_key_id=_KEY,
+            aws_secret_access_key=_KEY,
             config=Config(signature_version="s3v4"),
         )
         # Pick a known-good recent weekday
-        probe_date = date.today() - timedelta(days=4)
+        probe_date = today() - timedelta(days=4)
         while probe_date.weekday() >= 5:
             probe_date -= timedelta(days=1)
         key = f"us_stocks_sip/day_aggs_v1/{probe_date.year:04d}/{probe_date.month:02d}/{probe_date.isoformat()}.csv.gz"
@@ -1179,26 +1168,27 @@ def main():
         "survivorship_note": survivorship_note,
     }
 
+    run_at = utcnow_iso()
     sources = [
-        {"endpoint": "/v3/reference/tickers", "fetched_at": NOW_UTC.isoformat(),
+        {"endpoint": "https://api.polygon.io/v3/reference/tickers", "fetched_at": run_at,
          "context": "universe construction"},
-        {"endpoint": "/v3/reference/tickers/{ticker}", "fetched_at": NOW_UTC.isoformat(),
+        {"endpoint": "https://api.polygon.io/v3/reference/tickers/{ticker}", "fetched_at": run_at,
          "context": "type + sector enrichment, ~30s per 100 tickers"},
-        {"endpoint": "/v3/reference/splits?ticker={ticker}", "fetched_at": NOW_UTC.isoformat(),
+        {"endpoint": "https://api.polygon.io/v3/reference/splits?ticker={ticker}", "fetched_at": run_at,
          "context": "corp action correctness"},
-        {"endpoint": "/v3/reference/dividends?ticker={ticker}", "fetched_at": NOW_UTC.isoformat(),
+        {"endpoint": "https://api.polygon.io/v3/reference/dividends?ticker={ticker}", "fetched_at": run_at,
          "context": "dividend count + spinoff detection"},
     ]
     if interface == "flat-files":
         sources.append({
             "endpoint": "s3://flatfiles/us_stocks_sip/day_aggs_v1/{yyyy}/{mm}/{yyyy-mm-dd}.csv.gz",
-            "fetched_at": NOW_UTC.isoformat(),
+            "fetched_at": run_at,
             "context": "daily aggregates via flat-files (one S3 day-bucket per trading day)",
         })
     else:
         sources.append({
-            "endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-            "fetched_at": NOW_UTC.isoformat(),
+            "endpoint": "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}",
+            "fetched_at": run_at,
             "context": "REST fallback for flat-files 403",
         })
 
@@ -1216,7 +1206,7 @@ def main():
             "for the 8-K acceptance methodology when joining downstream.",
         ],
         "mode": "dataset",
-        "run_at": NOW_UTC.isoformat(),
+        "run_at": run_at,
         "interface_used": interface,
         "universe_definition": universe_def,
         "window_start": ws.isoformat(),
