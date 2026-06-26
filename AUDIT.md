@@ -12,7 +12,7 @@ bottom of this file; the table at the top is the running scorecard.
   script that hasn't been migrated.
 - `[x]` Closed. Fix landed in every affected script, verified.
 
-**Last updated:** 2026-06-26 (batch 3 migration complete — all 16 of 16 scripts on lib.quant_garage; L3, H1, H2, M8, D3, D5 closed)
+**Last updated:** 2026-06-26 (correctness sprint wave 1: C1, C8, C9, C10, H3 closed; N7 added)
 
 ---
 
@@ -30,16 +30,16 @@ bottom of this file; the table at the top is the running scorecard.
 
 | ID | Status | Affects | Resolution path |
 |---|---|---|---|
-| C1 | `[~]` | backtest-data-prep | `lib/quant_garage/universe.py::build_universe()` returns Universe with honest `survivorship_mode`. Migration to backtest-data-prep pending |
+| C1 | `[x]` | backtest-data-prep | Closed in commit `183bddf` via honest-labeling. `--survivorship` argparse now only accepts `biased`; `delisted_during_window_count: None` when no inactive pull happened (was misleading 0); render block unconditionally says "Active only (current snapshot)". Real `active=false` union deferred to a follow-up sprint |
 | C2 | `[ ]` | factor-research | Point-in-time mcap / share count at each rebalance (deferred — needs financials integration on top of universe.py) |
 | C3 | `[~]` | factor-research | `lib/quant_garage/stats.py::newey_west_se()` ready. Migration to factor-research pending |
 | C4 | `[ ]` | factor-research | Point-in-time fundamentals per rebalance, or drop quality from decay table (deferred — same financials integration as C2) |
 | C5 | `[ ]` | event-study, earnings-drilldown | Separate announcement-excluded drift (T+1 to T+horizon) from announcement reaction |
 | C6 | `[~]` | event-study | `lib/quant_garage/stats.py::critical_t()` and `is_significant()` ready. Migration to event-study pending |
 | C7 | `[ ]` | valuation-sanity-check | Skip peers missing D&A, or normalize numerator both sides |
-| C8 | `[ ]` | options-flow | Real NBBO at print time (copy `best-ex-check`'s `fetch_nbbo_at`); fix limit=200 silent downgrade |
-| C9 | `[ ]` | corp-actions-reconciler | Handle SC/SD/ST/LT dividend types, not just RC |
-| C10 | `[ ]` | t+1-settlement-prep | Entitlement = bought strictly before ex-date |
+| C8 | `[x]` | options-flow | Closed in commit `29cb063`. NBBO at trade time via per-trade `/v3/quotes?timestamp.lte={ns}&order=desc&limit=1`. Trades pulled with `timestamp.gte/lte` window instead of `order=desc limit=200` so sweeps outside the recent window no longer silently downgrade. The `fetch_nbbo_at` helper kept inline (couldn't cleanly share with best-ex-check; different lookback windows and fetch wrappers) |
+| C9 | `[x]` | corp-actions-reconciler | Closed in commit `39211d9`. `apply_dividend()` now switches on `dividend_type`: RC (cash basis adj), SC (special cash, basis adj + flag), SD (stock dividend as fractional split), LT (large stock dividend as fractional split per IRS), ST (reshapes and routes to `apply_split()`). Unknown types append to `tier_caveats` rather than silently skipping |
+| C10 | `[x]` | t+1-settlement-prep | Closed in commit `39211d9`. Cum-dividend entitlement requires `trade_date < ex_dividend_date` strictly; ex-date trades emit informational "NOT allocated to buyer" notice instead of being flagged as entitled |
 | C11 | `[ ]` | valuation, pitch-comps | EV = mcap + total debt − cash (+ leases, minorities) |
 | C12 | `[ ]` | valuation | Weighted-diluted shares (not single share class) |
 
@@ -49,7 +49,7 @@ bottom of this file; the table at the top is the running scorecard.
 |---|---|---|---|
 | H1 | `[x]` | best-ex-check, news-scanner, portfolio-mark, earnings-drilldown | Closed in batch-3 migration (commit `2aa7724`); all 16 scripts now use `utc_to_et()` from zoneinfo. DST math correct year-round |
 | H2 | `[x]` | most scripts | Closed in batch-3 migration (commit `2aa7724`); all 16 scripts now use `today()`. `QUANT_GARAGE_AS_OF` env override is the documented way to freeze for reproducible runs |
-| H3 | `[~]` | universe-builder, factor-research | `Universe.survivorship_mode` is derived from how the universe was built, not asserted by caller. Migration pending |
+| H3 | `[x]` | universe-builder, factor-research | Closed in commit `183bddf` for universe-builder. The reference-path's false "Survivorship: clean" assertion is gone; mode is now derived from evidence (`fetched_inactive AND delisted_in_window > 0`). factor-research path also affected by H3 but uses a different code structure; pending verification it's already correct or needs a follow-up |
 | H4 | `[ ]` | pitch-comps | Min-n enforcement; SE/t-stat/CI on OLS; drop endogenous regressor |
 | H5 | `[ ]` | valuation, pitch-comps | Consistent D&A and operating-income annualization in shared lib |
 | H6 | `[ ]` | options-flow | Cap or flag zero-OI separately in vol_oi_ratio |
@@ -98,6 +98,7 @@ These weren't in the original audit but surfaced during the foundation refactor:
 | N4 | Cosmetic | `run-pitch-comps.py` and `run-valuation-sanity-check.py` had a `ticker.fmv` step at the bottom of their snapshot fallback waterfalls that never executed (FMV is a separate stream-only event, not on v2 snapshot). Migration to `resolve_price()` silently drops this dead step. No behavioral change because it never returned non-None. Same family as D5 |
 | N5 | Doc | `/v1/marketstatus/upcoming` returns a bare JSON array, not a `{results: [...]}` envelope like the rest of the API. `client.paginate()` assumes the envelope and `body.get("results")` returns `None` on a bare array. Callers of this endpoint must use `client.get()` and `isinstance(body, list)`. Surfaced during the run-t1-settlement-prep migration. Should be noted in the lib's docstring for `paginate()` so future skill authors don't hand `marketstatus/upcoming` to it and silently get zero rows |
 | N6 | Future-blocker | `run-factor-research.py` defines local `build_universe()` and `winsorize()` functions that collide by name with `lib.quant_garage.build_universe` and `lib.quant_garage.winsorize`. Batch-3 migration only imported `MassiveClient/FetchError/today/utcnow_iso` to avoid the collision, leaving the local functions intact. When the C2/C3/C4 sprint adopts the lib helpers here, the local functions need to be renamed or removed first |
+| N7 | High | Migrated scripts crash on `python3 examples/<script>.py --help` because `MassiveClient()` instantiates at module/import time and raises `RuntimeError("MASSIVE_API_KEY not set")` before argparse runs. Fix: lazy-init the client (instantiate inside `main()` rather than module scope). Surfaced during the C1 fix; affects all 16 migrated scripts |
 
 ---
 
