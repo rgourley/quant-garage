@@ -12,7 +12,7 @@ bottom of this file; the table at the top is the running scorecard.
   script that hasn't been migrated.
 - `[x]` Closed. Fix landed in every affected script, verified.
 
-**Last updated:** 2026-06-26 (L1 closed; event-study migrated to lib.quant_garage; L2 closed; N1 dismissed after live probe)
+**Last updated:** 2026-06-26 (stats.py + universe.py landed; L1, L2 closed; N1 dismissed; C1/H3/M5/M6/C3/C6 foundation-addressed and ready for skill migration)
 
 ---
 
@@ -30,12 +30,12 @@ bottom of this file; the table at the top is the running scorecard.
 
 | ID | Status | Affects | Resolution path |
 |---|---|---|---|
-| C1 | `[ ]` | backtest-data-prep | Needs `lib/quant_garage/universe.py` with active=true + active=false union |
-| C2 | `[ ]` | factor-research | Point-in-time mcap / share count at each rebalance, not today's |
-| C3 | `[ ]` | factor-research | Newey-West SE with lag=horizon-months in `lib/quant_garage/stats.py` |
-| C4 | `[ ]` | factor-research | Point-in-time fundamentals per rebalance, or drop quality from decay table |
+| C1 | `[~]` | backtest-data-prep | `lib/quant_garage/universe.py::build_universe()` returns Universe with honest `survivorship_mode`. Migration to backtest-data-prep pending |
+| C2 | `[ ]` | factor-research | Point-in-time mcap / share count at each rebalance (deferred — needs financials integration on top of universe.py) |
+| C3 | `[~]` | factor-research | `lib/quant_garage/stats.py::newey_west_se()` ready. Migration to factor-research pending |
+| C4 | `[ ]` | factor-research | Point-in-time fundamentals per rebalance, or drop quality from decay table (deferred — same financials integration as C2) |
 | C5 | `[ ]` | event-study, earnings-drilldown | Separate announcement-excluded drift (T+1 to T+horizon) from announcement reaction |
-| C6 | `[ ]` | event-study | `scipy.stats.t.ppf(0.975, df=n-1)` instead of hardcoded `2.0` |
+| C6 | `[~]` | event-study | `lib/quant_garage/stats.py::critical_t()` and `is_significant()` ready. Migration to event-study pending |
 | C7 | `[ ]` | valuation-sanity-check | Skip peers missing D&A, or normalize numerator both sides |
 | C8 | `[ ]` | options-flow | Real NBBO at print time (copy `best-ex-check`'s `fetch_nbbo_at`); fix limit=200 silent downgrade |
 | C9 | `[ ]` | corp-actions-reconciler | Handle SC/SD/ST/LT dividend types, not just RC |
@@ -49,7 +49,7 @@ bottom of this file; the table at the top is the running scorecard.
 |---|---|---|---|
 | H1 | `[~]` | best-ex-check, news-scanner, portfolio-mark, earnings-drilldown | Fixed in `lib/quant_garage/timezones.py`; migrated to 3 scripts so far (including event-study). Other 13 still use hardcoded UTC-4 |
 | H2 | `[~]` | most scripts | Fixed in `lib/quant_garage/as_of.py`; migrated to 3 scripts so far (including event-study) |
-| H3 | `[ ]` | universe-builder, factor-research | Tie "survivorship clean" label to whether delisted names were actually pulled |
+| H3 | `[~]` | universe-builder, factor-research | `Universe.survivorship_mode` is derived from how the universe was built, not asserted by caller. Migration pending |
 | H4 | `[ ]` | pitch-comps | Min-n enforcement; SE/t-stat/CI on OLS; drop endogenous regressor |
 | H5 | `[ ]` | valuation, pitch-comps | Consistent D&A and operating-income annualization in shared lib |
 | H6 | `[ ]` | options-flow | Cap or flag zero-OI separately in vol_oi_ratio |
@@ -66,8 +66,8 @@ bottom of this file; the table at the top is the running scorecard.
 | M2 | `[ ]` | best-ex-check | Use quotes endpoint for NBBO proxy; doc the bias direction correctly |
 | M3 | `[ ]` | corp-actions-reconciler | One consolidated break with final state per ticker |
 | M4 | `[ ]` | corp-actions-reconciler | Tolerance compare on fractional shares |
-| M5 | `[ ]` | universe-builder | Index cleanly into top quartile |
-| M6 | `[ ]` | universe-builder | One concentration baseline definition across paths |
+| M5 | `[~]` | universe-builder | `lib/quant_garage/universe.py::top_quartile_threshold()` returns exact 75th percentile. Migration pending |
+| M6 | `[~]` | universe-builder | `lib/quant_garage/universe.py::concentration_z_score()` is the one definition. Migration pending |
 | M7 | `[ ]` | portfolio-mark | Use streamed quote in live mode; skip REST round-trip |
 | M8 | `[~]` | most scripts | Per-call fetched_at via `MassiveClient.get()`; migrated to 3 scripts so far (including event-study) |
 | M9 | `[ ]` | options-flow, crypto-vol-scanner, news-scanner | Add percentile/base-rate context on composite scores |
