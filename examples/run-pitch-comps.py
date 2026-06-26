@@ -24,22 +24,27 @@ import sys
 import json
 import time
 import argparse
-import urllib.request
-import urllib.error
-from datetime import datetime, date, timezone
+from datetime import datetime, timezone
 
 import numpy as np
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    resolve_price,
+)
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+
+client = MassiveClient()
 NOW_UTC = datetime.now(timezone.utc)
-TODAY = date(2026, 6, 23)
+TODAY = today()
 
 
 # Curated peer-override map. Mirrors the methodology in
@@ -80,47 +85,28 @@ PEER_OVERRIDES = {
 }
 
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
 def get_ticker_details(ticker):
     try:
-        doc = fetch(f"/v3/reference/tickers/{ticker}")
-    except RuntimeError as exc:
+        doc, _ = client.get(f"/v3/reference/tickers/{ticker}")
+    except FetchError as exc:
         print(f"  WARN: ticker details for {ticker}: {exc}", file=sys.stderr)
         return None
     return doc.get("results")
 
 
 def get_snapshot_price(ticker):
-    """Apply the lastTrade -> day.c -> prevDay.c -> fmv waterfall."""
+    """Walk the lastTrade -> min.c -> day.c -> prevDay.c chain via lib.
+
+    Uses resolve_price() (D4/D5). The legacy waterfall mentioned a
+    top-level `fmv` field that the snapshot response shape doesn't
+    surface there, so it always returned None in practice.
+    """
     try:
-        doc = fetch(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
-    except RuntimeError as exc:
+        doc, _ = client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    except FetchError as exc:
         print(f"  WARN: snapshot for {ticker}: {exc}", file=sys.stderr)
         return None
-    t = doc.get("ticker") or {}
-    lt = (t.get("lastTrade") or {}).get("p")
-    if lt:
-        return float(lt)
-    day_c = (t.get("day") or {}).get("c")
-    if day_c:
-        return float(day_c)
-    prev_c = (t.get("prevDay") or {}).get("c")
-    if prev_c:
-        return float(prev_c)
-    fmv = t.get("fmv")
-    if fmv:
-        return float(fmv)
-    return None
+    return resolve_price(doc).price
 
 
 def get_financials(ticker, limit=8):
@@ -133,8 +119,8 @@ def get_financials(ticker, limit=8):
     path = (f"/vX/reference/financials?ticker={ticker}"
             f"&timeframe=quarterly&limit={limit}&order=desc")
     try:
-        doc = fetch(path)
-    except RuntimeError as exc:
+        doc, _ = client.get(path)
+    except FetchError as exc:
         print(f"  WARN: financials for {ticker}: {exc}", file=sys.stderr)
         return []
     return doc.get("results") or []
@@ -250,8 +236,8 @@ def compute_multiples(market_cap, price, metrics):
 def assemble_name(ticker, sources):
     """Pull all data for one name. Returns the schema's per-name dict shape."""
     det = get_ticker_details(ticker)
-    sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers/{ticker}",
+                    "fetched_at": utcnow_iso(),
                     "context": f"ticker details for {ticker}"})
     if not det:
         return {
@@ -267,13 +253,13 @@ def assemble_name(ticker, sources):
         }
 
     price = get_snapshot_price(ticker)
-    sources.append({"endpoint": "/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+                    "fetched_at": utcnow_iso(),
                     "context": f"current price for {ticker}"})
 
     rows = get_financials(ticker, limit=12)
-    sources.append({"endpoint": "/vX/reference/financials",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/vX/reference/financials",
+                    "fetched_at": utcnow_iso(),
                     "context": f"8q quarterly financials for {ticker}"})
 
     metrics = compute_metrics_from_financials(rows)
@@ -514,7 +500,12 @@ else:
     print(f"Peer SIC fallback on SIC {sic}; querying reference tickers...",
           file=sys.stderr)
     path = f"/v3/reference/tickers?market=stocks&active=true&type=CS&sic_code={sic}&limit=50"
-    rows = (fetch(path).get("results") or [])
+    try:
+        doc, _ = client.get(path)
+        rows = doc.get("results") or []
+    except FetchError as exc:
+        print(f"ERROR: SIC fallback fetch failed: {exc}", file=sys.stderr)
+        sys.exit(1)
     peers_list = [r["ticker"] for r in rows
                   if r.get("ticker") and r["ticker"] != subject_ticker][:8]
     peer_selection_method = "sic_fallback"

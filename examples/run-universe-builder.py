@@ -28,22 +28,28 @@ import sys
 import json
 import math
 import argparse
-import urllib.request
-import urllib.error
 from datetime import datetime, date, timedelta, timezone
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    top_quartile_threshold,
+    concentration_z_score,
+)
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
+
+client = MassiveClient()
 NOW_UTC = datetime.now(timezone.utc)
-TODAY = date(2026, 6, 23)
+TODAY = today()
 
 # Curated free-tier seed: top US large-caps by market cap, hand-picked from
 # common index constituents. Used when --candidate-source curated (the
@@ -142,42 +148,20 @@ def sic_to_sector(sic_code, sic_desc):
     return "Other"
 
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
 def fetch_all(path, hard_cap=5000):
     out = []
-    url = f"{BASE}{path}"
-    while url and len(out) < hard_cap:
-        req = urllib.request.Request(url, headers=HEADERS)
-        try:
-            with urllib.request.urlopen(req, timeout=20) as r:
-                doc = json.load(r)
-        except urllib.error.HTTPError as e:
-            body = e.read()[:400].decode("utf-8", errors="replace")
-            raise RuntimeError(f"{e.code} on {url}: {body}")
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
+    for results, _ in client.paginate(path):
+        out.extend(results)
+        if len(out) >= hard_cap:
+            out = out[:hard_cap]
+            break
     return out
 
 
 def get_ticker_details(ticker):
     try:
-        doc = fetch(f"/v3/reference/tickers/{ticker}")
-    except RuntimeError:
+        doc, _ = client.get(f"/v3/reference/tickers/{ticker}")
+    except FetchError:
         return None
     return doc.get("results")
 
@@ -214,8 +198,8 @@ def get_grouped_aggs(d, max_walk=7):
     for _ in range(max_walk):
         path = f"/v2/aggs/grouped/locale/us/market/stocks/{cur.isoformat()}?adjusted=true"
         try:
-            doc = fetch(path)
-        except RuntimeError:
+            doc, _ = client.get(path)
+        except FetchError:
             cur = cur - timedelta(days=1)
             continue
         res = doc.get("results") or []
@@ -233,8 +217,8 @@ def get_ttm_ocf(ticker):
     """
     path = f"/vX/reference/financials?ticker={ticker}&timeframe=quarterly&limit=4&order=desc"
     try:
-        doc = fetch(path)
-    except RuntimeError:
+        doc, _ = client.get(path)
+    except FetchError:
         return None, None
     rows = doc.get("results") or []
     if not rows:
@@ -395,7 +379,8 @@ elif args.candidate_source == "reference":
     print("WARN: reference pool requires a paid plan to complete in reasonable time", file=sys.stderr)
     path = f"/v3/reference/tickers?market=stocks&active=true&type=CS&limit=1000"
     rows = fetch_all(path, hard_cap=args.candidate_cap)
-    sources.append({"endpoint": "/v3/reference/tickers", "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers",
+                    "fetched_at": utcnow_iso(),
                     "context": "candidate pool"})
     major = {"XNAS", "XNYS", "ARCX", "BATS"}
     rows = [r for r in rows if r.get("primary_exchange") in major]
@@ -421,8 +406,8 @@ else:
                 if a.get("T") and "." not in a["T"] and "/" not in a["T"] and a.get("c")]
     candidate_pool_size = len(raw_pool)
     grouped_history = {end_d.isoformat(): {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in end_aggs}}
-    sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                    "fetched_at": utcnow_iso(),
                     "context": f"candidate pool from {end_d.isoformat()} grouped daily bars"})
     tier = "A"
     tier_caveats = [
@@ -449,8 +434,8 @@ if args.candidate_source != "grouped":
         det = get_ticker_details(tk)
         if det:
             details_cache[tk] = det
-    sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers/{ticker}",
+                    "fetched_at": utcnow_iso(),
                     "context": "market cap + sector per name"})
 
 # Starting universe sector distribution for the concentration check
@@ -523,8 +508,8 @@ if args.min_price is not None:
             end_d_price, end_aggs_price = get_grouped_aggs(TODAY - timedelta(days=1))
             grouped_history = {end_d_price.isoformat():
                                {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in end_aggs_price}}
-            sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-                            "fetched_at": NOW_UTC.isoformat(),
+            sources.append({"endpoint": "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                            "fetched_at": utcnow_iso(),
                             "context": f"last close for price filter: {end_d_price.isoformat()}"})
         end_iso_p = next(iter(grouped_history))
         end_snap_p = grouped_history[end_iso_p]
@@ -591,8 +576,8 @@ if needs_price_history:
         iso = d.isoformat()
         if iso not in grouped_history:
             grouped_history[iso] = {a["T"]: {"c": a["c"], "v": a.get("v", 0)} for a in rows}
-            sources.append({"endpoint": "/v2/aggs/grouped/locale/us/market/stocks/{date}",
-                            "fetched_at": NOW_UTC.isoformat(),
+            sources.append({"endpoint": "https://api.polygon.io/v2/aggs/grouped/locale/us/market/stocks/{date}",
+                            "fetched_at": utcnow_iso(),
                             "context": f"price history anchor: {iso}"})
         return iso
 
@@ -653,9 +638,11 @@ if needs_price_history:
     if args.mom_3m_top_quartile:
         with_mom = [n for n in names if n["factors"].get("mom_3m") is not None]
         if with_mom:
-            mom_values = sorted([n["factors"]["mom_3m"] for n in with_mom])
-            cutoff_idx = max(0, int(len(mom_values) * 0.75) - 1)
-            cutoff = mom_values[cutoff_idx]
+            # M5 audit fix: top_quartile_threshold returns the exact 75th
+            # percentile so callers index with `value >= threshold`. The
+            # old `*0.75 - 1` index-arithmetic kept ~26% instead of 25%.
+            mom_values = [n["factors"]["mom_3m"] for n in with_mom]
+            cutoff = top_quartile_threshold(mom_values)
             names = [n for n in with_mom if n["factors"]["mom_3m"] >= cutoff]
             filter_chain.append({
                 "name": "mom_3m_top_quartile",
@@ -731,8 +718,8 @@ if needs_enrichment and names:
         for tk, det in fetched.items():
             if det:
                 details_cache[tk] = det
-        sources.append({"endpoint": "/v3/reference/tickers/{ticker}",
-                        "fetched_at": NOW_UTC.isoformat(),
+        sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers/{ticker}",
+                        "fetched_at": utcnow_iso(),
                         "context": f"enrichment pass: type+sector+mcap for {len(to_fetch)} survivors"})
 
     # Backfill name fields from details_cache. Detail rows fetched late are
@@ -793,8 +780,8 @@ else:
             n["factors"]["ocf_yield"] = ttm_ocf / mcap
         else:
             n["factors"]["ocf_yield"] = None
-    sources.append({"endpoint": "/vX/reference/financials",
-                    "fetched_at": NOW_UTC.isoformat(),
+    sources.append({"endpoint": "https://api.polygon.io/vX/reference/financials",
+                    "fetched_at": utcnow_iso(),
                     "context": "TTM operating cash flow per survivor"})
 
 if args.ocf_yield_min is not None:
@@ -873,6 +860,12 @@ for i, n in enumerate(names):
     n["rank"] = i + 1
 
 # ----- Concentration check -----
+# M6 audit fix: route through concentration_z_score() in
+# lib.quant_garage.universe so curated / grouped / reference paths share
+# one definition. The helper takes top_set + universe_set and returns a
+# z-score per category. We rebuild universe_set from starting_sector_counts
+# (the cohort baseline established earlier in this script — same source as
+# before, just routed through the shared helper).
 
 print("Computing concentration check...", file=sys.stderr)
 top_n_size = args.top_n
@@ -884,21 +877,29 @@ for n in top_n:
 concentration_findings = []
 N = len(top_n)
 if N >= 10 and starting_universe_total > 0:
-    for sector, observed in top_sector_counts.items():
-        expected_p = starting_sector_counts.get(sector, 0) / starting_universe_total
-        if expected_p <= 0 or expected_p >= 1:
+    # Reconstruct a universe-set list from the precomputed category counts.
+    # The helper internally takes the Counter; expanding to a list keeps it
+    # general (the helper accepts any Sequence).
+    universe_set = []
+    for sector, count in starting_sector_counts.items():
+        universe_set.extend([sector] * count)
+    # Top-set is the rolled-out sector tags of the top-N rows.
+    top_set = []
+    for sector, count in top_sector_counts.items():
+        top_set.extend([sector] * count)
+
+    z_scores = concentration_z_score(top_set=top_set, universe_set=universe_set)
+    for sector, info in z_scores.items():
+        p = info["p_universe"]
+        if p <= 0 or p >= 1:
             continue
-        expected_count = N * expected_p
-        expected_stdev = math.sqrt(N * expected_p * (1 - expected_p))
-        if expected_stdev == 0:
-            continue
-        std_devs = (observed - expected_count) / expected_stdev
+        std_devs = info["z_score"]
         if abs(std_devs) >= 2.0:
             concentration_findings.append({
                 "dimension": "sector",
                 "value": sector,
-                "count_in_topn": observed,
-                "expected_count": round(expected_count, 2),
+                "count_in_topn": info["observed"],
+                "expected_count": round(info["expected"], 2),
                 "std_devs_overweight": round(std_devs, 2),
                 "top_n": N,
             })

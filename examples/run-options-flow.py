@@ -20,27 +20,36 @@ Writes output to examples/options-flow-output.md (gitignored).
 Tier B run on Options Developer + Stocks Starter: 15-min delayed tape.
 The methodology is identical to Tier A; only the timestamp recency
 differs.
+
+Audit cleanup (2026-06-26):
+- H1, H2, L3, D3, D4, D5, M8: all routed through lib.quant_garage.
+- C8 (no NBBO at trade time) remains open as a domain fix.
 """
 import os
 import sys
 import json
-import urllib.request
-import urllib.error
-from datetime import datetime, date, timedelta, timezone
-from collections import defaultdict
+from datetime import datetime, timedelta, timezone
+
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    resolve_price,
+)
 
 
 DEFAULT_WATCHLIST = ["AAPL", "NVDA", "TSLA", "AMD", "SPY"]
 TICKERS = [t.upper().strip() for t in (sys.argv[1:] or DEFAULT_WATCHLIST)]
 
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
+client = MassiveClient()
 
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-TODAY = date(2026, 6, 23)
+TODAY = today()
 NOW_UTC = datetime.now(timezone.utc)
 
 # Scan params (see references/unusual-activity-detection.md)
@@ -65,49 +74,26 @@ EXCLUDE_CONDITIONS = {201, 202, 203, 204, 205, 206, 207}  # canceled/late
 MULTI_LEG_CONDITIONS = set(range(232, 246))  # 232-245 multi-leg
 
 
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
 def fetch_all(path, hard_cap=2000):
     """Follow next_url; cap results so a heavy chain doesn't run forever."""
     out = []
-    url = f"{BASE}{path}"
-    while url and len(out) < hard_cap:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            doc = json.load(r)
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
+    fetched_at = None
+    for results, ts in client.paginate(path):
+        out.extend(results)
+        fetched_at = ts
+        if len(out) >= hard_cap:
+            out = out[:hard_cap]
+            break
+    return out, fetched_at
 
 
 def get_spot(ticker):
-    """Walk best-price fallback chain per massive-api-patterns."""
-    snap = fetch(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
-    t = snap.get("ticker") or {}
-    last = t.get("lastTrade") or {}
-    if last.get("p"):
-        return last["p"]
-    day = t.get("day") or {}
-    if day.get("c"):
-        return day["c"]
-    prev = t.get("prevDay") or {}
-    if prev.get("c"):
-        return prev["c"]
-    return None
+    """Walk best-price fallback chain via lib.resolve_price (D4/D5)."""
+    try:
+        doc, _ = client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    except FetchError:
+        return None
+    return resolve_price(doc).price
 
 
 def get_chain(ticker, spot):
@@ -124,7 +110,8 @@ def get_chain(ticker, spot):
         f"&strike_price.gte={strike_lo}&strike_price.lte={strike_hi}"
         f"&limit=250"
     )
-    return fetch_all(path, hard_cap=500)
+    rows, _ = fetch_all(path, hard_cap=500)
+    return rows
 
 
 def get_30d_avg_volume(occ_ticker):
@@ -141,8 +128,8 @@ def get_30d_avg_volume(occ_ticker):
         f"?adjusted=true&sort=desc&limit=50"
     )
     try:
-        doc = fetch(path)
-    except RuntimeError:
+        doc, _ = client.get(path)
+    except FetchError:
         return None
     results = doc.get("results") or []
     vols = [a.get("v") for a in results if a.get("v") is not None]
@@ -156,8 +143,8 @@ def get_trades(occ_ticker, limit=200):
     """Pull recent trades for sweep/block classification."""
     path = f"/v3/trades/{occ_ticker}?limit={limit}&order=desc"
     try:
-        doc = fetch(path)
-    except RuntimeError:
+        doc, _ = client.get(path)
+    except FetchError:
         return []
     return doc.get("results") or []
 
@@ -166,8 +153,8 @@ def get_last_quote(occ_ticker):
     """Pull the most recent quote (NBBO) for the contract."""
     path = f"/v3/quotes/{occ_ticker}?limit=1&order=desc"
     try:
-        doc = fetch(path)
-    except RuntimeError:
+        doc, _ = client.get(path)
+    except FetchError:
         return None
     results = doc.get("results") or []
     return results[0] if results else None
@@ -326,7 +313,8 @@ def scan_ticker(ticker):
         # Filter expired/expiring contracts
         exp_str = det.get("expiration_date")
         if exp_str:
-            exp_d = date.fromisoformat(exp_str)
+            from datetime import date as _date
+            exp_d = _date.fromisoformat(exp_str)
             if exp_d < TODAY:
                 continue
 
@@ -502,11 +490,11 @@ payload = {
     "prints": all_prints,
     "skipped_tickers": skipped,
     "sources": [
-        {"endpoint": "/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}", "fetched_at": NOW_UTC.isoformat(), "context": "spot price per ticker"},
-        {"endpoint": "/v3/snapshot/options/{ticker}", "fetched_at": NOW_UTC.isoformat(), "context": "chain snapshot for volume/OI/IV/greeks"},
-        {"endpoint": "/v2/aggs/ticker/{occ_ticker}/range/1/day/{from}/{to}", "fetched_at": NOW_UTC.isoformat(), "context": "30-day daily volume baseline per contract"},
-        {"endpoint": "/v3/trades/{occ_ticker}", "fetched_at": NOW_UTC.isoformat(), "context": "tick trades for sweep/block classification"},
-        {"endpoint": "/v3/quotes/{occ_ticker}", "fetched_at": NOW_UTC.isoformat(), "context": "last NBBO for direction inference"},
+        {"endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}", "fetched_at": utcnow_iso(), "context": "spot price per ticker"},
+        {"endpoint": "https://api.polygon.io/v3/snapshot/options/{ticker}", "fetched_at": utcnow_iso(), "context": "chain snapshot for volume/OI/IV/greeks"},
+        {"endpoint": "https://api.polygon.io/v2/aggs/ticker/{occ_ticker}/range/1/day/{from}/{to}", "fetched_at": utcnow_iso(), "context": "30-day daily volume baseline per contract"},
+        {"endpoint": "https://api.polygon.io/v3/trades/{occ_ticker}", "fetched_at": utcnow_iso(), "context": "tick trades for sweep/block classification"},
+        {"endpoint": "https://api.polygon.io/v3/quotes/{occ_ticker}", "fetched_at": utcnow_iso(), "context": "last NBBO for direction inference"},
     ],
 }
 
