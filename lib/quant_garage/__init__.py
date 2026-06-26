@@ -28,6 +28,7 @@ from .client import MassiveClient, FetchError, RateLimited
 from .timezones import ET, utc_to_et, et_now, is_market_hours_et
 from .as_of import today, utcnow_iso
 from .snapshot import resolve_price, PriceResolution
+from .stats import critical_t, is_significant, newey_west_se, spearman_ic, winsorize
 
 __all__ = [
     "MassiveClient",
@@ -41,4 +42,9 @@ __all__ = [
     "utcnow_iso",
     "resolve_price",
     "PriceResolution",
+    "critical_t",
+    "is_significant",
+    "newey_west_se",
+    "spearman_ic",
+    "winsorize",
 ]
