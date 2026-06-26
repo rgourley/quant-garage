@@ -5,382 +5,154 @@
 <title>quant-garage</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700;800&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@500&family=IBM+Plex+Sans+Condensed:wght@600;700&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: rgb(0, 0, 0);
-    --bg-chrome: rgb(20, 20, 22);
-    --bg-panel: rgb(8, 8, 10);
-    --bg-elev: rgb(16, 16, 18);
-    --fg: rgb(240, 240, 245);
-    --fg2: rgb(180, 180, 192);
-    --fg3: rgb(130, 130, 140);
-    --amber: rgb(255, 176, 0);
-    --amber-bright: rgb(255, 200, 60);
-    --amber-dim: rgba(255, 176, 0, 0.55);
-    --amber-line: rgba(255, 176, 0, 0.28);
-    --line: rgba(255, 255, 255, 0.08);
-    --positive: rgb(0, 230, 110);
-    --negative: rgb(255, 60, 60);
-    --cyan: rgb(0, 210, 255);
+    --ink: #0d0d0d;
+    --surface: #fafaf7;
+    --muted: #6b6b6b;
+    --muted-dark: #a8a39a;
+    --border: #e8e5df;
+    --border-dark: rgba(250, 250, 247, 0.18);
+    --accent: #e84d1a;
+    --green: #0d7e4f;
+    --red: #9f1212;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body {
     width: 1200px;
     height: 630px;
-    background: var(--bg);
-    color: var(--fg);
-    font-family: "JetBrains Mono", "SF Mono", "IBM Plex Mono", Menlo, Consolas, "Liberation Mono", monospace;
-    font-feature-settings: "tnum" 1, "zero" 1;
+    background: var(--ink);
+    color: var(--surface);
+    font-family: "IBM Plex Sans Condensed", system-ui, -apple-system, sans-serif;
     overflow: hidden;
+    -webkit-font-smoothing: antialiased;
   }
   .container {
     width: 1200px;
     height: 630px;
-    display: grid;
-    grid-template-rows: 38px 1fr 28px;
-  }
-  /* Command bar */
-  .cmdbar {
-    background: rgba(255, 176, 0, 0.04);
-    border-bottom: 1px solid var(--amber-line);
-    display: flex;
-    align-items: center;
-    padding: 0 14px;
-    gap: 12px;
-  }
-  .cmdbar-input {
-    flex: 1;
-    border: 1px solid var(--amber);
-    background: rgba(0, 0, 0, 0.5);
-    padding: 5px 10px;
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-size: 12px;
-  }
-  .prompt { color: var(--amber); font-weight: 700; }
-  .cmd-text { color: var(--fg); font-weight: 700; letter-spacing: 0.02em; }
-  .cmd-placeholder { color: var(--amber-dim); margin-left: auto; font-weight: 400; font-size: 11px; }
-  .go { color: var(--amber); font-weight: 700; font-size: 11px; }
-  /* Main content */
-  .main {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    height: 100%;
-    border-bottom: 1px solid var(--amber-line);
-  }
-  .pane {
-    padding: 22px 32px 18px 32px;
-    border-right: 1px solid var(--amber-line);
+    padding: 56px 64px 50px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
   }
-  .pane:last-child { border-right: none; }
-  .section-label {
-    color: var(--amber);
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.12em;
-  }
-  /* Left pane: project identity */
-  .title {
-    font-size: 68px;
-    font-weight: 800;
-    line-height: 0.95;
-    color: var(--fg);
-    letter-spacing: -0.02em;
-    margin-top: 4px;
-  }
-  .title-line2 {
-    color: var(--amber);
-  }
-  .tagline {
-    font-size: 16px;
-    color: var(--fg2);
-    line-height: 1.4;
-    margin-top: 12px;
-    max-width: 460px;
+  /* Top branding bar */
+  .topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 15px;
     font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--surface);
+  }
+  .brand {
+    display: flex;
+    gap: 14px;
+    align-items: center;
+  }
+  .brand-name {
+    font-weight: 500;
+    opacity: 0.85;
+  }
+  .brand-tag {
+    color: var(--accent);
+    opacity: 1;
+  }
+  .brand-url {
+    color: var(--surface);
+    opacity: 0.5;
+  }
+  /* Kicker */
+  .kicker {
+    margin-top: 56px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 22px;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+  }
+  /* Title */
+  .title {
+    margin-top: 18px;
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 96px;
+    font-weight: 700;
+    line-height: 1.04;
+    letter-spacing: -0.025em;
+    color: var(--surface);
+    max-width: 1050px;
+  }
+  /* Spacer */
+  .spacer { flex: 1; }
+  /* Stat row above hairline */
+  .stat-row {
+    display: flex;
+    align-items: baseline;
+    gap: 28px;
+    border-top: 1px solid var(--border-dark);
+    padding-top: 26px;
+    margin-top: 16px;
+  }
+  .big-value {
+    font-family: "IBM Plex Sans Condensed", sans-serif;
+    font-size: 76px;
+    font-weight: 700;
+    color: var(--accent);
+    line-height: 1;
+    letter-spacing: -0.02em;
   }
   .meta {
-    margin-top: auto;
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    font-size: 11px;
-    color: var(--fg3);
-    line-height: 1.5;
-  }
-  .meta-row { display: flex; gap: 10px; }
-  .meta-key { color: var(--amber-dim); width: 90px; font-weight: 700; letter-spacing: 0.08em; }
-  .meta-val { color: var(--fg); font-weight: 500; }
-  /* Right pane: sample output */
-  .sample-title {
-    font-size: 16px;
-    font-weight: 700;
-    color: var(--fg);
-    letter-spacing: 0.02em;
-  }
-  .sample-sub {
-    font-size: 11px;
-    color: var(--fg3);
-    margin-top: 2px;
-  }
-  .take-box {
-    border: 1px solid var(--amber-line);
-    background: rgba(255, 176, 0, 0.03);
-    padding: 12px 14px;
-    margin-top: 4px;
-  }
-  .take-label {
-    font-size: 10px;
-    color: var(--amber);
-    letter-spacing: 0.15em;
-    font-weight: 700;
-    margin-bottom: 4px;
-  }
-  .take-text {
-    font-size: 14px;
-    color: var(--fg);
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 20px;
     font-weight: 500;
-    line-height: 1.4;
-  }
-  .table {
-    margin-top: 4px;
-    display: grid;
-    grid-template-columns: 1fr auto;
-    row-gap: 7px;
-    column-gap: 18px;
-    font-size: 13px;
-    font-variant-numeric: tabular-nums;
-  }
-  .row-label {
-    color: var(--fg2);
-    letter-spacing: 0.05em;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    font-size: 11px;
-    font-weight: 700;
+    color: var(--muted-dark);
+    padding-bottom: 6px;
   }
-  .row-value {
-    color: var(--fg);
-    font-weight: 500;
-    text-align: right;
-  }
-  .row-value.pos { color: var(--positive); }
-  .row-value.neg { color: var(--negative); }
-  .row-value.amber { color: var(--amber); font-weight: 700; }
-  /* Chart */
-  .chart-wrap {
-    margin-top: 6px;
-  }
-  .chart {
-    position: relative;
-    display: grid;
-    grid-template-columns: repeat(8, 1fr);
-    gap: 8px;
-    align-items: end;
-    height: 70px;
-    padding: 0 2px 20px 2px;
-    border-bottom: 1px solid var(--amber-line);
-  }
-  .chart-axis {
-    position: absolute;
-    left: 0; right: 0; bottom: 22px;
-    border-bottom: 1px dashed rgba(255, 176, 0, 0.18);
-    height: 0;
-  }
-  .bar {
-    position: relative;
-    height: calc(var(--h) * 0.7);
-    min-height: 4px;
-    border-radius: 1px;
-  }
-  .bar-neg { background: var(--negative); }
-  .bar-pos { background: var(--positive); }
-  .bar.worst { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4); }
-  .bar.best { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.4); }
-  .bar::before {
-    content: attr(data-q);
-    position: absolute;
-    bottom: -16px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 9px;
-    color: var(--fg3);
-    letter-spacing: 0.04em;
-    font-weight: 700;
-    white-space: nowrap;
-  }
-  .bar::after {
-    content: attr(data-v);
-    position: absolute;
-    top: -14px;
-    left: 50%;
-    transform: translateX(-50%);
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.02em;
-    white-space: nowrap;
-  }
-  .bar-neg::after { color: var(--negative); }
-  .bar-pos::after { color: var(--positive); }
-  /* Built skills list */
-  .built-wrap {
-    margin-top: 12px;
-  }
-  .built-list {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    column-gap: 10px;
-    row-gap: 2px;
-    font-size: 9.5px;
-  }
-  .built-row {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    column-gap: 8px;
-    align-items: center;
-    padding: 2px 7px;
-    background: rgba(255, 176, 0, 0.025);
-    border-left: 2px solid var(--positive);
-    min-width: 0;
-  }
-  .built-tier { display: none; }
-  .built-name {
-    color: var(--fg);
-    font-weight: 700;
-    letter-spacing: 0.04em;
-  }
-  .built-mode {
-    color: var(--amber);
-    font-weight: 700;
-    font-size: 10px;
-    letter-spacing: 0.08em;
-  }
-  .built-tier {
-    color: var(--fg3);
-    font-weight: 500;
-    font-size: 10px;
-    letter-spacing: 0.06em;
-  }
-  /* Status bar */
-  .status {
-    background: var(--bg-elev);
-    border-top: none;
+  /* Footer */
+  .footer {
     display: flex;
+    justify-content: space-between;
     align-items: center;
-    padding: 0 14px;
-    gap: 20px;
-    font-size: 10px;
-    color: var(--fg3);
-    letter-spacing: 0.06em;
+    margin-top: 24px;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 14px;
     font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--muted-dark);
   }
-  .status .left { color: var(--amber-dim); font-weight: 700; }
-  .status .right { margin-left: auto; display: flex; gap: 18px; }
-  .status .dot { display: inline-block; width: 7px; height: 7px; background: var(--positive); border-radius: 50%; margin-right: 6px; }
 </style>
 </head>
 <body>
 <div class="container">
 
-  <div class="cmdbar">
-    <div class="cmdbar-input">
-      <span class="prompt">&gt;</span>
-      <span class="cmd-text">QUANT-GARAGE SKILL EARNINGS-DRILLDOWN NVDA</span>
-      <span class="cmd-placeholder">Type any function or topic</span>
-      <span class="go">&lt;GO&gt;</span>
+  <div class="topbar">
+    <div class="brand">
+      <span class="brand-name">QUANT GARAGE</span>
+      <span class="brand-tag">// ANALYST SKILLS</span>
     </div>
+    <span class="brand-url">github.com/rgourley/quant-garage</span>
   </div>
 
-  <div class="main">
+  <div class="kicker">// FRAMEWORK · CLAUDE SKILLS · OPEN SOURCE</div>
 
-    <div class="pane">
-      <div class="section-label">[1] PROJECT</div>
-      <div class="title">
-        quant-<br>
-        <span class="title-line2">garage</span>
-      </div>
-      <div class="tagline">
-        Built in the garage, not the trading floor. Quant and equity research workflows packaged as Claude skills, with the analyst methodology baked in: t-stats, IC + decay, regression-adjusted multiples, peer baskets that mean something.
-      </div>
-      <div class="meta">
-        <div class="meta-row"><span class="meta-key">REPO</span><span class="meta-val">github.com/rgourley/quant-garage</span></div>
-        <div class="meta-row"><span class="meta-key">LICENSE</span><span class="meta-val">MIT</span></div>
-        <div class="meta-row"><span class="meta-key">SKILLS</span><span class="meta-val">14 built · 0 remaining</span></div>
-        <div class="meta-row"><span class="meta-key">BACKEND</span><span class="meta-val">Massive API · SEC EDGAR</span></div>
-      </div>
-    </div>
+  <div class="title">Built in the garage, not the trading floor.</div>
 
-    <div class="pane">
-      <div class="section-label">[2] OUTPUT · EARNINGS PREVIEW · NVDA Q2 2026</div>
-      <div>
-        <div class="sample-title">NVDA · Next Print 2026-08-19 AMC</div>
-        <div class="sample-sub">Tier B · SEC EDGAR + Stocks Starter</div>
-      </div>
-      <div class="take-box">
-        <div class="take-label">[ TAKE ]</div>
-        <div class="take-text">
-          Straddle prices 6.6pp above 8q realized. Premium sellers have a setup.
-        </div>
-      </div>
-      <div class="table">
-        <div class="row-label">IMPLIED MOVE</div><div class="row-value">±10.3%</div>
-        <div class="row-label">REALIZED 8Q AVG</div><div class="row-value">±3.7%</div>
-        <div class="row-label">MISPRICING</div><div class="row-value amber">+6.6pp</div>
-        <div class="row-label">IV30</div><div class="row-value">37.3</div>
-      </div>
+  <div class="spacer"></div>
 
-      <div class="chart-wrap">
-        <div class="section-label" style="margin-bottom: 8px;">[3] REACTION HISTORY · 8Q · NEXT-DAY %</div>
-        <div class="chart">
-          <div class="chart-axis"></div>
-          <div class="bar bar-neg" style="--h: 25%;"  data-q="Q3'24" data-v="−2.1%"></div>
-          <div class="bar bar-neg" style="--h: 40%;"  data-q="Q4'24" data-v="−3.4%"></div>
-          <div class="bar bar-neg" style="--h: 21%;"  data-q="Q1'25" data-v="−1.8%"></div>
-          <div class="bar bar-neg" style="--h: 61%;"  data-q="Q2'25" data-v="−5.2%"></div>
-          <div class="bar bar-neg" style="--h: 71%;"  data-q="Q3'25" data-v="−6.0%"></div>
-          <div class="bar bar-neg worst" style="--h: 100%;" data-q="Q4'25" data-v="−8.5%"></div>
-          <div class="bar bar-pos best" style="--h: 38%;"  data-q="Q1'26" data-v="+3.2%"></div>
-          <div class="bar bar-pos" style="--h: 16%;"  data-q="Q2'26" data-v="+1.4%"></div>
-        </div>
-      </div>
-
-      <div class="built-wrap">
-        <div class="section-label" style="margin-bottom: 6px;">[4] BUILT · 14 OF 14 SKILLS · SUITE COMPLETE</div>
-        <div class="built-list">
-          <div class="built-row"><span class="built-name">EARNINGS-DRILLDOWN</span><span class="built-mode">NOTE</span></div>
-          <div class="built-row"><span class="built-name">FACTOR-RESEARCH</span><span class="built-mode">TABLE</span></div>
-          <div class="built-row"><span class="built-name">PITCH-COMPS</span><span class="built-mode">TABLE</span></div>
-          <div class="built-row"><span class="built-name">UNIVERSE-BUILDER</span><span class="built-mode">TABLE</span></div>
-          <div class="built-row"><span class="built-name">OPTIONS-FLOW</span><span class="built-mode">STREAM</span></div>
-          <div class="built-row"><span class="built-name">NEWS-SCANNER</span><span class="built-mode">STREAM</span></div>
-          <div class="built-row"><span class="built-name">CRYPTO-VOL-SCANNER</span><span class="built-mode">STREAM</span></div>
-          <div class="built-row"><span class="built-name">PORTFOLIO-MARK</span><span class="built-mode">HYBRID</span></div>
-          <div class="built-row"><span class="built-name">EVENT-STUDY</span><span class="built-mode">HYBRID</span></div>
-          <div class="built-row"><span class="built-name">VALUATION-SANITY-CHECK</span><span class="built-mode">NOTE</span></div>
-          <div class="built-row"><span class="built-name">BACKTEST-DATA-PREP</span><span class="built-mode">DATASET</span></div>
-          <div class="built-row"><span class="built-name">CORP-ACTIONS-RECONCILER</span><span class="built-mode">EXCEPTION</span></div>
-          <div class="built-row"><span class="built-name">BEST-EX-CHECK</span><span class="built-mode">EXCEPTION</span></div>
-          <div class="built-row"><span class="built-name">T+1-SETTLEMENT-PREP</span><span class="built-mode">EXCEPTION</span></div>
-        </div>
-      </div>
-    </div>
-
+  <div class="stat-row">
+    <div class="big-value">14 BUILT</div>
+    <div class="meta">Earnings · Comps · Factors · Options · Crypto · Ops</div>
   </div>
 
-  <div class="status">
-    <span class="left">QUANT-GARAGE v0.1</span>
-    <span>14 SKILLS</span>
-    <span>5 OUTPUT MODES</span>
-    <span>MIT LICENSE</span>
-    <span class="right">
-      <span><span class="dot"></span>FEED OK</span>
-      <span>BUILT 2026-06-23</span>
-      <span style="color: var(--amber)">@rgourley</span>
-    </span>
+  <div class="footer">
+    <span>QUANT GARAGE · v0.1 · MIT</span>
+    <span>GITHUB.COM/RGOURLEY/QUANT-GARAGE</span>
   </div>
 
 </div>
