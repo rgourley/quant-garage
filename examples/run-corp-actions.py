@@ -8,6 +8,16 @@ the dual-layer output:
   Layer 1: canonical JSON matching output-schema.json
   Layer 2: rendered exception report per references/rendering.md
 
+Dividend types handled (Massive `/v3/reference/dividends.dividend_type`):
+  RC  Regular cash      -> cost-basis reduction by amount/share
+  SC  Special cash      -> same math as RC, flagged "special" in render
+  SD  Stock dividend    -> fractional split, ratio = (1 + amount)
+  LT  Large stock div   -> treated as split per IRS Rev. Rul. (>25%)
+  ST  Stock split (rare on dividends endpoint) -> routes to apply_split
+
+Unknown dividend_type values are recorded in `tier_caveats` rather than
+silently dropped (audit C9, 2026-06-26).
+
 Usage:
     python3 examples/run-corp-actions.py examples/sample-positions.csv
 
@@ -155,29 +165,54 @@ def apply_split(state, split, fetched_at):
 
 def apply_dividend(state, div, fetched_at):
     """
-    Apply a single dividend record. Most cash dividends are
-    informational; special-cash and return-of-capital adjust basis.
-    Returns a break dict only when an adjustment was made, else None.
+    Apply a single dividend record. Routes by Massive's dividend_type:
+
+      RC (regular cash):      basis adjustment by amount/share (taxable
+                              accounts treat as basis reduction for
+                              return-of-capital portion). Surfaced.
+      SC (special cash):      same math as RC, larger size. Surfaced
+                              with a "special" flag in the rendered
+                              output.
+      SD (stock dividend):    fractional share-count adjustment. Treated
+                              as a split with ratio = (1 + amount). Per
+                              IRS Rev. Rul. 90-11, small stock dividends
+                              prorate basis across new + old shares.
+      ST (stock split):       Massive emits splits through the splits
+                              endpoint, so this is defensive. Route to
+                              apply_split() with the dividend payload
+                              reshaped.
+      LT (large stock div):   >25% stock dividend; per IRS guidance
+                              treated as a split for tax purposes.
+                              Routes through the SD/split path.
+
+    Unknown types emit a caveat (state["caveats"] list) and are skipped
+    rather than silently dropped. The rendered output names the type.
+
+    Returns a break dict when an adjustment was made, else None.
     """
     dtype = div.get("dividend_type")
     amount = float(div.get("cash_amount") or 0.0)
     ex_date = div.get("ex_dividend_date")
     currency = div.get("currency", "USD")
 
-    if dtype == "RC":
-        # Return of capital: reduce basis by amount per share.
+    if dtype in ("RC", "SC"):
+        # Cash dividend that adjusts basis. SC (special cash) is
+        # typically much larger than the regular RC, but the math is
+        # identical: reduce basis per share by the cash amount.
         pre_basis = state["cost_basis"]
         if pre_basis is None:
             return None
         post_basis = pre_basis - amount
         state["cost_basis"] = post_basis
         state["actions_applied"] += 1
+        is_special = dtype == "SC"
         return {
             "kind": "cash_dividend_basis",
             "ex_date": ex_date,
             "amount": amount,
             "currency": currency,
             "dividend_type": dtype,
+            "is_special": is_special,
             "pre_cost_basis": pre_basis,
             "post_cost_basis": post_basis,
             "cash_in_lieu_expected": False,
@@ -187,8 +222,73 @@ def apply_dividend(state, div, fetched_at):
             },
         }
 
-    # Regular cash dividends are informational. Tracked in sources, not
-    # surfaced as breaks. See references/dividends-methodology.md.
+    if dtype in ("SD", "LT"):
+        # Stock dividend (SD) and large stock dividend (LT, >25%) both
+        # adjust share count, not cash basis. IRS treats LT as a split.
+        # The "ratio" is 1 + amount, where amount is the fractional rate
+        # (e.g. 0.05 for a 5% stock dividend, or 1.0 for a 100% / 2-for-1
+        # large stock dividend).
+        if amount <= 0:
+            # Defensive: no positive rate means nothing to apply.
+            return None
+        ratio = 1.0 + amount
+        pre_shares = state["shares"]
+        raw_post = pre_shares * ratio
+        post_shares = math.floor(raw_post)
+        cil_expected = post_shares != raw_post
+
+        pre_basis = state["cost_basis"]
+        post_basis = pre_basis / ratio if pre_basis is not None else None
+
+        state["shares"] = post_shares
+        state["cost_basis"] = post_basis
+        state["actions_applied"] += 1
+
+        kind_label = "stock_dividend" if dtype == "SD" else "large_stock_dividend"
+        return {
+            "kind": kind_label,
+            "ex_date": ex_date,
+            "dividend_type": dtype,
+            "rate": amount,
+            "ratio_str": f"{amount * 100:.2f}%",
+            "pre_shares": pre_shares,
+            "post_shares": post_shares,
+            "pre_cost_basis": pre_basis,
+            "post_cost_basis": post_basis,
+            "cash_in_lieu_expected": cil_expected,
+            "source": {
+                "endpoint": f"https://api.polygon.io/v3/reference/dividends?ticker={state['ticker']}",
+                "fetched_at": fetched_at,
+            },
+        }
+
+    if dtype == "ST":
+        # Stock split via the dividends endpoint. Massive emits splits
+        # through /v3/reference/splits, so this is a defensive branch.
+        # Reshape into the split-payload shape and route to apply_split.
+        if amount <= 0:
+            return None
+        synthetic_split = {
+            "execution_date": ex_date,
+            "split_to": 1.0 + amount,
+            "split_from": 1.0,
+        }
+        return apply_split(state, synthetic_split, fetched_at)
+
+    # Unknown dividend_type: record a caveat rather than silently skip.
+    # The audit (C9, 2026-06-26) called out silent skips on SC/SD/LT.
+    caveats = state.setdefault("caveats", [])
+    caveats.append({
+        "kind": "unhandled_dividend_type",
+        "ex_date": ex_date,
+        "dividend_type": dtype,
+        "amount": amount,
+        "currency": currency,
+        "note": (
+            f"dividend_type={dtype!r} not handled by apply_dividend; "
+            "event was not applied to shares or basis"
+        ),
+    })
     return None
 
 
@@ -280,6 +380,7 @@ def reconcile_position(position, spinoff_records):
         "shares": position["shares"],
         "cost_basis": position["cost_basis"],
         "actions_applied": 0,
+        "caveats": [],
     }
 
     sources = []
@@ -325,6 +426,10 @@ def reconcile_position(position, spinoff_records):
             parent_break, new_position = apply_spinoff(state, payload, action_at)
             actions.append(parent_break)
             new_positions.append(new_position)
+
+    # Stamp ticker on caveats so the main loop can attribute them.
+    for c in state["caveats"]:
+        c.setdefault("ticker", ticker)
 
     return state, actions, new_positions, sources
 
@@ -400,7 +505,24 @@ def render(payload):
             action_str = f"{action['ratio']} split, ex-date {action['ex_date']}"
         elif kind == "cash_dividend_basis":
             amount = action.get("amount", 0)
-            action_str = f"Cash dividend ${amount:.4f}/share (RoC), ex-date {action['ex_date']}"
+            dtype = action.get("dividend_type", "RC")
+            label = "Special cash" if action.get("is_special") or dtype == "SC" else "RC"
+            action_str = (
+                f"{label} dividend ${amount:.4f}/share applied to cost basis, "
+                f"ex-date {action['ex_date']}"
+            )
+        elif kind == "stock_dividend":
+            rate = action.get("rate", 0)
+            action_str = (
+                f"SD {rate * 100:.2f}% stock dividend applied as share-count "
+                f"adjustment, ex-date {action['ex_date']}"
+            )
+        elif kind == "large_stock_dividend":
+            rate = action.get("rate", 0)
+            action_str = (
+                f"LT large stock dividend {rate * 100:.2f}% (treated as split per "
+                f"IRS), ex-date {action['ex_date']}"
+            )
         else:
             action_str = f"{kind}, ex-date {action.get('ex_date')}"
 
@@ -435,6 +557,20 @@ def render(payload):
         lines.append(f"  Verified:    {b['source']['fetched_at']}")
         lines.append("")
 
+    caveats = payload.get("tier_caveats") or []
+    if caveats:
+        lines.append("Caveats")
+        for c in caveats:
+            if c.get("kind") == "unhandled_dividend_type":
+                lines.append(
+                    f"- {c.get('ticker', '?')}: unhandled dividend_type "
+                    f"{c.get('dividend_type')!r} on {c.get('ex_date')} "
+                    f"(amount {c.get('amount')}); event was NOT applied"
+                )
+            else:
+                lines.append(f"- {c}")
+        lines.append("")
+
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -445,12 +581,14 @@ def main():
     breaks = []
     passes = []
     all_sources = []
+    tier_caveats = []
 
     for pos in positions:
         ticker = pos["ticker"]
         print(f"Reconciling {ticker}...", file=sys.stderr)
         state, actions, new_positions, sources = reconcile_position(pos, spinoffs)
         all_sources.extend(sources)
+        tier_caveats.extend(state.get("caveats", []))
 
         # Did the recorded position match what we expect?
         recorded_shares = pos["shares"]
@@ -503,6 +641,15 @@ def main():
                     "ex_date": ex_date,
                     "amount": action.get("amount"),
                     "currency": action.get("currency", "USD"),
+                    "dividend_type": action.get("dividend_type"),
+                    "is_special": action.get("is_special", False),
+                }
+            elif kind in ("stock_dividend", "large_stock_dividend"):
+                action_obj = {
+                    "ex_date": ex_date,
+                    "dividend_type": action.get("dividend_type"),
+                    "rate": action.get("rate"),
+                    "ratio_str": action.get("ratio_str"),
                 }
             elif kind == "spinoff":
                 action_obj = {
@@ -560,6 +707,7 @@ def main():
         "breaks": breaks,
         "passes": passes,
         "sources": all_sources,
+        "tier_caveats": tier_caveats,
     }
 
     rendered = render(payload)

@@ -298,9 +298,21 @@ def flag_trade(trade, calendar, fetched_at_calendar):
             "reason": settle_holiday["name"],
         }
 
-    # Ex-dividend in window
+    # Ex-dividend in window.
+    #
+    # Cum-dividend entitlement: a buyer who trades STRICTLY BEFORE the
+    # ex-date gets the dividend. A trade ON the ex-date is "ex" - the
+    # buyer is NOT entitled, even though settlement may be after the
+    # ex-date. Entitlement is locked at the trade-date side; holidays
+    # that push settle out do NOT widen the entitlement window.
+    # (Audit C10, 2026-06-26.)
+    #
+    # The right edge of the scan is the true T+1 boundary (`settle`,
+    # which compute_settlement_date returns as the next business day).
+    # Holiday-pushed settlements don't extend dividend entitlement.
     divs, div_path, _ = fetch_dividends_for_ticker(ticker, td)
     div_in_window = None
+    ex_date_trade = None  # buyer NOT entitled (informational, not a break)
     for d in divs:
         ex_str = d.get("ex_dividend_date")
         if not ex_str:
@@ -309,9 +321,14 @@ def flag_trade(trade, calendar, fetched_at_calendar):
             ex_dt = date.fromisoformat(ex_str)
         except ValueError:
             continue
-        if td <= ex_dt <= settle:
+        if td < ex_dt <= settle:
+            # Trade strictly before ex-date: buyer IS entitled.
             div_in_window = d
             break
+        if td == ex_dt and ex_date_trade is None:
+            # Trade ON ex-date: buyer is NOT entitled. Record for the
+            # informational notice; do not flag as a break.
+            ex_date_trade = d
     if div_in_window:
         reasons.append("ex_dividend_in_window")
         amt = float(div_in_window.get("cash_amount") or 0)
@@ -327,6 +344,25 @@ def flag_trade(trade, calendar, fetched_at_calendar):
             "currency": div_in_window.get("currency", "USD"),
             "dividend_type": div_in_window.get("dividend_type"),
             "dollar_impact": dollar_impact,
+        }
+    elif ex_date_trade is not None:
+        # Informational: trade is on ex-date, buyer is NOT entitled.
+        # Surface it so operators don't expect the dividend, but do not
+        # add to reasons[] (no break).
+        amt = float(ex_date_trade.get("cash_amount") or 0)
+        dollar_impact = round(qty * amt, 2)
+        extras["dividend_ex_date_notice"] = {
+            "ex_date": ex_date_trade["ex_dividend_date"],
+            "pay_date": ex_date_trade.get("pay_date"),
+            "cash_amount_per_share": amt,
+            "currency": ex_date_trade.get("currency", "USD"),
+            "dividend_type": ex_date_trade.get("dividend_type"),
+            "dollar_impact": dollar_impact,
+            "note": (
+                "Trade is on ex-date; buyer is NOT entitled to the "
+                "dividend. Cum-dividend entitlement requires a trade "
+                "STRICTLY BEFORE the ex-date."
+            ),
         }
 
     # Corp-action overlap (splits)
@@ -388,6 +424,7 @@ def flag_trade(trade, calendar, fetched_at_calendar):
         "impact_text": impact_text,
         "suggested_next_action": suggested,
         "dividend": extras.get("dividend"),
+        "dividend_ex_date_notice": extras.get("dividend_ex_date_notice"),
         "corp_action": extras.get("corp_action"),
         "session_info": extras.get("session_info"),
         "source": {
@@ -405,7 +442,7 @@ def flag_trade(trade, calendar, fetched_at_calendar):
 REASON_TEXT = {
     "weekend_crossing": "Settlement falls on weekend; pushed to next business day",
     "short_sale_locate": "Short sale; locate confirmation required",
-    "ex_dividend_in_window": "Buyer entitled to dividend (purchased before ex-date)",
+    "ex_dividend_in_window": "Buyer entitled to dividend (purchased strictly before ex-date)",
     "half_day_settlement": "Settlement date is a half-day session",
     "symbol_change": "Ticker changed symbol between trade and settlement",
 }
@@ -492,6 +529,15 @@ def render(payload):
         out.append(f"  Reason:        {reason_text_for(f)}")
         out.append(f"  Impact:        {f['impact_text']}")
         out.append(f"  Suggest:       {f['suggested_next_action']}")
+        notice = f.get("dividend_ex_date_notice")
+        if notice:
+            amt = notice.get("cash_amount_per_share", 0) or 0
+            dollar = notice.get("dollar_impact", 0) or 0
+            out.append(
+                f"  Notice:        ${amt:.2f}/share dividend "
+                f"(~${dollar:,.0f}) NOT allocated to buyer "
+                f"(ex-date trade {notice['ex_date']})"
+            )
         out.append("")
 
     # Summary block
