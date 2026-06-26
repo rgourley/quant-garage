@@ -1,0 +1,208 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "t+1-settlement-prep output",
+  "description": "Canonical output of the t+1-settlement-prep skill. Layer 1 (structured) consumed by UIs and downstream agents. Claude Code rendering described in references/rendering.md.",
+  "type": "object",
+  "required": ["tier", "mode", "scan_params", "trades_checked", "flagged_count", "flagged", "summary", "take", "sources"],
+  "properties": {
+    "tier": {
+      "type": "string",
+      "enum": ["A"],
+      "description": "Single-tier skill. Holiday + ref-data calls are available on Stocks Basic."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["exception-report"],
+      "description": "Always exception-report; only trades with settlement risk surface in the rendered output."
+    },
+    "scan_params": {
+      "type": "object",
+      "required": ["file_in", "settlement_cycle"],
+      "properties": {
+        "file_in": {
+          "type": "string",
+          "description": "Path to the input trade CSV"
+        },
+        "settlement_cycle": {
+          "type": "string",
+          "enum": ["T+1"],
+          "description": "Settlement cycle assumed for the run. US equities moved to T+1 in May 2024."
+        },
+        "as_of_utc": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Timestamp at which the run was kicked off"
+        }
+      }
+    },
+    "trades_checked": {
+      "type": "integer",
+      "description": "Total trades processed from the input file"
+    },
+    "flagged_count": {
+      "type": "integer",
+      "description": "Trades that hit one or more flag reasons"
+    },
+    "flagged": {
+      "type": "array",
+      "description": "Trades with settlement risk. Empty array if none flagged.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "side", "qty", "trade_date", "naive_settlement_date", "computed_settlement_date", "reason_codes", "impact_text", "suggested_next_action", "source"],
+        "properties": {
+          "ticker": {
+            "type": "string",
+            "description": "Equity ticker symbol from the input row"
+          },
+          "side": {
+            "type": "string",
+            "enum": ["BUY", "SELL", "SHORT", "COVER"],
+            "description": "Trade side. SHORT triggers locate-confirmation flag."
+          },
+          "qty": {
+            "type": "number",
+            "description": "Order quantity in shares"
+          },
+          "trade_date": {
+            "type": "string",
+            "format": "date",
+            "description": "Date the trade was executed"
+          },
+          "naive_settlement_date": {
+            "type": "string",
+            "format": "date",
+            "description": "trade_date + 1 calendar day; before holiday/weekend adjustment"
+          },
+          "computed_settlement_date": {
+            "type": "string",
+            "format": "date",
+            "description": "Actual settlement date after walking the holiday/weekend calendar"
+          },
+          "calendar_push_days": {
+            "type": "integer",
+            "description": "Difference in calendar days between naive and computed settlement"
+          },
+          "reason_codes": {
+            "type": "array",
+            "description": "Flag codes triggered for this trade. At least one entry.",
+            "items": {
+              "type": "string",
+              "enum": [
+                "holiday_adjacency",
+                "weekend_crossing",
+                "short_sale_locate",
+                "ex_dividend_in_window",
+                "corp_action_overlap",
+                "half_day_settlement",
+                "symbol_change"
+              ]
+            },
+            "minItems": 1
+          },
+          "impact_text": {
+            "type": "string",
+            "description": "One-line impact statement for the operator (what changes downstream)"
+          },
+          "suggested_next_action": {
+            "type": "string",
+            "description": "Action-relevant prose for the operator (one sentence)"
+          },
+          "dividend": {
+            "type": ["object", "null"],
+            "description": "Populated when reason_codes contains ex_dividend_in_window",
+            "properties": {
+              "ex_date": {"type": "string", "format": "date"},
+              "pay_date": {"type": ["string", "null"], "format": "date"},
+              "cash_amount_per_share": {"type": "number"},
+              "currency": {"type": "string"},
+              "dollar_impact": {"type": "number", "description": "qty * cash_amount_per_share"}
+            }
+          },
+          "corp_action": {
+            "type": ["object", "null"],
+            "description": "Populated when reason_codes contains corp_action_overlap",
+            "properties": {
+              "ex_date": {"type": "string", "format": "date"},
+              "kind": {"type": "string", "enum": ["split", "reverse_split"]},
+              "ratio": {"type": "string"},
+              "split_to": {"type": "number"},
+              "split_from": {"type": "number"},
+              "post_action_qty": {"type": "number", "description": "Share count delivered after DTCC adjustment"}
+            }
+          },
+          "session_info": {
+            "type": ["object", "null"],
+            "description": "Populated when reason_codes contains half_day_settlement",
+            "properties": {
+              "close_et": {"type": "string", "description": "Early close time in ET, e.g. '13:00'"},
+              "dtcc_cutoff_et": {"type": "string", "description": "DTCC settlement cutoff time in ET on a half day, e.g. '12:30'"},
+              "reason": {"type": "string", "description": "Why the day is a half session, e.g. 'Day after Thanksgiving'"}
+            }
+          },
+          "source": {
+            "type": "object",
+            "required": ["endpoint", "fetched_at"],
+            "properties": {
+              "endpoint": {
+                "type": "string",
+                "description": "Massive endpoint that produced the flagging data"
+              },
+              "fetched_at": {
+                "type": "string",
+                "format": "date-time"
+              }
+            }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["by_reason", "settlement_window"],
+      "properties": {
+        "by_reason": {
+          "type": "object",
+          "description": "Count of flagged trades by reason code (trades can appear under multiple reasons)",
+          "properties": {
+            "holiday_adjacency": {"type": "integer"},
+            "weekend_crossing": {"type": "integer"},
+            "short_sale_locate": {"type": "integer"},
+            "ex_dividend_in_window": {"type": "integer"},
+            "corp_action_overlap": {"type": "integer"},
+            "half_day_settlement": {"type": "integer"},
+            "symbol_change": {"type": "integer"}
+          }
+        },
+        "settlement_window": {
+          "type": "object",
+          "required": ["from", "to"],
+          "properties": {
+            "from": {"type": "string", "format": "date"},
+            "to": {"type": "string", "format": "date"}
+          }
+        },
+        "break_rate_pct": {
+          "type": "number",
+          "description": "flagged_count / trades_checked * 100"
+        }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "One-line desk-ready summary of the run"
+    },
+    "sources": {
+      "type": "array",
+      "description": "Distinct Massive endpoints called during the run for audit trail",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": {"type": "string"},
+          "fetched_at": {"type": "string", "format": "date-time"},
+          "ticker": {"type": "string"}
+        }
+      }
+    }
+  }
+}

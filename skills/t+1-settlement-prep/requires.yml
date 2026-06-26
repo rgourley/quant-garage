@@ -1,0 +1,56 @@
+name: t+1-settlement-prep
+kind: skill
+interface: rest
+output_mode: exception-report
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v1/marketstatus/upcoming (holiday calendar; half-day flagging)
+  - GET /v3/reference/dividends (ex-dates in the settlement window)
+  - GET /v3/reference/splits (corp-action overlap inside the settlement window)
+notes: |
+  Logic-heavy, light API. The skill walks a trade file against the
+  business-day calendar and Massive's corporate-action calendar to flag
+  trades that won't settle cleanly on T+1.
+
+  Three API calls drive the run: one /v1/marketstatus/upcoming pull for
+  the holiday + half-day calendar (next 90 days, response is small and
+  cached per run), one /v3/reference/dividends per ticker (filtered to
+  ex-dates in the settlement window), and one /v3/reference/splits per
+  ticker (same window filter). All three endpoints are in Stocks Basic.
+  A 20-trade file is roughly 1 + 20 + 20 = 41 calls; under the free
+  5/min limit that's ~10 minutes, on any paid tier it's seconds.
+
+  Verified 2026-06-25 on a Stocks Business + Options Business + Benzinga
+  key: /v1/marketstatus/upcoming returns one row per exchange per event
+  (NYSE and NASDAQ are emitted separately for the same holiday).
+  Half-day sessions surface as status="early-close" with open/close
+  timestamps in UTC; full holidays surface as status="closed" with no
+  open/close. The skill de-dupes by date and treats NYSE as canonical.
+
+  T+1 settlement (May 2024 SEC rule) means the settlement date is the
+  next US-equity business day after the trade date. A weekend or US
+  equity-market holiday between trade and settlement pushes the
+  settlement to the next available business day. The skill does not
+  count NYSE/NASDAQ status separately; if either is closed, the day is
+  not a business day.
+
+  Settlement-day half-day sessions (Thanksgiving Friday, Christmas
+  Eve, July 3 when 7/4 falls on a Saturday) are valid business days for
+  settlement purposes, but DTCC's cutoff is earlier (typically 12:30 ET
+  vs 15:00 ET on a full day). The skill flags these as informational so
+  cash-management teams tighten their windows.
+
+  Short-sale locate flags are heuristic only. The skill cannot see the
+  prime broker's locate ticket file. It surfaces every side="SHORT" row
+  as a confirmation prompt to operations.
+
+  Symbol-change and delisting detection requires the /v3/reference/tickers
+  endpoint, which is in scope but deferred to v2 of the skill. See
+  the doesn't-handle list in SKILL.md.
+fallbacks: []
