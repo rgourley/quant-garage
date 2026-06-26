@@ -37,17 +37,36 @@ API just provides the inputs.
 
 ## Who this is for
 
-Buy-side junior analysts who want to prototype faster. Sell-side
-analysts who want their morning notes drafted by the time they sit
-down. PMs who want a sanity check on a model before the meeting. Quant
-data engineers who want a working framework to fork and put their own
-methodology behind. Armchair quants who want a real workflow to build
-intuition on.
+Anyone serious about market research who wants tools they can fork
+and put their own ideas behind.
 
-Not for: people looking for alpha. These tools encode analyst workflow,
-not strategy. The takes are pattern-matchers grounded in methodology;
-they aren't a trading model. If you want production alpha, you build
-on top of this; you don't deploy this.
+**Active traders** building a personal daily workflow that doesn't
+depend on a $25k Bloomberg terminal. Run the earnings preview before
+the open, the options flow scan during lunch, the post-trade TCA at
+the close. Adjust the methodology references to match how you actually
+think about a name.
+
+**Indie devs** building finance-adjacent apps. The structured JSON
+contract on every tool means you wire the output into your dashboard,
+agent, or notebook without parsing markdown. Each skill is a working
+data layer you can call from your own code.
+
+**Power users** researching their own positions. You want a sanity
+check that doesn't come from a Reddit thread or a chatbot guessing.
+You want the citation, the timestamp, the sample size, the honest
+caveat when the data is thin.
+
+The obvious users too: **buy-side junior analysts** prototyping
+faster, **sell-side analysts** who want their morning notes drafted
+by 6am, **PMs** sanity-checking a model before the meeting, **quant
+data engineers** forking the framework into something proprietary,
+**armchair quants** who want production-shaped tools to learn the
+craft on.
+
+**Not for:** people looking for alpha. These tools encode analyst
+workflow, not strategy. The takes are pattern-matchers grounded in
+methodology; they aren't a trading model. If you want production
+alpha, you build on top of this; you don't deploy this.
 
 ## The 14 tools, with real use cases
 
