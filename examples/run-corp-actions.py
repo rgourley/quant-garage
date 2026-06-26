@@ -19,60 +19,27 @@ import json
 import math
 import os
 import sys
-import urllib.error
-import urllib.request
-from datetime import date, datetime, timezone
+
+# Make `lib.quant_garage` importable when running this script from any cwd.
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
+
+from lib.quant_garage import MassiveClient, today, utcnow_iso
 
 if len(sys.argv) < 2:
     print("Usage: run-corp-actions.py POSITIONS.csv", file=sys.stderr)
     sys.exit(1)
 
 CSV_PATH = sys.argv[1]
-KEY = os.environ.get("MASSIVE_API_KEY")
-if not KEY:
-    print("ERROR: MASSIVE_API_KEY not set", file=sys.stderr)
-    sys.exit(1)
-
-BASE = "https://api.polygon.io"
-HEADERS = {"Authorization": f"Bearer {KEY}"}
-TODAY = date(2026, 6, 23)
+TODAY = today()
 
 # Spinoffs overrides: there is no /v3/reference/spinoffs endpoint, so
 # operators supply known spinoff events here. Format matches
 # references/spinoffs-methodology.md.
 SPINOFFS_OVERRIDES_PATH = os.path.join(os.path.dirname(__file__), "spinoffs.json")
 
-
-def fetch(path):
-    url = f"{BASE}{path}"
-    req = urllib.request.Request(url, headers=HEADERS)
-    try:
-        with urllib.request.urlopen(req, timeout=20) as r:
-            return json.load(r)
-    except urllib.error.HTTPError as e:
-        body = e.read()[:400].decode("utf-8", errors="replace")
-        raise RuntimeError(f"{e.code} on {path}: {body}")
-
-
-def fetch_all(path):
-    out = []
-    url = f"{BASE}{path}"
-    while url:
-        req = urllib.request.Request(url, headers=HEADERS)
-        with urllib.request.urlopen(req, timeout=20) as r:
-            doc = json.load(r)
-        out.extend(doc.get("results", []) or [])
-        next_url = doc.get("next_url")
-        if next_url:
-            sep = "&" if "?" in next_url else "?"
-            url = f"{next_url}{sep}apiKey={KEY}"
-        else:
-            url = None
-    return out
-
-
-def now_iso():
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+client = MassiveClient()
 
 
 def load_positions(path):
@@ -97,21 +64,43 @@ def load_spinoffs_overrides(path):
 
 
 def fetch_splits(ticker, as_of_date):
-    """Return splits with execution_date > as_of_date, ascending."""
-    results = fetch_all(
-        f"/v3/reference/splits?ticker={ticker}"
-        f"&execution_date.gt={as_of_date}&limit=50&order=asc&sort=execution_date"
+    """Return (splits_list, fetched_at) with execution_date > as_of_date, ascending."""
+    results = []
+    last_fetched = utcnow_iso()
+    pages = client.paginate(
+        "/v3/reference/splits",
+        {
+            "ticker": ticker,
+            "execution_date.gt": as_of_date,
+            "limit": 50,
+            "order": "asc",
+            "sort": "execution_date",
+        },
     )
-    return results
+    for page, fetched_at in pages:
+        results.extend(page)
+        last_fetched = fetched_at
+    return results, last_fetched
 
 
 def fetch_dividends(ticker, as_of_date):
-    """Return dividends with ex_dividend_date > as_of_date, ascending."""
-    results = fetch_all(
-        f"/v3/reference/dividends?ticker={ticker}"
-        f"&ex_dividend_date.gt={as_of_date}&limit=100&order=asc&sort=ex_dividend_date"
+    """Return (dividends_list, fetched_at) with ex_dividend_date > as_of_date, ascending."""
+    results = []
+    last_fetched = utcnow_iso()
+    pages = client.paginate(
+        "/v3/reference/dividends",
+        {
+            "ticker": ticker,
+            "ex_dividend_date.gt": as_of_date,
+            "limit": 100,
+            "order": "asc",
+            "sort": "ex_dividend_date",
+        },
     )
-    return results
+    for page, fetched_at in pages:
+        results.extend(page)
+        last_fetched = fetched_at
+    return results, last_fetched
 
 
 def apply_split(state, split, fetched_at):
@@ -158,7 +147,7 @@ def apply_split(state, split, fetched_at):
         "post_cost_basis": post_basis,
         "cash_in_lieu_expected": cil_expected,
         "source": {
-            "endpoint": f"https://api.massive.com/v3/reference/splits?ticker={state['ticker']}",
+            "endpoint": f"https://api.polygon.io/v3/reference/splits?ticker={state['ticker']}",
             "fetched_at": fetched_at,
         },
     }
@@ -193,7 +182,7 @@ def apply_dividend(state, div, fetched_at):
             "post_cost_basis": post_basis,
             "cash_in_lieu_expected": False,
             "source": {
-                "endpoint": f"https://api.massive.com/v3/reference/dividends?ticker={state['ticker']}",
+                "endpoint": f"https://api.polygon.io/v3/reference/dividends?ticker={state['ticker']}",
                 "fetched_at": fetched_at,
             },
         }
@@ -294,18 +283,16 @@ def reconcile_position(position, spinoff_records):
     }
 
     sources = []
-    fetched_at = now_iso()
-    splits = fetch_splits(ticker, as_of)
+    splits, splits_fetched_at = fetch_splits(ticker, as_of)
     sources.append({
         "endpoint": f"/v3/reference/splits?ticker={ticker}&execution_date.gt={as_of}",
-        "fetched_at": fetched_at,
+        "fetched_at": splits_fetched_at,
         "ticker": ticker,
     })
-    fetched_at = now_iso()
-    dividends = fetch_dividends(ticker, as_of)
+    dividends, divs_fetched_at = fetch_dividends(ticker, as_of)
     sources.append({
         "endpoint": f"/v3/reference/dividends?ticker={ticker}&ex_dividend_date.gt={as_of}",
-        "fetched_at": fetched_at,
+        "fetched_at": divs_fetched_at,
         "ticker": ticker,
     })
 
@@ -318,17 +305,16 @@ def reconcile_position(position, spinoff_records):
     # dividends on the same date (per edge-cases.md).
     events = []
     for s in splits:
-        events.append(("split", s["execution_date"], 0, s))
+        events.append(("split", s["execution_date"], 0, s, splits_fetched_at))
     for d in dividends:
-        events.append(("dividend", d["ex_dividend_date"], 1, d))
+        events.append(("dividend", d["ex_dividend_date"], 1, d, divs_fetched_at))
     for sp in spins_for_ticker:
-        events.append(("spinoff", sp["ex_date"], 0, sp))
+        events.append(("spinoff", sp["ex_date"], 0, sp, utcnow_iso()))
     events.sort(key=lambda e: (e[1], e[2]))
 
     actions = []
     new_positions = []
-    for event_kind, ex_date, _, payload in events:
-        action_at = now_iso()
+    for event_kind, ex_date, _, payload, action_at in events:
         if event_kind == "split":
             actions.append(apply_split(state, payload, action_at))
         elif event_kind == "dividend":
@@ -569,7 +555,7 @@ def main():
             "positions_checked": len(positions),
             "breaks_found": len(breaks),
             "passes_count": len(passes),
-            "as_of": now_iso(),
+            "as_of": utcnow_iso(),
         },
         "breaks": breaks,
         "passes": passes,
@@ -582,7 +568,7 @@ def main():
     out_path = os.path.join(os.path.dirname(__file__), "reconciliation-output.md")
     with open(out_path, "w") as f:
         f.write("# Reconciliation run: corp-actions-reconciler\n\n")
-        f.write(f"Generated: {now_iso()}\n")
+        f.write(f"Generated: {utcnow_iso()}\n")
         f.write(f"Input: `{CSV_PATH}`\n\n")
         f.write("## Layer 1: canonical JSON (live data)\n\n")
         f.write("```json\n")
