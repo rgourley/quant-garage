@@ -65,6 +65,7 @@ A few things to know up front:
 | `options-flow` (live stream) | WebSocket | Options Business | OPRA WebSocket feed |
 | `portfolio-mark` (delayed) | REST | Stocks Starter (+ Crypto Starter) | 15-min marks |
 | `portfolio-mark` (live) | WebSocket | Stocks Advanced (+ Crypto Developer) | WS stream + fallback chain |
+| `risk-report` | REST | Stocks Starter | Daily aggs per name + benchmark; VaR/ES/drawdown/stress |
 
 ## What you get at each step
 

@@ -1,0 +1,65 @@
+name: risk-report
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_book_pull]
+  B:
+    label: "Free Basic (rate-limited, runs slowly)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_book_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  PM/risk-officer-facing report on a current book. Pairs with
+  portfolio-mark: marks tell you what the book is worth right now;
+  risk-report tells you what could happen to that value.
+
+  Surfaces in one analysis:
+    - Annualized vol/return/Sharpe on the portfolio return series
+    - Beta + alpha + tracking error + correlation + R^2 vs a user-
+      chosen benchmark (default SPY)
+    - Historical + parametric VaR at each user-chosen confidence
+      level (default 0.95, 0.99); plus Expected Shortfall (CVaR) at
+      each, both historical and parametric (Gaussian closed form)
+    - Max drawdown over the lookback window with peak/trough dates,
+      duration in trading days, and whether the series recovered
+    - Worst-N historical days for the current book (default 5) with
+      per-name loss attribution and the benchmark's return on the
+      same day
+    - Per-position variance contribution (MRC decomposition) and
+      per-position beta to the benchmark
+    - Top-1/3/5 weight, Herfindahl, effective N
+
+  Data layer: daily aggregates per position and per benchmark,
+  close-to-close log returns, aligned to the intersection of dates,
+  5% identity-shrunk correlation matrix. Reuses the position-sizer
+  covariance pipeline via lib/quant_garage/sizing.py.
+
+  Caveats surfaced in every run:
+    - Historical VaR is noisy at 252-day windows
+    - Parametric VaR understates fat-tailed loss (assumes normality)
+    - Beta is benchmark-specific; vs IWM looks different than vs SPY
+    - All metrics are descriptive of past behavior, not predictions
+
+  Positions with fewer than 60 aligned trading days are excluded; the
+  equivalent weight folds into the cash bucket and the exclusion is
+  surfaced in tier_caveats.
+fallbacks:
+  - massive-api-patterns

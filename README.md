@@ -15,7 +15,7 @@ Both ways work because every skill ships the same compute as two
 layers: the JSON contract for developers and a rendered note, table,
 stream, or report for humans.
 
-Fifteen tools. One framework. Built in the garage, not the trading
+Sixteen tools. One framework. Built in the garage, not the trading
 floor.
 
 ## The idea
@@ -70,7 +70,7 @@ alpha, you build on top of this; you don't deploy this.
 
 ![14 skills, one framework](./assets/skills.png)
 
-## The 15 tools, with real use cases
+## The 16 tools, with real use cases
 
 ### Earnings work
 
@@ -174,6 +174,15 @@ confidence (high/medium/low), and flags any name where the mark looks
 stale or the spread is wide enough to need a manual check. Two modes:
 delayed REST for end-of-day reports, live WebSocket for intraday.
 
+**[`risk-report`](skills/risk-report)**
+The book is already marked. Now what could happen to it? Run the tool
+and get VaR + Expected Shortfall at 95/99, max drawdown over the
+lookback window with peak/trough dates, the five worst historical
+days with per-name loss attribution, every position's share of the
+variance budget, and a Herfindahl-based concentration read. Pairs
+with `portfolio-mark`: marks tell you what the book is worth right
+now; this skill tells you what could happen to that value.
+
 **[`corp-actions-reconciler`](skills/corp-actions-reconciler)**
 An ops desk inherits a position file from 2024. Did the share counts
 get adjusted for AAPL's 4-for-1 split? GOOGL's 20-for-1? NVDA's 10-
@@ -224,7 +233,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Twelve of the fifteen tools run
+that powers the universe screeners. Thirteen of the sixteen tools run
 on this tier.
 
 Specific tools need specific add-ons:

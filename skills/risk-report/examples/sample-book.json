@@ -1,0 +1,9 @@
+{
+  "positions": [
+    {"ticker": "NVDA",  "weight": 0.25},
+    {"ticker": "AMZN",  "weight": 0.25},
+    {"ticker": "GOOGL", "weight": 0.25},
+    {"ticker": "META",  "weight": 0.25}
+  ],
+  "cash_weight": 0.0
+}

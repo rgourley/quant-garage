@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "risk-report output",
+  "description": "Canonical structured output for the risk-report skill. Layer 1 (the data); Layer 2 (rendered PM-style report) is described in SKILL.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "book",
+    "lookback_days",
+    "benchmark",
+    "stats",
+    "var",
+    "max_drawdown",
+    "stress",
+    "position_risk",
+    "concentration",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "risk-report" },
+    "as_of": { "type": "string", "format": "date", "description": "Local 'as-of' date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "book": {
+      "type": "object",
+      "required": ["positions", "gross_exposure", "cash_weight", "n_positions"],
+      "properties": {
+        "positions": {
+          "type": "array",
+          "description": "Positions used in the analysis (after the history filter).",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "weight"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "weight": { "type": "number", "description": "Decimal of book (sum + cash <= 1.0)." }
+            }
+          }
+        },
+        "positions_excluded": {
+          "type": "array",
+          "description": "Positions dropped from the analysis because of insufficient history.",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "requested_weight"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "requested_weight": { "type": "number" }
+            }
+          }
+        },
+        "gross_exposure": { "type": "number", "description": "Sum of |w| over positions that survived." },
+        "cash_weight": { "type": "number", "description": "Residual cash bucket (includes excluded-position weight)." },
+        "n_positions": { "type": "integer" }
+      }
+    },
+    "lookback_days": { "type": "integer", "description": "Trading days of daily returns requested." },
+    "n_obs_aligned": { "type": "integer", "description": "Trading days remaining after intersecting all return series." },
+    "benchmark": { "type": "string", "description": "Benchmark ticker for beta + tracking error." },
+    "stats": {
+      "type": "object",
+      "required": [
+        "annualized_vol",
+        "annualized_return",
+        "sharpe_naive",
+        "beta",
+        "alpha_annualized",
+        "tracking_error_annualized",
+        "correlation_to_benchmark",
+        "r_squared"
+      ],
+      "properties": {
+        "annualized_vol": { "type": "number", "description": "Sample std of daily portfolio returns annualized at sqrt(252). Decimal." },
+        "annualized_return": { "type": "number", "description": "Mean daily portfolio return * 252. Decimal. Display-only; NOT a forecast." },
+        "sharpe_naive": { "type": "number", "description": "annualized_return / annualized_vol. No risk-free rate adjustment." },
+        "beta": { "type": "number", "description": "cov(port, bench) / var(bench) on aligned daily returns." },
+        "alpha_annualized": { "type": "number", "description": "port_mean_ann - beta * bench_mean_ann." },
+        "tracking_error_annualized": { "type": "number", "description": "std(port - bench) * sqrt(252)." },
+        "correlation_to_benchmark": { "type": "number", "description": "Pearson correlation between portfolio and benchmark daily returns." },
+        "r_squared": { "type": "number", "description": "correlation_to_benchmark squared." }
+      }
+    },
+    "var": {
+      "type": "object",
+      "required": ["lookback_days", "by_confidence"],
+      "properties": {
+        "lookback_days": { "type": "integer", "description": "Aligned-days sample used for the VaR + ES estimates." },
+        "by_confidence": {
+          "type": "object",
+          "description": "Keyed by confidence level as a stringified two-decimal float (e.g., '0.95').",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "historical",
+              "parametric",
+              "expected_shortfall_historical",
+              "expected_shortfall_parametric"
+            ],
+            "properties": {
+              "historical": { "type": "number", "description": "Empirical VaR. Positive = loss." },
+              "parametric": { "type": "number", "description": "Gaussian VaR. Positive = loss." },
+              "expected_shortfall_historical": { "type": "number", "description": "Empirical ES. Positive = loss." },
+              "expected_shortfall_parametric": { "type": "number", "description": "Gaussian closed-form ES. Positive = loss." }
+            }
+          }
+        }
+      }
+    },
+    "max_drawdown": {
+      "type": "object",
+      "required": ["peak_date", "trough_date", "drawdown_pct", "duration_days", "recovered"],
+      "properties": {
+        "peak_date": { "type": "string", "format": "date" },
+        "trough_date": { "type": "string", "format": "date" },
+        "drawdown_pct": { "type": "number", "description": "Negative decimal, e.g. -0.18." },
+        "duration_days": { "type": "integer", "description": "Trading days from peak to trough." },
+        "recovered": { "type": "boolean" },
+        "recovery_date": { "type": ["string", "null"], "format": "date" }
+      }
+    },
+    "stress": {
+      "type": "object",
+      "required": ["mode", "n", "scenarios"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["worst_n_days"] },
+        "n": { "type": "integer" },
+        "scenarios": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date", "book_return_pct"],
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "book_return_pct": { "type": "number", "description": "Negative decimal." },
+              "benchmark_return_pct": { "type": "number" },
+              "name_contributions": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": ["ticker", "contribution_pct"],
+                  "properties": {
+                    "ticker": { "type": "string" },
+                    "contribution_pct": { "type": "number", "description": "w_i * r_i on this date. Decimal of book." }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "position_risk": {
+      "type": "object",
+      "description": "Per-position risk decomposition.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["weight", "vol_annualized", "variance_contribution_pct"],
+        "properties": {
+          "weight": { "type": "number" },
+          "vol_annualized": { "type": "number", "description": "Per-name annualized vol. Decimal." },
+          "variance_contribution_pct": { "type": "number", "description": "Share of total portfolio variance. Sums to 1.0 across positions." },
+          "beta_to_benchmark": { "type": ["number", "null"], "description": "Per-name beta to the benchmark." }
+        }
+      }
+    },
+    "concentration": {
+      "type": "object",
+      "required": ["n_positions", "top_1_weight", "top_3_weight", "top_5_weight", "herfindahl", "effective_n"],
+      "properties": {
+        "n_positions": { "type": "integer" },
+        "top_1_weight": { "type": "number" },
+        "top_3_weight": { "type": "number" },
+        "top_5_weight": { "type": "number" },
+        "herfindahl": { "type": "number", "description": "Sum of w_i^2. 1.0 = single position, 1/N = equal-weighted." },
+        "effective_n": { "type": "number", "description": "1 / herfindahl. 'How many equally-weighted positions does this concentration equal?'" }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

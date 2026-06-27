@@ -62,6 +62,17 @@ from .sizing import (
     risk_parity_weights,
     equal_weights,
 )
+from .risk import (
+    historical_var,
+    parametric_var,
+    expected_shortfall,
+    max_drawdown,
+    portfolio_returns,
+    beta_and_tracking,
+    position_variance_contributions,
+    concentration_stats,
+    worst_n_days,
+)
 
 __all__ = [
     "MassiveClient",
@@ -109,4 +120,13 @@ __all__ = [
     "fractional_kelly_weights",
     "risk_parity_weights",
     "equal_weights",
+    "historical_var",
+    "parametric_var",
+    "expected_shortfall",
+    "max_drawdown",
+    "portfolio_returns",
+    "beta_and_tracking",
+    "position_variance_contributions",
+    "concentration_stats",
+    "worst_n_days",
 ]
