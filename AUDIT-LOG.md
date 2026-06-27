@@ -9,6 +9,16 @@ by ID.
 
 ---
 
+## Wave 13 — 2026-06-27 (event-study no-events diagnosis)
+
+Real-world ALLO test returned "No events matched the input criteria." with no indication which step failed. Three causes collapsed into one silent error.
+
+Commit: `d40323b`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| EVENT | event-study | (1) Per-resolver diagnostics via module-level `_RESOLVER_DIAGNOSTICS[ticker][stage]` — chose side-effect dict over rewriting return signatures because resolvers are called from 3+ sites. Records cik_found / raw_filing_count / matched_filter_count / after_date_filter_count / failure_reason per stage. `build_no_events_message()` consumes the dict to emit a per-ticker breakdown instead of the generic error. (2) 8-K item filter expanded from 2.02-only to `2.02 \| 7.01 \| 8.01`. Each event tagged with `item_code` + `signal_strength` (`strong` for 2.02 — standard earnings release; `soft` for 7.01 Reg FD and 8.01 Other Events). `generate_take_single` prefixes soft-signal takes with a caveat so the operator sees it before any return statistic. (3) SEC ticker.txt fallback: when Massive's `/v3/reference/tickers/{T}.cik` returns None, `get_cik` queries `https://www.sec.gov/files/company_tickers.json` (verified live: 10,433 entries, ALLO present, no auth, ~800KB). Cached module-level. (4) New `--debug-resolver` flag dumps the full diagnostics dict per ticker for edge-case investigation. (5) `_edgar_cache` patched to replay diagnostics on cache hits so repeated calls still surface the same failure reason |
+
 ## Wave 12 — 2026-06-27 (peer selection + news window + options direction)
 
 Three real-world bugs surfaced by user testing on ALLO (CAR-T biotech). All three were silent failures that produced output looking correct.
