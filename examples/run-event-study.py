@@ -239,6 +239,54 @@ _benzinga_cache: dict[str, list[dict[str, Any]]] = {}
 _edgar_cache: dict[str, list[dict[str, Any]]] = {}
 _cik_cache: dict[str, str | None] = {}
 
+# Per-step diagnostics so the "No events matched" failure mode can name
+# the exact step that dropped events. Keyed by ticker, then by resolver
+# stage (e.g. "earnings", "dividend_changes", "large_volume_spike"). The
+# caller reads this after invoking the resolver so existing return shapes
+# stay intact.
+_RESOLVER_DIAGNOSTICS: dict[str, dict[str, dict[str, Any]]] = {}
+
+
+def record_diag(ticker: str, stage: str, info: dict[str, Any]) -> None:
+    _RESOLVER_DIAGNOSTICS.setdefault(ticker, {})[stage] = info
+
+
+# SEC publishes a free canonical ticker -> CIK mapping. Used as a fallback
+# when Massive's /v3/reference/tickers returns no cik field (common for
+# smaller / newer listings). Cached in-process for the run.
+_SEC_TICKER_MAP_CACHE: dict[str, str] | None = None
+SEC_TICKER_MAP_URL = "https://www.sec.gov/files/company_tickers.json"
+
+
+def fetch_sec_ticker_map() -> dict[str, str]:
+    """Return TICKER -> 10-digit zero-padded CIK from SEC's public mapping.
+
+    Free, no-auth, ~17k entries. Cached at module level for the run.
+    """
+    global _SEC_TICKER_MAP_CACHE
+    if _SEC_TICKER_MAP_CACHE is not None:
+        return _SEC_TICKER_MAP_CACHE
+    try:
+        doc = fetch_sec(SEC_TICKER_MAP_URL)
+        record_source(
+            SEC_TICKER_MAP_URL,
+            utcnow_iso(),
+            "SEC canonical ticker->CIK map (fallback for Massive)",
+        )
+    except Exception as e:
+        print(f"  SEC ticker map: {e}", file=sys.stderr)
+        _SEC_TICKER_MAP_CACHE = {}
+        return _SEC_TICKER_MAP_CACHE
+    out: dict[str, str] = {}
+    # doc is keyed by stringified index (e.g. "0", "1", ...) per SEC's format
+    for _, row in doc.items():
+        t = str(row.get("ticker", "")).upper()
+        cik = row.get("cik_str")
+        if t and cik is not None:
+            out[t] = str(cik).zfill(10)
+    _SEC_TICKER_MAP_CACHE = out
+    return out
+
 
 def benzinga_earnings(ticker: str) -> list[dict[str, Any]]:
     if ticker in _benzinga_cache:
@@ -273,9 +321,15 @@ def benzinga_earnings(ticker: str) -> list[dict[str, Any]]:
 
 
 def get_cik(ticker: str) -> str | None:
-    """Pull the zero-padded 10-digit CIK for a ticker from Massive reference."""
+    """Pull the zero-padded 10-digit CIK for a ticker.
+
+    Primary: Massive /v3/reference/tickers/{T}.cik. Fallback: SEC's free
+    canonical company_tickers.json when Massive returns no cik (common
+    for smaller / newer listings).
+    """
     if ticker in _cik_cache:
         return _cik_cache[ticker]
+    massive_ok = False
     try:
         body, fetched_at = client.get(f"/v3/reference/tickers/{ticker}")
         record_source(
@@ -283,42 +337,92 @@ def get_cik(ticker: str) -> str | None:
             fetched_at,
             f"Ticker metadata for {ticker} (CIK lookup)",
         )
+        massive_ok = True
     except Exception as e:
         print(f"  ticker reference {ticker}: {e}", file=sys.stderr)
-        _cik_cache[ticker] = None
-        return None
-    results = body.get("results") or {}
-    cik_raw = results.get("cik")
-    if not cik_raw:
-        _cik_cache[ticker] = None
-        return None
-    padded = str(cik_raw).zfill(10)
-    _cik_cache[ticker] = padded
-    return padded
+        body = {}
+    results = (body.get("results") or {}) if isinstance(body, dict) else {}
+    cik_raw = results.get("cik") if isinstance(results, dict) else None
+    if cik_raw:
+        padded = str(cik_raw).zfill(10)
+        _cik_cache[ticker] = padded
+        return padded
+    # Massive returned no CIK (either the request failed or the field is
+    # missing). Try SEC's free canonical map.
+    sec_map = fetch_sec_ticker_map()
+    fallback = sec_map.get(ticker.upper())
+    if fallback:
+        print(
+            f"  CIK fallback: {ticker} -> {fallback} via SEC ticker map "
+            f"(massive_ok={massive_ok})",
+            file=sys.stderr,
+        )
+        _cik_cache[ticker] = fallback
+        return fallback
+    _cik_cache[ticker] = None
+    return None
+
+
+# 8-K items accepted as earnings-class signals. 2.02 is the standard
+# "Results of Operations and Financial Condition" item. 7.01 (Reg FD)
+# and 8.01 (Other Events) are softer signals biotechs and small caps
+# sometimes use for earnings-equivalent disclosures. Each event is
+# tagged with its item_code + signal_strength so downstream consumers
+# can treat soft signals more cautiously.
+EDGAR_EARNINGS_ITEMS = ("2.02", "7.01", "8.01")
+EDGAR_STRONG_ITEMS = ("2.02",)
 
 
 def edgar_earnings(ticker: str) -> list[dict[str, Any]]:
-    """Return earnings prints sourced from SEC EDGAR 8-K item 2.02 filings.
+    """Return earnings prints sourced from SEC EDGAR 8-K filings.
+
+    Accepts items 2.02 (standard earnings release), 7.01 (Reg FD), and
+    8.01 (Other Events). Each row is tagged with its item_code and a
+    signal_strength of "strong" (2.02) or "soft" (7.01/8.01).
 
     Output rows expose the same shape that resolve_earnings consumes
     (date, time, fiscal_period, fiscal_year, company_name, eps_surprise_percent).
     Surprise / estimates are unavailable from EDGAR alone, so those keys are
     None and the resulting events are Tier B.
     """
+    diag: dict[str, Any] = {
+        "method": "edgar_8k_items_" + "_".join(EDGAR_EARNINGS_ITEMS),
+        "cik_found": False,
+        "raw_filing_count": 0,
+        "raw_8k_count": 0,
+        "matched_filter_count": 0,
+        "observed_item_codes": [],
+        "failure_reason": None,
+    }
     if ticker in _edgar_cache:
+        # Reuse cached diagnostics if present
+        cached_diag = _RESOLVER_DIAGNOSTICS.get(ticker, {}).get("edgar_earnings")
+        if cached_diag:
+            record_diag(ticker, "edgar_earnings", cached_diag)
         return _edgar_cache[ticker]
     cik_padded = get_cik(ticker)
     if not cik_padded:
+        diag["failure_reason"] = "cik_not_found"
+        record_diag(ticker, "edgar_earnings", diag)
         _edgar_cache[ticker] = []
         return []
+    diag["cik_found"] = True
+    diag["cik"] = cik_padded
     print(f"  SEC EDGAR 8-Ks {ticker} (CIK {cik_padded})", file=sys.stderr)
     sec_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
     try:
         doc = fetch_sec(sec_url)
         sec_fetched_at = utcnow_iso()
-        record_source(sec_url, sec_fetched_at, f"SEC EDGAR submissions for {ticker} (8-K item 2.02)")
+        record_source(
+            sec_url,
+            sec_fetched_at,
+            f"SEC EDGAR submissions for {ticker} (8-K items "
+            + "/".join(EDGAR_EARNINGS_ITEMS) + ")",
+        )
     except Exception as e:
         print(f"  SEC EDGAR {ticker}: {e}", file=sys.stderr)
+        diag["failure_reason"] = f"edgar_fetch_error: {e}"
+        record_diag(ticker, "edgar_earnings", diag)
         _edgar_cache[ticker] = []
         return []
     recent = (doc.get("filings") or {}).get("recent") or {}
@@ -326,13 +430,20 @@ def edgar_earnings(ticker: str) -> list[dict[str, Any]]:
     items_col = recent.get("items") or [""] * len(forms)
     acc_col = recent.get("acceptanceDateTime") or [""] * len(forms)
     company_name = doc.get("name")
+    diag["raw_filing_count"] = len(forms)
 
+    observed_items: dict[str, int] = {}
     out: list[dict[str, Any]] = []
+    raw_8k_count = 0
     for i, form in enumerate(forms):
         if form != "8-K":
             continue
-        items_list = [it.strip() for it in (items_col[i] or "").split(",")]
-        if "2.02" not in items_list:
+        raw_8k_count += 1
+        items_list = [it.strip() for it in (items_col[i] or "").split(",") if it.strip()]
+        for code in items_list:
+            observed_items[code] = observed_items.get(code, 0) + 1
+        matched_item = next((c for c in items_list if c in EDGAR_EARNINGS_ITEMS), None)
+        if matched_item is None:
             continue
         acc_dt = acc_col[i]
         if not acc_dt:
@@ -344,6 +455,7 @@ def edgar_earnings(ticker: str) -> list[dict[str, Any]]:
         # Convert session ("BMO"/"AMC"/"DMH") into the HH:MM:SS bucket the
         # classifier expects so the downstream renderer keeps a consistent shape.
         time_str = {"BMO": "07:00:00", "AMC": "16:30:00", "DMH": "12:00:00"}[session]
+        signal_strength = "strong" if matched_item in EDGAR_STRONG_ITEMS else "soft"
         out.append({
             "date": et_date,
             "time": time_str,
@@ -354,8 +466,19 @@ def edgar_earnings(ticker: str) -> list[dict[str, Any]]:
             "eps_surprise_percent": None,
             "estimated_eps": None,
             "previous_eps": None,
+            "item_code": matched_item,
+            "signal_strength": signal_strength,
             "_source": "edgar",
         })
+    diag["raw_8k_count"] = raw_8k_count
+    diag["matched_filter_count"] = len(out)
+    diag["observed_item_codes"] = sorted(observed_items.keys())
+    if not out:
+        if raw_8k_count == 0:
+            diag["failure_reason"] = "no_8k_filings"
+        else:
+            diag["failure_reason"] = "no_matching_item_codes"
+    record_diag(ticker, "edgar_earnings", diag)
     # newest-first to match Benzinga's ordering
     out.sort(key=lambda r: r["date"], reverse=True)
     _edgar_cache[ticker] = out
@@ -371,15 +494,36 @@ def resolve_earnings(
 
     Tier A path: Benzinga returns rows. Use surprise %, EPS estimates, etc.
     Tier B path: Benzinga returns empty (key missing the add-on, or the
-    endpoint is briefly unavailable). Fall back to SEC EDGAR 8-K item 2.02
-    filings for print dates. No surprise data, no consensus EPS.
+    endpoint is briefly unavailable). Fall back to SEC EDGAR 8-K items
+    2.02 / 7.01 / 8.01 for print dates. No surprise data, no consensus EPS.
     """
     rows = benzinga_earnings(ticker)
+    source = "benzinga" if rows else None
+    record_diag(ticker, "benzinga_earnings", {
+        "method": "benzinga_earnings",
+        "raw_row_count": len(rows),
+        "failure_reason": None if rows else "benzinga_empty_or_unavailable",
+    })
     tier = "A" if rows else "B"
     if not rows:
         rows = edgar_earnings(ticker)
-        if not rows:
-            return []
+        source = "edgar"
+
+    diag: dict[str, Any] = {
+        "method": f"resolve_earnings:{source}",
+        "raw_event_count": len(rows),
+        "after_date_filter_count": 0,
+        "failure_reason": None,
+    }
+
+    if not rows:
+        diag["failure_reason"] = (
+            "no_events_from_any_source"
+            if not _RESOLVER_DIAGNOSTICS.get(ticker, {}).get("edgar_earnings", {}).get("failure_reason")
+            else "no_events_from_any_source"
+        )
+        record_diag(ticker, "earnings", diag)
+        return []
 
     out = []
     for r in rows:
@@ -391,21 +535,35 @@ def resolve_earnings(
         if window:
             if d < window[0] or d > window[1]:
                 continue
+        meta: dict[str, Any] = {
+            "fiscal_period": r.get("fiscal_period"),
+            "fiscal_year": r.get("fiscal_year"),
+            "surprise_eps_pct": r.get("eps_surprise_percent"),
+            "estimated_eps": r.get("estimated_eps"),
+            "previous_eps": r.get("previous_eps"),
+            "company_name": r.get("company_name"),
+            "release_time_et": r.get("time"),
+        }
+        # Propagate EDGAR-only tags so the signal class is visible
+        # downstream (single-event take, JSON output, renderer).
+        if "item_code" in r:
+            meta["item_code"] = r.get("item_code")
+        if "signal_strength" in r:
+            meta["signal_strength"] = r.get("signal_strength")
         out.append({
             "ticker": ticker,
             "event_date": d,
             "event_session": classify_session(r.get("time")),
-            "event_metadata": {
-                "fiscal_period": r.get("fiscal_period"),
-                "fiscal_year": r.get("fiscal_year"),
-                "surprise_eps_pct": r.get("eps_surprise_percent"),
-                "estimated_eps": r.get("estimated_eps"),
-                "previous_eps": r.get("previous_eps"),
-                "company_name": r.get("company_name"),
-                "release_time_et": r.get("time"),
-            },
+            "event_metadata": meta,
             "_tier": tier,
         })
+    diag["after_date_filter_count"] = len(out)
+    if not out:
+        if event_date or window:
+            diag["failure_reason"] = "all_filtered_by_date"
+        else:
+            diag["failure_reason"] = "no_events_after_resolver"
+    record_diag(ticker, "earnings", diag)
     # ascending by date so prior-history is easy to slice
     out.sort(key=lambda e: e["event_date"])
     return out
@@ -417,22 +575,39 @@ def resolve_dividend_changes(
     window: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     print(f"  dividends {ticker}", file=sys.stderr)
-    rows, fetched_at = fetch_all(
-        "/v3/reference/dividends",
-        {"ticker": ticker, "limit": 40, "order": "asc", "sort": "ex_dividend_date"},
-    )
-    record_source(
-        "/v3/reference/dividends?ticker={ticker}",
-        fetched_at,
-        f"Cash dividend history for {ticker}",
-    )
+    diag: dict[str, Any] = {
+        "method": "massive_v3_reference_dividends",
+        "raw_action_count": 0,
+        "regular_count": 0,
+        "change_qualifying_count": 0,
+        "after_date_filter_count": 0,
+        "failure_reason": None,
+    }
+    try:
+        rows, fetched_at = fetch_all(
+            "/v3/reference/dividends",
+            {"ticker": ticker, "limit": 40, "order": "asc", "sort": "ex_dividend_date"},
+        )
+        record_source(
+            "/v3/reference/dividends?ticker={ticker}",
+            fetched_at,
+            f"Cash dividend history for {ticker}",
+        )
+    except Exception as e:
+        print(f"  dividends {ticker}: {e}", file=sys.stderr)
+        diag["failure_reason"] = f"dividends_fetch_error: {e}"
+        record_diag(ticker, "dividend_changes", diag)
+        return []
+    diag["raw_action_count"] = len(rows)
     # Exclude special-cash dividends from the baseline
     regular = [
         r for r in rows
         if r.get("dividend_type") not in ("SC",)
         and r.get("cash_amount") is not None
     ]
+    diag["regular_count"] = len(regular)
     out = []
+    qualifying = 0
     prior = None
     for r in regular:
         amt = float(r["cash_amount"])
@@ -444,6 +619,7 @@ def resolve_dividend_changes(
             continue
         change_pct = (amt - prior) / prior if prior > 0 else 0
         if abs(change_pct) >= 0.01:
+            qualifying += 1
             if event_date and ex != event_date:
                 prior = amt
                 continue
@@ -463,6 +639,16 @@ def resolve_dividend_changes(
                 "_tier": "A",
             })
         prior = amt
+    diag["change_qualifying_count"] = qualifying
+    diag["after_date_filter_count"] = len(out)
+    if not out:
+        if len(rows) == 0:
+            diag["failure_reason"] = "no_dividend_history"
+        elif qualifying == 0:
+            diag["failure_reason"] = "no_changes_above_1pct"
+        elif event_date or window:
+            diag["failure_reason"] = "all_filtered_by_date"
+    record_diag(ticker, "dividend_changes", diag)
     return out
 
 
@@ -471,6 +657,13 @@ def resolve_volume_spike(
     event_date: str | None = None,
     window: tuple[str, str] | None = None,
 ) -> list[dict[str, Any]]:
+    diag: dict[str, Any] = {
+        "method": "daily_aggs_z_score_gt_3",
+        "trading_day_count": 0,
+        "raw_spike_count": 0,
+        "after_date_filter_count": 0,
+        "failure_reason": None,
+    }
     # Pull a wide buffer for both volume history and the 30d trailing stats.
     # The full-history pass (window=None) needs to span far enough back that
     # downstream window-filtered queries find spikes. Default: 2 years.
@@ -480,9 +673,17 @@ def resolve_volume_spike(
     else:
         from_d = (TODAY - timedelta(days=365 * 2)).isoformat()
         to_d = TODAY.isoformat()
-    aggs = get_daily_aggs(ticker, from_d, to_d)
+    try:
+        aggs = get_daily_aggs(ticker, from_d, to_d)
+    except Exception as e:
+        print(f"  volume spike aggs {ticker}: {e}", file=sys.stderr)
+        diag["failure_reason"] = f"aggs_fetch_error: {e}"
+        record_diag(ticker, "large_volume_spike", diag)
+        return []
     dates_sorted = sorted(aggs.keys())
+    diag["trading_day_count"] = len(dates_sorted)
     out = []
+    raw_spikes = 0
     cooldown_until_idx = -1
     for i, d in enumerate(dates_sorted):
         if i < 30:
@@ -498,6 +699,7 @@ def resolve_volume_spike(
         z = (vol_today - m) / s
         if z <= 3.0:
             continue
+        raw_spikes += 1
         # Apply event_date / window filters
         if event_date and d != event_date:
             continue
@@ -516,6 +718,16 @@ def resolve_volume_spike(
             "_tier": "A",
         })
         cooldown_until_idx = i + 5
+    diag["raw_spike_count"] = raw_spikes
+    diag["after_date_filter_count"] = len(out)
+    if not out:
+        if len(dates_sorted) == 0:
+            diag["failure_reason"] = "no_daily_aggs"
+        elif raw_spikes == 0:
+            diag["failure_reason"] = "no_z_score_above_3"
+        elif event_date or window:
+            diag["failure_reason"] = "all_filtered_by_date"
+    record_diag(ticker, "large_volume_spike", diag)
     return out
 
 
@@ -909,29 +1121,40 @@ def compute_universe_base_rate(
 def generate_take_single(subject: dict[str, Any]) -> str:
     car = subject["abnormal_returns"].get("car_t5_pct")
     hist = subject.get("t_stat_vs_history")
+    meta = subject.get("event_metadata") or {}
+    signal_strength = meta.get("signal_strength")
+    item_code = meta.get("item_code")
+    # Soft EDGAR signals (7.01 Reg FD, 8.01 Other Events) may not actually
+    # be earnings prints — prefix the take so the operator sees the caveat
+    # before any return statistic.
+    soft_prefix = ""
+    if signal_strength == "soft":
+        soft_prefix = (
+            f"[soft 8-K item {item_code}: may not be a true earnings release] "
+        )
     if car is None:
-        return "Event window returns unavailable (insufficient price data)."
+        return soft_prefix + "Event window returns unavailable (insufficient price data)."
     car_pp = f"{car * 100:+.1f}pp"
     if hist and hist.get("z_score") is not None and not hist["underpowered"]:
         z = hist["z_score"]
         if abs(z) >= 1.5:
-            return (
+            return soft_prefix + (
                 f"{car_pp} abnormal return over T+1 to T+5; "
                 f"z-score {z:+.2f} vs {hist['prior_n']}-event history, significant."
             )
         prior_m = hist["prior_mean_t5_car_pct"]
-        return (
+        return soft_prefix + (
             f"{car_pp} abnormal return; in line with "
             f"{hist['prior_n']}-event prior mean of {prior_m * 100:+.1f}% "
             f"(z {z:+.2f})."
         )
     if hist:
         prior_m = hist["prior_mean_t5_car_pct"]
-        return (
+        return soft_prefix + (
             f"{car_pp} abnormal return; {hist['prior_n']} prior events "
             f"(underpowered, prior mean {prior_m * 100:+.1f}%)."
         )
-    return f"{car_pp} abnormal return; no prior history available for comparison."
+    return soft_prefix + f"{car_pp} abnormal return; no prior history available for comparison."
 
 
 def generate_take_cross_section(summary: dict[str, Any], event_class: str) -> str:
@@ -1322,6 +1545,142 @@ def render_aggregate(payload: dict[str, Any]) -> str:
     return "\n".join(lines).rstrip()
 
 
+# -------- Diagnostic error messages --------
+
+
+def build_no_events_message(
+    tickers: list[str],
+    event_class: str,
+    event_date: str | None,
+    window: tuple[str, str] | None,
+    period: str | None,
+) -> str:
+    """Compose an honest, per-ticker failure message from the diagnostics
+    captured by each resolver. Replaces the legacy
+    "No events matched the input criteria." string.
+    """
+    lines = ["No events to study.", "", "Per-ticker resolution:"]
+    for t in tickers:
+        diags = _RESOLVER_DIAGNOSTICS.get(t, {})
+        # Pick the primary diag for the requested class. The earnings
+        # resolver records under "earnings" + child stages.
+        primary = diags.get(event_class) or {}
+        reason = primary.get("failure_reason")
+        if event_class == "earnings":
+            edgar = diags.get("edgar_earnings") or {}
+            benzinga = diags.get("benzinga_earnings") or {}
+            edgar_reason = edgar.get("failure_reason")
+            if edgar_reason == "cik_not_found":
+                lines.append(
+                    f"  {t}: CIK lookup failed (Massive + SEC ticker map "
+                    f"both returned no CIK). Verify the ticker is currently "
+                    f"listed and reporting to SEC."
+                )
+                continue
+            raw_8k = edgar.get("raw_8k_count", 0)
+            matched = edgar.get("matched_filter_count", 0)
+            items_seen = edgar.get("observed_item_codes") or []
+            after_date = primary.get("after_date_filter_count", 0)
+            bz_n = benzinga.get("raw_row_count", 0)
+            if bz_n == 0 and raw_8k > 0 and matched == 0:
+                lines.append(
+                    f"  {t}: Benzinga returned 0 rows; "
+                    f"{raw_8k} raw 8-Ks found, 0 matched items "
+                    f"{'/'.join(EDGAR_EARNINGS_ITEMS)} "
+                    f"(observed item codes: {items_seen or 'none'}). "
+                    f"Check whether {t} reports earnings via 10-Q only."
+                )
+                continue
+            if bz_n == 0 and raw_8k == 0:
+                lines.append(
+                    f"  {t}: Benzinga returned 0 rows and no 8-Ks on file "
+                    f"under CIK {edgar.get('cik', '?')}. Likely de-listed or "
+                    f"non-reporting."
+                )
+                continue
+            if matched > 0 and after_date == 0:
+                w = (
+                    f"--window {window[0]}..{window[1]}" if window
+                    else (f"--event-date {event_date}" if event_date else "--period filter")
+                )
+                lines.append(
+                    f"  {t}: {matched} 8-Ks matched filter, 0 within {w}. "
+                    f"Try widening the window or use --period most_recent."
+                )
+                continue
+            # Generic fallback
+            lines.append(
+                f"  {t}: {reason or 'no events from any source'} "
+                f"(benzinga={bz_n}, edgar_matched={matched}, "
+                f"after_date={after_date})"
+            )
+            continue
+        if event_class == "dividend_changes":
+            raw = primary.get("raw_action_count", 0)
+            qual = primary.get("change_qualifying_count", 0)
+            after = primary.get("after_date_filter_count", 0)
+            if reason == "no_dividend_history":
+                lines.append(
+                    f"  {t}: 0 dividend records on file. Likely non-paying."
+                )
+                continue
+            if reason == "no_changes_above_1pct":
+                lines.append(
+                    f"  {t}: {raw} dividend records, 0 changes >= 1% vs prior. "
+                    f"Stable payer."
+                )
+                continue
+            if reason == "all_filtered_by_date":
+                w = (
+                    f"--window {window[0]}..{window[1]}" if window
+                    else (f"--event-date {event_date}" if event_date else "--period filter")
+                )
+                lines.append(
+                    f"  {t}: {qual} dividend changes found, 0 within {w}."
+                )
+                continue
+            lines.append(
+                f"  {t}: {reason or 'no events'} "
+                f"(raw={raw}, qualifying={qual}, after_date={after})"
+            )
+            continue
+        if event_class == "large_volume_spike":
+            n_days = primary.get("trading_day_count", 0)
+            raw = primary.get("raw_spike_count", 0)
+            after = primary.get("after_date_filter_count", 0)
+            if reason == "no_daily_aggs":
+                lines.append(
+                    f"  {t}: 0 daily aggregates returned. Verify ticker is "
+                    f"valid and within the date range."
+                )
+                continue
+            if reason == "no_z_score_above_3":
+                lines.append(
+                    f"  {t}: {n_days} trading days scanned, 0 volume spikes "
+                    f">3 sigma. Quiet name."
+                )
+                continue
+            if reason == "all_filtered_by_date":
+                w = (
+                    f"--window {window[0]}..{window[1]}" if window
+                    else (f"--event-date {event_date}" if event_date else "--period filter")
+                )
+                lines.append(
+                    f"  {t}: {raw} spikes found, 0 within {w}."
+                )
+                continue
+            lines.append(
+                f"  {t}: {reason or 'no events'} "
+                f"(days={n_days}, raw_spikes={raw}, after_date={after})"
+            )
+            continue
+        # Unknown event class
+        lines.append(f"  {t}: {reason or 'no events'}")
+    lines.append("")
+    lines.append("Pass --debug-resolver to dump full per-step diagnostics.")
+    return "\n".join(lines)
+
+
 # -------- Main pipeline --------
 
 
@@ -1377,7 +1736,22 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         chosen_events.extend(chosen)
 
     if not chosen_events:
-        raise RuntimeError("No events matched the input criteria.")
+        raise RuntimeError(
+            build_no_events_message(
+                tickers,
+                event_class,
+                event_date=args.event_date,
+                window=window_arg,
+                period=args.period,
+            )
+        )
+
+    if getattr(args, "debug_resolver", False):
+        print(
+            "\n[debug-resolver] per-ticker diagnostics:\n"
+            + json.dumps(_RESOLVER_DIAGNOSTICS, indent=2, default=str),
+            file=sys.stderr,
+        )
 
     tier = "A" if "A" in tiers_seen else "B"
     tier_caveats = []
@@ -1561,6 +1935,12 @@ def main() -> None:
         default=None,
         help="Comma-separated tickers for the base-rate pull. Default: "
              "15 mega-caps. Only used when --with-base-rate is set.",
+    )
+    parser.add_argument(
+        "--debug-resolver",
+        action="store_true",
+        help="Dump full per-step resolver diagnostics to stderr (CIK lookup, "
+             "raw fetch counts, filter pass counts, failure reasons per ticker).",
     )
     args = parser.parse_args()
     fmt = resolve_output_format(args.format)
