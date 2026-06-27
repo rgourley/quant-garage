@@ -18,6 +18,34 @@ stream, or report for humans.
 Sixteen tools. One framework. Built in the garage, not the trading
 floor.
 
+## What the collection does
+
+Each tool is useful on its own. The point of having sixteen that share
+data, methodology, and audit trail is that they chain.
+
+Tuesday morning, you're long NVDA into Thursday's print.
+`earnings-drilldown` shows the implied move is rich vs the 8-quarter
+realized. `valuation-sanity-check --mc` puts the current price at the
+78th percentile of peer-driven fair values. You like the setup but
+want to size honestly. `position-sizer` puts NVDA at 8% under
+vol-target given the 48% realized vol. You execute. `portfolio-mark`
+walks the snapshot fallback chain; `slippage-cost` flags one fill that
+crossed the spread. End of day: `risk-report` shows NVDA now drives
+35% of portfolio variance.
+
+One repo, one Massive key, one methodology.
+
+The research side has the same shape. `universe-builder` screens for
+momentum pullbacks; `factor-research` confirms which factors are
+working this regime; `news-scanner` checks for catalysts on the
+survivors; `event-study` measures the abnormal return around each
+catalyst. You get from "what should I look at?" to "here's the regime
+context and the abnormal-return distribution" in a single workflow.
+
+Each tool plugs into the same `lib/quant_garage/` core: same client,
+same timezone handling, same audit-trail format, same significance
+thresholds.
+
 ## The idea
 
 LLMs are confidently wrong about market data. They quote stock prices
