@@ -36,6 +36,8 @@ from lib.quant_garage import (
     utcnow_iso,
     resolve_output_format,
     emit_to_stdout,
+    percentile_rank,
+    format_rank_label,
 )
 
 
@@ -499,9 +501,26 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
         "composite_score": round(composite_score, 4),
     })
 
+# M9: build a run-wide composite-score distribution from EVERY event
+# (the full universe scan), so each top event can be ranked against the
+# whole run. Captured before the TOP_N truncation.
+score_distribution = [
+    e["composite_score"] for e in events if e.get("composite_score") is not None
+]
+score_universe_n = len(score_distribution)
+
 # Sort by composite_score descending
 events.sort(key=lambda e: e["composite_score"], reverse=True)
 top_events = events[:TOP_N]
+
+# Attach percentile_rank + rank_label per surfaced event
+for _e in top_events:
+    pr = percentile_rank(_e["composite_score"], score_distribution)
+    _e["percentile_rank"] = pr
+    _e["rank_label"] = format_rank_label(pr)
+    if pr is None:
+        _e["rank_reason"] = "insufficient_universe"
+    _e["score_universe_n"] = score_universe_n
 
 # Summary
 signal_counts = defaultdict(int)
@@ -681,6 +700,11 @@ def render_block(e):
         parts.append(f"24h vol {humanize_usd(vol_24h_usd)} ({vol_ratio_v:.1f}x avg)")
     if rv is not None:
         parts.append(f"realized vol {rv:.0f}%")
+    # M9: rank suffix anchors the composite score against the run-wide universe.
+    pr = e.get("percentile_rank")
+    universe_n = e.get("score_universe_n") or 0
+    if pr is not None:
+        parts.append(f"{e['rank_label']} ({pr:.0f}th %ile, n={universe_n})")
     line2 = " · ".join(parts)
 
     block = [line1, line2]

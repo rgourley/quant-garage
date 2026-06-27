@@ -39,6 +39,8 @@ from lib.quant_garage import (
     utcnow_iso,
     resolve_output_format,
     emit_to_stdout,
+    percentile_rank,
+    format_rank_label,
 )
 
 
@@ -716,6 +718,14 @@ for t, a, art_idx in candidates:
         "impact_score": round(impact, 6),
     })
 
+# M9: build a run-wide impact-score distribution from EVERY scored event
+# (the full window scan), so each surfaced event can be ranked against
+# the whole run. Captured before dedup + top-N truncation.
+score_distribution = [
+    e["impact_score"] for e in events if e.get("impact_score") is not None
+]
+score_universe_n = len(score_distribution)
+
 # Sort by impact descending
 events.sort(key=lambda e: e["impact_score"], reverse=True)
 
@@ -748,6 +758,18 @@ for i, e in enumerate(events):
 
 # Cap at TOP_N
 top_events = final_events[:TOP_N]
+
+# M9: attach percentile_rank + rank_label per surfaced event. The
+# distribution captured above includes every scored event in the window,
+# so a small universe surfaces as rank_reason=insufficient_universe
+# rather than a misleading rank.
+for _e in top_events:
+    pr = percentile_rank(_e["impact_score"], score_distribution)
+    _e["percentile_rank"] = pr
+    _e["rank_label"] = format_rank_label(pr)
+    if pr is None:
+        _e["rank_reason"] = "insufficient_universe"
+    _e["score_universe_n"] = score_universe_n
 
 # Summary
 def band_of_score(s):
@@ -869,6 +891,11 @@ def render_block(e):
         parts.append("baseline vol n/a")
     else:
         parts.append(f"{e['volume_anomaly_x']:.1f}x baseline vol")
+    # M9: rank suffix anchors the impact score against the run-wide universe.
+    pr = e.get("percentile_rank")
+    universe_n = e.get("score_universe_n") or 0
+    if pr is not None:
+        parts.append(f"IMPACT: {e['rank_label']} ({pr:.0f}th %ile, n={universe_n})")
     line3 = " · ".join(parts)
 
     block = [line1, line2, line3]

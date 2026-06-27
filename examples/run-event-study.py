@@ -40,6 +40,7 @@ from lib.quant_garage import (
     is_significant,
     resolve_output_format,
     emit_to_stdout,
+    base_rate,
 )
 from lib.quant_garage.timezones import utc_to_et
 
@@ -833,6 +834,75 @@ def build_summary(subjects: list[dict[str, Any]], mode: str) -> dict[str, Any] |
     }
 
 
+# -------- Universe base rate (M10) --------
+
+
+# Mega-cap default universe. Used when --with-base-rate is set without
+# a custom --base-rate-universe, so the live pull stays bounded.
+UNIVERSE_BASE_RATE_DEFAULT = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA",
+    "JPM", "V", "UNH", "WMT", "PG", "MA", "HD", "XOM",
+]
+
+
+def compute_universe_base_rate(
+    event_class: str,
+    universe_tickers: list[str],
+    pull_from: str,
+    pull_to: str,
+    spy_aggs: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Pull recent events for `universe_tickers`, compute the same per-event
+    abnormal-return metrics, and return base-rate stats for each metric.
+
+    Heavy: per ticker this hits the resolver (Benzinga/EDGAR) + daily aggs.
+    Only call when the operator opts in with --with-base-rate.
+    """
+    metric_buckets: dict[str, list[float]] = {
+        "ar_t1_pct": [],
+        "ar_t3_pct": [],
+        "car_t5_pct": [],
+        "post_announce_drift_t3_pct": [],
+        "post_announce_drift_t5_pct": [],
+    }
+    tickers_pulled = 0
+    events_seen = 0
+    for t in universe_tickers:
+        try:
+            evs = RESOLVERS[event_class](t, event_date=None, window=None)
+        except Exception as e:
+            print(f"  base-rate: resolver failed for {t}: {e}", file=sys.stderr)
+            continue
+        if not evs:
+            continue
+        try:
+            ticker_aggs = get_daily_aggs(t, pull_from, pull_to)
+        except Exception as e:
+            print(f"  base-rate: aggs failed for {t}: {e}", file=sys.stderr)
+            continue
+        tickers_pulled += 1
+        for e in evs:
+            res = compute_event_returns(e, ticker_aggs, spy_aggs)
+            ar = res.get("abnormal_returns") or {}
+            for key in metric_buckets:
+                v = ar.get(key)
+                if v is not None:
+                    metric_buckets[key].append(v)
+            events_seen += 1
+
+    if events_seen == 0:
+        return None
+
+    return {
+        "universe_tickers": list(universe_tickers),
+        "n_tickers_with_data": tickers_pulled,
+        "n_events": events_seen,
+        "by_metric": {
+            metric: base_rate(values) for metric, values in metric_buckets.items()
+        },
+    }
+
+
 # -------- Take generation --------
 
 
@@ -1042,6 +1112,44 @@ def render_single(payload: dict[str, Any]) -> str:
             )
         if hist.get("underpowered"):
             lines.append("- Note: prior_n < 8, distribution test is underpowered.")
+        lines.append("")
+
+    # M10: universe base-rate block, when present. Renders the same
+    # CAR / drift metrics across the universe so the single-ticker
+    # numbers above have an anchor.
+    ub = payload.get("universe_base_rate")
+    if ub is not None:
+        lines.append("Universe base rate (same event class)")
+        if ub.get("reason"):
+            hint = ub.get("hint")
+            lines.append(f"- Skipped: {ub['reason']}" + (f". {hint}" if hint else ""))
+        else:
+            n_events = ub.get("n_events", 0)
+            n_tickers = ub.get("n_tickers_with_data", 0)
+            lines.append(
+                f"- Pulled across {n_tickers} tickers, {n_events} events."
+            )
+            by_metric = ub.get("by_metric") or {}
+            ar = subject["abnormal_returns"] or {}
+            metric_labels = [
+                ("ar_t1_pct", "T+1 abnormal"),
+                ("ar_t3_pct", "T+3 abnormal"),
+                ("car_t5_pct", "T+5 CAR"),
+                ("post_announce_drift_t3_pct", "Drift T+1→T+3"),
+                ("post_announce_drift_t5_pct", "Drift T+1→T+5"),
+            ]
+            for key, label in metric_labels:
+                br = by_metric.get(key) or {}
+                if not br or br.get("n", 0) == 0:
+                    continue
+                this_v = ar.get(key)
+                this_s = fmt_signed_pct(this_v) if this_v is not None else "n/a"
+                lines.append(
+                    f"- {label}: this {this_s} · universe median "
+                    f"{fmt_signed_pct(br.get('median'))}, p25 "
+                    f"{fmt_signed_pct(br.get('p25'))}, p75 "
+                    f"{fmt_signed_pct(br.get('p75'))} (n={br.get('n')})"
+                )
         lines.append("")
 
     if payload["tier_caveats"]:
@@ -1359,6 +1467,47 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
             "to_date": window_arg[1],
         }
 
+    # M10: universe base rate for single-name skills. Anchors the
+    # single-ticker reaction in the same event class so the operator
+    # can tell whether +5.2% drift is high or low. Heavy by default
+    # (per-ticker resolver + aggs pull), so opt-in via --with-base-rate.
+    universe_base_rate_block: dict[str, Any] | None = None
+    if mode == "single":
+        if getattr(args, "with_base_rate", False):
+            universe_arg = getattr(args, "base_rate_universe", None)
+            if universe_arg:
+                br_universe = [
+                    t.strip().upper() for t in universe_arg.split(",") if t.strip()
+                ]
+            else:
+                br_universe = list(UNIVERSE_BASE_RATE_DEFAULT)
+            # Exclude the subject ticker itself so the comparison is
+            # against the rest of the universe, not partly itself.
+            subject_ticker = subjects[0]["ticker"] if subjects else None
+            br_universe = [t for t in br_universe if t != subject_ticker]
+            print(
+                f"  base-rate: pulling {event_class} history for "
+                f"{len(br_universe)} universe tickers",
+                file=sys.stderr,
+            )
+            universe_base_rate_block = compute_universe_base_rate(
+                event_class, br_universe, pull_from, pull_to, spy_aggs
+            )
+            if universe_base_rate_block is None:
+                universe_base_rate_block = {
+                    "reason": "live_universe_pull_returned_no_events",
+                }
+        else:
+            universe_base_rate_block = {
+                "reason": "live_universe_pull_disabled",
+                "hint": "pass --with-base-rate to opt in (heavy ~N*4 API calls)",
+            }
+            tier_caveats.append(
+                "Universe base rate omitted (M10). Pass --with-base-rate "
+                "to anchor the single-name metric against a mega-cap "
+                "distribution."
+            )
+
     payload = {
         "mode": mode,
         "tier": tier,
@@ -1368,6 +1517,7 @@ def run(args: argparse.Namespace) -> tuple[dict[str, Any], str]:
         "take": take,
         "subjects": subjects,
         "summary": summary,
+        "universe_base_rate": universe_base_rate_block,
         "window": window_block,
         "sources": list(_sources),
     }
@@ -1398,6 +1548,20 @@ def main() -> None:
                         help="Output markdown path (default: examples/event-study-<mode>-output.md)")
     parser.add_argument("--format", choices=["render", "json", "both"], default=None,
                         help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
+    parser.add_argument(
+        "--with-base-rate",
+        action="store_true",
+        help="Single mode: pull a universe base rate for the same event class "
+             "to anchor the single-name metric. Heavy (~hundreds of API "
+             "calls); off by default per M10.",
+    )
+    parser.add_argument(
+        "--base-rate-universe",
+        type=str,
+        default=None,
+        help="Comma-separated tickers for the base-rate pull. Default: "
+             "15 mega-caps. Only used when --with-base-rate is set.",
+    )
     args = parser.parse_args()
     fmt = resolve_output_format(args.format)
 

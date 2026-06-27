@@ -205,6 +205,35 @@
       "description": "Curated watch items for the print, sourced from prior call commentary and the last 10-Q",
       "items": { "type": "string" }
     },
+    "universe_base_rate": {
+      "type": ["object", "null"],
+      "description": "M10: anchors this single-name print's drift / surprise / reaction metrics against a mega-cap universe distribution. Null when reason='not_implemented_yet' (live universe pull not yet wired into this skill) or 'live_universe_pull_disabled' (operator opted out). When populated, by_metric maps each metric name (post_announce_drift_t5_pct, avg_surprise_eps_pct, next_day_return_pct, etc.) to a base_rate block {n, median, mean, p25, p75}.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": ["not_implemented_yet", "live_universe_pull_disabled", "live_universe_pull_returned_no_events"],
+          "description": "Why the block is null. Forward-compatible: future revisions can wire the live pull and populate by_metric instead."
+        },
+        "hint": { "type": "string" },
+        "universe_tickers": { "type": "array", "items": { "type": "string" } },
+        "n_tickers_with_data": { "type": "integer" },
+        "n_events": { "type": "integer" },
+        "by_metric": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["n"],
+            "properties": {
+              "n": { "type": "integer" },
+              "median": { "type": ["number", "null"] },
+              "mean": { "type": ["number", "null"] },
+              "p25": { "type": ["number", "null"] },
+              "p75": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
     "sources": {
       "type": "array",
       "items": {

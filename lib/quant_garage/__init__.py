@@ -44,6 +44,7 @@ from .annualize import (
     operating_income_annualized,
     da_annualized,
 )
+from .percentile import percentile_rank, format_rank_label, base_rate
 
 __all__ = [
     "MassiveClient",
@@ -75,4 +76,7 @@ __all__ = [
     "operating_income",
     "operating_income_annualized",
     "da_annualized",
+    "percentile_rank",
+    "format_rank_label",
+    "base_rate",
 ]

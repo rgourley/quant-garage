@@ -48,6 +48,8 @@ from lib.quant_garage import (
     resolve_price,
     resolve_output_format,
     emit_to_stdout,
+    percentile_rank,
+    format_rank_label,
 )
 
 
@@ -667,9 +669,25 @@ for tk in TICKERS:
     except Exception as e:
         skipped.append({"ticker": tk, "reason": f"error: {e}"})
 
+# M9: build a run-wide score distribution (every qualifying print across
+# every ticker scanned) so each surfaced print can be ranked against the
+# whole run, not just the top-N. The distribution is captured BEFORE the
+# MAX_PRINTS truncation; otherwise the top score always ranks at 100.
+score_distribution = [p["score"] for p in all_prints if p.get("score") is not None]
+score_universe_n = len(score_distribution)
+
 # Sort by score descending and cap at MAX_PRINTS
 all_prints.sort(key=lambda p: p["score"], reverse=True)
 all_prints = all_prints[:MAX_PRINTS]
+
+# Attach percentile_rank + rank_label per surfaced print
+for _p in all_prints:
+    pr = percentile_rank(_p["score"], score_distribution)
+    _p["percentile_rank"] = pr
+    _p["rank_label"] = format_rank_label(pr)
+    if pr is None:
+        _p["rank_reason"] = "insufficient_universe"
+    _p["score_universe_n"] = score_universe_n
 
 zero_oi_count = sum(1 for p in all_prints if p.get("zero_oi"))
 
@@ -763,6 +781,11 @@ def render_block(p):
         line2_parts.append(nbbo_str)
     if direction != "unknown":
         line2_parts.append(direction.upper())
+    # M9: rank suffix anchors the score against the run-wide distribution.
+    pr = p.get("percentile_rank")
+    universe_n = p.get("score_universe_n") or 0
+    if pr is not None:
+        line2_parts.append(f"{p['rank_label']} ({pr:.0f}th %ile, n={universe_n})")
     line2 = " · ".join(line2_parts)
 
     spot_str = f"spot ${p['spot_at_print']:.2f}" if p["spot_at_print"] else "spot n/a"
