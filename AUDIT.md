@@ -1,34 +1,14 @@
 # Audit status
 
-Active scorecard for the 2026-06-26 deep audit. Closed items live in
-[`AUDIT-LOG.md`](./AUDIT-LOG.md); the original deep review is preserved
-verbatim in `AUDIT-ORIGINAL.md`.
+Active scorecard for the 2026-06-26 deep audit. Closure history with
+commit refs and methodology notes lives in [`AUDIT-LOG.md`](./AUDIT-LOG.md);
+the original deep review is preserved verbatim in `AUDIT-ORIGINAL.md`.
 
-**Tally (as of 2026-06-26):** 45 closed, 2 foundation-addressed, 3
-open. All 12 original Critical items closed. No Medium items remain.
+**Tally (as of 2026-06-26):** 48 of 48 items closed. All 12 original
+Critical items, all 10 High items, all 10 Medium items, all 6 Doc/drift
+items, and all 7 migration findings addressed across 10 sprint waves.
 
-**Legend:**
-
-- `[ ]` Open. Not yet addressed in code.
-- `[~]` Foundation-addressed. The fix exists in `lib/quant_garage/` but
-  hasn't propagated to every script that needs it.
-
----
-
-## Open items
-
-### Doc / code drift
-
-| ID | Affects | Resolution path |
-|---|---|---|
-| D4 `[~]` | massive-api-patterns | Foundation doc still claims wrong snapshot paths; lib + scripts are correct |
-| D6 `[~]` | earnings-drilldown, pitch-comps, options-flow, portfolio-mark, corp-actions | Several scripts still claim documented behavior they don't deliver |
-
-### Findings from the migration (still open)
-
-| ID | Severity | Notes |
-|---|---|---|
-| N2 | Medium | `run-aapl-tier-b.py` uses `lastQuote.p` for spot, bypassing `lastTrade`. `resolve_price()` doesn't cover lastQuote. Decide whether to extend the chain or keep the inline read |
+No open items.
 
 ---
 

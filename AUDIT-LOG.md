@@ -9,7 +9,19 @@ by ID.
 
 ---
 
+## Wave 10 — 2026-06-26 (skill-doc audit + lastQuote inline read)
+
+Commit: `0647af1`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| D4 | massive-api-patterns | Doc claimed a 5-step chain whose first two steps (`snapshot.last.price`, `snapshot.lastTrade.p`) were duplicates, with `last.price` always returning `None` per D5's earlier finding. Doc also omitted the `ticker.` nesting that the actual v2 response uses. Fixed to the canonical 4-step chain matching `lib/quant_garage/snapshot.py::resolve_price` with full key paths (`snapshot.ticker.lastTrade.p`, `…min.c`, `…day.c`, `…prevDay.c`). FMV was incorrectly listed in the v2 waterfall; clarified as Business-tier stream-only, not on v2 REST. Dead links to non-existent `references/{endpoints,error-handling,throttling}.md` removed |
+| D6 | earnings-drilldown, pitch-comps, options-flow, portfolio-mark, corp-actions-reconciler | Per-script SKILL.md audit. **earnings-drilldown:** 1 claim clarified (Tier A peer reaction is a methodology skip due to SIC misclassification; 3 analyses + optional 4th). **pitch-comps:** 4 stale claims (2 EV-math entries from pre-C11 dropped, 2 5-step waterfalls fixed to lib's 4-step). **options-flow:** 2 claims fixed (per-trade `/v3/quotes/{occ}` added; multi-leg conditions widened 232-240 → 232-245 to match `MULTI_LEG_CONDITIONS = range(232, 246)`). **portfolio-mark:** 4 fixes (channel preference order reversed to `T → AM → FMV`, 5-step delayed chain → 4-step, ADV pull retitled from `/v3/reference/tickers` to actual `/v2/aggs/.../range/1/day`, M7's Q-channel parallel subscribe documented). **corp-actions:** 2 fixes (RC/SC/SD/LT/ST dividend routing now described matching C9; "streams findings" claim dropped — single end-of-run report) |
+| N2 | run-aapl-tier-b.py | Decision: keep `lastQuote.p` inline; do NOT extend `resolve_price()` to cover it. 8-line explanatory comment added above the read explaining why (quote-mid is a synthetic estimate from bid/ask, structurally different from a trade print; folding it into the trade-only chain would blur the contract for every other consumer; Tier B keys on quiet names depend on this fresh estimate before the snapshot falls back to a stale day close) |
+
 ## Wave 9 — 2026-06-26 (slippage-cost honest rename)
+
+Commit: `bb6ae00`.
 
 | ID | Affects | Closure notes |
 |---|---|---|
