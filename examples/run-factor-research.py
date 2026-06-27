@@ -306,6 +306,56 @@ _SHARES_FIELDS = (
 )
 
 
+# C11.b-style fallback chains for the fundamentals fields the factor panel
+# consumes. Massive's /vX/reference/financials has documented coverage gaps:
+# many filings populate `net_income_loss` but not `net_income`, or `equity`
+# but not `stockholders_equity` (or vice versa for older filings), and revenue
+# is split between `revenues`, `revenue`, and (for some financial-services
+# names) `net_revenue` / `total_revenue`. Without these chains, the factors
+# silently drop coverage and the IC reflects a non-representative slice.
+#
+# Order matters: preferred field first, last-resort last. Each chain is paired
+# with the balance_sheet / income_statement section it lives in.
+_NET_INCOME_FIELDS = (
+    "net_income_loss",                     # most common in Massive's feed
+    "net_income",                          # canonical GAAP label
+    "net_income_from_continuing_operations",  # fallback when discontinued ops split
+)
+
+_EQUITY_FIELDS = (
+    "equity",                              # most common in Massive's feed
+    "stockholders_equity",                 # canonical GAAP label
+    "total_equity",
+    "common_stockholders_equity",
+)
+
+_REVENUE_FIELDS = (
+    "revenues",                            # most common in Massive's feed
+    "revenue",
+    "total_revenue",
+    "net_revenue",                         # banks / insurance
+)
+
+
+def _pick_from_filing(fin, section, fields):
+    """Walk `fields` in order and return the first non-null float value
+    from `financials.<section>` of one filing. Returns (value, source_field)
+    or (None, None). Negative values are allowed (net_income can be negative);
+    zero is allowed for revenue but not for equity (caller checks).
+    """
+    node = (fin or {}).get(section) or {}
+    for field in fields:
+        sub = node.get(field) or {}
+        v = sub.get("value")
+        if v is None:
+            continue
+        try:
+            return float(v), field
+        except (TypeError, ValueError):
+            continue
+    return None, None
+
+
 def _pick_shares_from_filing(fin):
     """Extract a shares value from one filing's `financials` blob.
     Returns (value, source_field) or (None, None)."""
@@ -339,14 +389,20 @@ def fetch_fundamentals(universe):
         period_of_report_date: ISO date string ('YYYY-MM-DD')
         shares: float or None  (via _SHARES_FIELDS fallback chain)
         shares_source: str or None
-        book_equity: float or None
-        net_income: float or None  (TTM as available from this filing)
+        book_equity: float or None  (via _EQUITY_FIELDS fallback chain)
+        book_equity_source: str or None
+        net_income: float or None  (via _NET_INCOME_FIELDS fallback chain)
+        net_income_source: str or None
+        revenue: float or None  (via _REVENUE_FIELDS fallback chain)
+        revenue_source: str or None
 
     Cache is keyed by ticker; bump the filename when the schema changes
     so a stale single-annual cache from a prior run isn't reused.
     """
     print(f"Pulling point-in-time fundamentals for {len(universe)} names...", file=sys.stderr)
-    cache_path = os.path.join(CACHE_DIR, "fundamentals_pit.json")
+    # v2 cache file: prior v1 had only equity / net_income (no fallback chains,
+    # no revenue, no source tags). Don't reuse it.
+    cache_path = os.path.join(CACHE_DIR, "fundamentals_pit_v2.json")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
             return json.load(f)
@@ -365,17 +421,20 @@ def fetch_fundamentals(universe):
                 if not porp:
                     continue
                 fin = r.get("financials") or {}
-                bs = fin.get("balance_sheet") or {}
-                inc = fin.get("income_statement") or {}
-                equity_node = bs.get("equity") or {}
-                ni_node = inc.get("net_income_loss") or {}
+                equity_val, equity_src = _pick_from_filing(fin, "balance_sheet", _EQUITY_FIELDS)
+                ni_val, ni_src = _pick_from_filing(fin, "income_statement", _NET_INCOME_FIELDS)
+                rev_val, rev_src = _pick_from_filing(fin, "income_statement", _REVENUE_FIELDS)
                 shares_val, shares_source = _pick_shares_from_filing(fin)
                 filings.append({
                     "period_of_report_date": porp,
                     "shares": shares_val,
                     "shares_source": shares_source,
-                    "book_equity": equity_node.get("value"),
-                    "net_income": ni_node.get("value"),
+                    "book_equity": equity_val,
+                    "book_equity_source": equity_src,
+                    "net_income": ni_val,
+                    "net_income_source": ni_src,
+                    "revenue": rev_val,
+                    "revenue_source": rev_src,
                 })
             # Most-recent first (the API returns desc, but be explicit so
             # the lookup helpers can stop at the first hit).
@@ -431,7 +490,17 @@ def _winsorize_series(s, low=0.01, high=0.99):
 
 
 def compute_factor_panel(prices, fundamentals, universe):
-    """Compute monthly factor scores. Returns dict[factor_name] -> DataFrame (month_end x ticker)."""
+    """Compute monthly factor scores. Returns (factors, raw, monthly_idx, coverage).
+
+    `factors` and `raw` are dict[factor_name] -> DataFrame (month_end x ticker).
+    `coverage` is list[dict] (one per rebalance date) capturing universe size,
+    per-factor n_scored / coverage_pct, and per-factor dropped_for_reason
+    counts. Surfaces the silent-failure mode where Massive's sparse financials
+    feed drops names from value / quality / size at every rebalance.
+    """
+    # Size factor needs market_cap metadata from the universe row.
+    mcap_lookup = {u["ticker"]: u.get("market_cap") for u in universe}
+
     # Monthly rebalance dates: last trading day of each month in the price index
     monthly_idx = prices.resample("ME").last().dropna(how="all").index
     print(f"Computing factors over {len(monthly_idx)} monthly rebalance dates...", file=sys.stderr)
@@ -440,9 +509,32 @@ def compute_factor_panel(prices, fundamentals, universe):
     log_ret = np.log(prices / prices.shift(1))
 
     factors = {}
-
-    # Raw (unclamped) values kept for display in the membership block
     raw = {}
+
+    # Per-rebalance coverage diagnostics. Indexed by rebalance date (ISO string).
+    # Each rebalance gets its own dict so we can emit per_rebalance_coverage in
+    # the canonical JSON output. Universe size = columns present in prices at
+    # that rebalance (post continuous-trading filter).
+    coverage_by_date = {}
+    universe_size = len(prices.columns)
+
+    def _init_coverage(t):
+        key = pd.Timestamp(t).strftime("%Y-%m-%d")
+        if key not in coverage_by_date:
+            coverage_by_date[key] = {
+                "rebalance_date": key,
+                "universe_size": universe_size,
+                "factor_coverage": {},
+            }
+        return coverage_by_date[key]
+
+    def _record(t, factor_label, n_scored, dropped_for_reason):
+        c = _init_coverage(t)
+        c["factor_coverage"][factor_label] = {
+            "n_scored": int(n_scored),
+            "coverage_pct": round(n_scored / universe_size, 4) if universe_size else 0.0,
+            "dropped_for_reason": {k: int(v) for k, v in dropped_for_reason.items() if v},
+        }
 
     # Momentum: 12M-1M lookback. At rebalance date t, score = price[t-21] / price[t-252] - 1
     mom_scores, mom_raw = [], []
@@ -451,11 +543,20 @@ def compute_factor_panel(prices, fundamentals, universe):
             t_loc = prices.index.get_loc(t)
         except KeyError:
             continue
+        dropped = defaultdict(int)
         if t_loc < 252:
+            # No name has 12M of history here; record all as dropped and skip
+            _record(t, "momentum", 0, {"insufficient_history": universe_size})
             continue
-        p_recent = prices.iloc[t_loc - 21]  # ~1M back
-        p_far = prices.iloc[t_loc - 252]    # ~12M back
+        p_recent = prices.iloc[t_loc - 21]
+        p_far = prices.iloc[t_loc - 252]
         score = (p_recent / p_far) - 1.0
+        # Count dropped names (missing price 1M or 12M back)
+        n_scored = int(score.notna().sum())
+        n_missing = universe_size - n_scored
+        if n_missing:
+            dropped["missing_price_history"] = n_missing
+        _record(t, "momentum", n_scored, dropped)
         raw_s = score.copy(); raw_s.name = t
         score = _winsorize_series(score)
         score.name = t
@@ -471,11 +572,18 @@ def compute_factor_panel(prices, fundamentals, universe):
             t_loc = prices.index.get_loc(t)
         except KeyError:
             continue
+        dropped = defaultdict(int)
         if t_loc < 252:
+            _record(t, "low_vol", 0, {"insufficient_history": universe_size})
             continue
         window = log_ret.iloc[t_loc - 252:t_loc]
         vol = window.std() * math.sqrt(252)
         score = 1.0 / vol.replace(0, np.nan)
+        n_scored = int(score.notna().sum())
+        n_missing = universe_size - n_scored
+        if n_missing:
+            dropped["insufficient_history"] = n_missing
+        _record(t, "low_vol", n_scored, dropped)
         raw_s = score.copy(); raw_s.name = t
         score = _winsorize_series(score)
         score.name = t
@@ -484,37 +592,87 @@ def compute_factor_panel(prices, fundamentals, universe):
     factors["Low-Vol (1/realiz)"] = pd.DataFrame(lv_scores) if lv_scores else pd.DataFrame()
     raw["Low-Vol (1/realiz)"] = pd.DataFrame(lv_raw) if lv_raw else pd.DataFrame()
 
-    # Value: 1 / (P/B) = book_equity / market_cap, computed POINT-IN-TIME at each rebalance.
-    # C2: prior code did `mc_t = mc_now * (pt / pl)` — today's market cap scaled by the
-    # historical price ratio. That uses today's shares-outstanding (which has been
-    # changed by buybacks and issuance since each rebalance) and is therefore
-    # look-ahead biased. Fix: at each rebalance, pick the most recent filing with
-    # period_of_report_date <= rebalance_date, take historical
-    # weighted_average_diluted_shares_outstanding (with the documented fallback
-    # chain), and compute mcap_t = historical_shares_t * close_at_rebalance.
-    # Tickers with no pre-rebalance filing are dropped for that rebalance only
-    # (typically recent IPOs that hadn't filed yet).
+    # Size: log(market_cap). Negative-rank: smaller mcap scores higher (classic
+    # size factor, "small minus big"). Uses point-in-time mcap = historical
+    # shares × close at rebalance. Same drop semantics as value (missing filing
+    # or missing shares = no score for this name this rebalance).
+    sz_scores, sz_raw = [], []
+    for t in monthly_idx:
+        if t not in prices.index:
+            continue
+        p_t = prices.loc[t]
+        scores = {}
+        dropped = defaultdict(int)
+        for tk in prices.columns:
+            filings = fundamentals.get(tk) or []
+            filing = _latest_filing_before(filings, t)
+            if filing is None:
+                dropped["missing_filing"] += 1
+                continue
+            shares_t = filing.get("shares")
+            pt = p_t.get(tk)
+            if shares_t is None:
+                dropped["missing_shares"] += 1
+                continue
+            if pt is None or not (pt > 0):
+                dropped["missing_price"] += 1
+                continue
+            mcap_t = float(shares_t) * float(pt)
+            if mcap_t <= 0:
+                dropped["non_positive_mcap"] += 1
+                continue
+            # Negate so "smaller cap = higher score" (small-minus-big convention)
+            scores[tk] = -math.log(mcap_t)
+        _record(t, "size", len(scores), dropped)
+        if not scores:
+            continue
+        s = pd.Series(scores)
+        raw_s = s.copy(); raw_s.name = t
+        s = _winsorize_series(s)
+        s.name = t
+        sz_scores.append(s)
+        sz_raw.append(raw_s)
+    factors["Size (-log mcap)"] = pd.DataFrame(sz_scores) if sz_scores else pd.DataFrame()
+    raw["Size (-log mcap)"] = pd.DataFrame(sz_raw) if sz_raw else pd.DataFrame()
+
+    # Value: 1 / (P/B) = book_equity / market_cap, point-in-time at each rebalance.
     val_scores, val_raw = [], []
     for t in monthly_idx:
         if t not in prices.index:
             continue
         p_t = prices.loc[t]
         scores = {}
+        dropped = defaultdict(int)
         for tk in prices.columns:
             filings = fundamentals.get(tk) or []
             filing = _latest_filing_before(filings, t)
             if filing is None:
+                dropped["missing_filing"] += 1
                 continue
             be = filing.get("book_equity")
             shares_t = filing.get("shares")
             pt = p_t.get(tk)
-            if (be is None or shares_t is None or pt is None
-                    or be <= 0 or shares_t <= 0 or not (pt > 0)):
+            if be is None:
+                dropped["missing_equity"] += 1
+                continue
+            if shares_t is None:
+                dropped["missing_shares"] += 1
+                continue
+            if pt is None or not (pt > 0):
+                dropped["missing_price"] += 1
+                continue
+            if be <= 0:
+                dropped["negative_or_zero_equity"] += 1
+                continue
+            if shares_t <= 0:
+                dropped["non_positive_shares"] += 1
                 continue
             mcap_t = float(shares_t) * float(pt)
             if mcap_t <= 0:
+                dropped["non_positive_mcap"] += 1
                 continue
             scores[tk] = float(be) / mcap_t
+        _record(t, "value", len(scores), dropped)
         s = pd.Series(scores)
         raw_s = s.copy(); raw_s.name = t
         s = _winsorize_series(s)
@@ -524,30 +682,36 @@ def compute_factor_panel(prices, fundamentals, universe):
     factors["Value (1/(P/B))"] = pd.DataFrame(val_scores) if val_scores else pd.DataFrame()
     raw["Value (1/(P/B))"] = pd.DataFrame(val_raw) if val_raw else pd.DataFrame()
 
-    # Quality: ROE = net_income / book_equity, computed POINT-IN-TIME at each rebalance.
-    # C4: prior code was `np.tile(quality_now, n_months)` — today's ROE replicated
-    # across every month — which made the "decay" pattern a return-autocorrelation
-    # artifact, not a real signal. Fix: select the most recent pre-rebalance filing
-    # per ticker per month. Same filing-history cache as value; no extra API calls.
+    # Quality: ROE = net_income / book_equity, point-in-time at each rebalance.
     qual_scores, qual_raw = [], []
     for t in monthly_idx:
         scores = {}
+        dropped = defaultdict(int)
         for tk in prices.columns:
             filings = fundamentals.get(tk) or []
             filing = _latest_filing_before(filings, t)
             if filing is None:
+                dropped["missing_filing"] += 1
                 continue
             ni = filing.get("net_income")
             be = filing.get("book_equity")
-            if ni is None or be is None or be <= 0:
+            if ni is None:
+                dropped["missing_net_income"] += 1
+                continue
+            if be is None:
+                dropped["missing_equity"] += 1
+                continue
+            if be <= 0:
+                # Don't default to 0; ROE = NI / 0 explodes. Drop the name.
+                dropped["negative_or_zero_equity"] += 1
                 continue
             roe = float(ni) / float(be)
             # Same +150% / -100% sanity bounds the prior static version used.
-            # Buyback-shrunken equity (CL, MCD historically) produces ROE > 2 that
-            # dominates the cross-sectional rank without any economic meaning.
             if roe > 1.5 or roe < -1.0:
+                dropped["roe_out_of_bounds"] += 1
                 continue
             scores[tk] = roe
+        _record(t, "quality", len(scores), dropped)
         if not scores:
             continue
         s = pd.Series(scores)
@@ -559,7 +723,9 @@ def compute_factor_panel(prices, fundamentals, universe):
     factors["Quality (ROE)"] = pd.DataFrame(qual_scores) if qual_scores else pd.DataFrame()
     raw["Quality (ROE)"] = pd.DataFrame(qual_raw) if qual_raw else pd.DataFrame()
 
-    return factors, raw, monthly_idx
+    # Coverage list ordered by rebalance date
+    coverage = [coverage_by_date[k] for k in sorted(coverage_by_date.keys())]
+    return factors, raw, monthly_idx, coverage
 
 
 # ----- IC, decile, correlation -----
@@ -595,6 +761,12 @@ def compute_ics(factor_df, prices, horizons=(1, 3, 6, 12)):
     helper raises on degenerate inputs (n < 2 or non-positive long-run
     variance); on raise we report None for `t` and `ic_se` but still surface
     the count so the caller can flag "sample too small".
+
+    Returns dict[horizon] -> {ic, t, ic_se, n_months, n_pairs_per_rebalance,
+    ic_series}. `n_pairs_per_rebalance` is a list of {date, n_pairs, ic}
+    surfacing the cross-section size that drove each per-month IC; thin
+    cross-sections (e.g. quality factor with sparse fundamentals) inflate
+    the noise on the aggregated number, and this is what reveals it.
     """
     out = {}
     rebal = factor_df.index
@@ -602,34 +774,62 @@ def compute_ics(factor_df, prices, horizons=(1, 3, 6, 12)):
         fwd = forward_returns(prices, rebal, h)
         common = factor_df.index.intersection(fwd.index)
         ics = []
+        pair_counts = []
         for t in common:
             score = factor_df.loc[t]
             ret = fwd.loc[t]
             mask = score.notna() & ret.notna()
-            if mask.sum() < 30:
+            n_pairs = int(mask.sum())
+            if n_pairs < 30:
+                # Still record the under-min observation so coverage is visible
+                pair_counts.append({
+                    "date": pd.Timestamp(t).strftime("%Y-%m-%d"),
+                    "n_pairs": n_pairs,
+                    "ic": None,
+                })
                 continue
             rho, _ = spearmanr(score[mask], ret[mask])
-            if not math.isnan(rho):
-                ics.append(rho)
+            if math.isnan(rho):
+                pair_counts.append({
+                    "date": pd.Timestamp(t).strftime("%Y-%m-%d"),
+                    "n_pairs": n_pairs,
+                    "ic": None,
+                })
+                continue
+            ics.append(rho)
+            pair_counts.append({
+                "date": pd.Timestamp(t).strftime("%Y-%m-%d"),
+                "n_pairs": n_pairs,
+                "ic": float(rho),
+            })
         n_months = len(ics)
         if n_months < 6:
-            out[h] = {"ic": None, "t": None, "ic_se": None, "n_months": n_months}
+            out[h] = {
+                "ic": None,
+                "t": None,
+                "ic_se": None,
+                "n_months": n_months,
+                "n_pairs_per_rebalance": pair_counts,
+                "ic_series": list(map(float, ics)),
+            }
             continue
         mean_ic = float(np.mean(ics))
-        # Newey-West lag = horizon - 1 covers exactly the overlap horizon.
-        # At h=1 (no overlap), lag=0 reduces to the iid sample SE.
         nw_lag = max(0, h - 1)
-        # Bartlett kernel requires lag < n_months; cap defensively.
         nw_lag = min(nw_lag, n_months - 1)
         try:
             ic_se = float(newey_west_se(ics, lag=nw_lag))
             t_stat = mean_ic / ic_se if ic_se > 0 else None
         except ValueError:
-            # Pathological short series or non-positive long-run variance.
-            # Report None for SE / t-stat rather than crashing the whole run.
             ic_se = None
             t_stat = None
-        out[h] = {"ic": mean_ic, "t": t_stat, "ic_se": ic_se, "n_months": n_months}
+        out[h] = {
+            "ic": mean_ic,
+            "t": t_stat,
+            "ic_se": ic_se,
+            "n_months": n_months,
+            "n_pairs_per_rebalance": pair_counts,
+            "ic_series": list(map(float, ics)),
+        }
     return out
 
 
@@ -902,21 +1102,12 @@ def render(payload):
                 row_cells.append(cell)
             lines.append("    " + "    ".join(c.ljust(20) for c in row_cells))
         lines.append("")
-    # Group of 3 for D10
-    grp = factor_rows[:3]
-    render_group(grp, "top_5_current", "D10")
-    render_group(grp, "bottom_5_current", "D1")
-    # 4th factor as own block
-    if len(factor_rows) > 3:
-        f = factor_rows[3]
-        lines.append(f"    {short_name(f['name']).upper()} (D10)        {short_name(f['name']).upper()} (D1)")
-        top = f.get("top_5_current") or []
-        bot = f.get("bottom_5_current") or []
-        for i in range(max(len(top), len(bot))):
-            t_cell = f"{top[i]['ticker']:<5} {top[i].get('value_display') or ''}" if i < len(top) else ""
-            b_cell = f"{bot[i]['ticker']:<5} {bot[i].get('value_display') or ''}" if i < len(bot) else ""
-            lines.append(f"    {t_cell:<22}{b_cell}")
-        lines.append("")
+    # Render in groups of 3 (D10 then D1 per group). Handles any number of
+    # surviving factors after coverage drops.
+    for start in range(0, len(factor_rows), 3):
+        grp = factor_rows[start:start + 3]
+        render_group(grp, "top_5_current", "D10")
+        render_group(grp, "bottom_5_current", "D1")
 
     # Take
     lines.append(f"Take: {payload['take']}")
@@ -989,6 +1180,10 @@ def main():
                    help="Data source for daily aggregates (auto probes flat-files, falls back to REST)")
     p.add_argument("--format", choices=["render", "json", "both"], default=None,
                    help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
+    p.add_argument("--debug-factor", action="store_true",
+                   help="Dump per-rebalance coverage + per-factor IC raw distribution + "
+                        "Newey-West SE inputs per horizon to stderr. Use to investigate "
+                        "edge-case numbers (thin cross-sections, sparse fundamentals).")
     args = p.parse_args()
     fmt = resolve_output_format(args.format)
 
@@ -1031,11 +1226,43 @@ def main():
     print(f"Fundamentals coverage: {n_with_fund}/{len(universe)}", file=sys.stderr)
 
     # Factors
-    factor_panels, factor_raw, monthly_idx = compute_factor_panel(prices, fundamentals, universe)
+    factor_panels, factor_raw, monthly_idx, per_rebalance_coverage = compute_factor_panel(
+        prices, fundamentals, universe
+    )
+
+    # Threshold pass: per-factor coverage summary. Drops fire BEFORE IC compute
+    # so we don't waste time on factors we'll omit. Caveats are collected for
+    # the payload.
+    coverage_caveats = []
+    dropped_factors = set()
+    for display_name, key in _COVERAGE_KEY.items():
+        any_caveat, all_drop, n_rebal, median_pct, n_below = _summarize_factor_coverage(
+            per_rebalance_coverage, key
+        )
+        if n_rebal == 0:
+            continue
+        if all_drop:
+            dropped_factors.add(display_name)
+            print(
+                f"  {display_name}: ALL rebalances below {_COVERAGE_DROP_PCT*100:.0f}% "
+                f"coverage (median {median_pct*100:.0f}%); omitting from IC summary.",
+                file=sys.stderr,
+            )
+            continue
+        if any_caveat:
+            short = short_name(display_name)
+            coverage_caveats.append(
+                f"{short} factor coverage fell below {int(_COVERAGE_CAVEAT_PCT*100)}% "
+                f"on {n_below} of {n_rebal} rebalances (median coverage "
+                f"{int(round(median_pct*100))}%). {short} IC numbers reflect only the "
+                f"subset of names with valid inputs; see per_rebalance_coverage for breakdown."
+            )
 
     # IC + decile per factor
     factor_results = []
     for name, df in factor_panels.items():
+        if name in dropped_factors:
+            continue
         if df.empty:
             print(f"  {name}: empty panel, skipping", file=sys.stderr)
             continue
@@ -1071,6 +1298,15 @@ def main():
             "n_months_3m": ics[3]["n_months"],
             "n_months_6m": ics[6]["n_months"],
             "n_months_12m": ics[12]["n_months"],
+            # Per-horizon per-rebalance pair counts so consumers can see when
+            # a thin cross-section (e.g. quality with sparse fundamentals)
+            # is driving an aggregated IC number.
+            "n_pairs_per_rebalance": {
+                "1m": ics[1]["n_pairs_per_rebalance"],
+                "3m": ics[3]["n_pairs_per_rebalance"],
+                "6m": ics[6]["n_pairs_per_rebalance"],
+                "12m": ics[12]["n_pairs_per_rebalance"],
+            },
             "decile_spread_1m": ds_1m,
             "decile_spread_3m": ds_3m,
             "decile_spread_12m": ds_12m,
@@ -1084,8 +1320,26 @@ def main():
             file=sys.stderr,
         )
 
-    # Correlation matrix on signals
-    corr_names, corr_matrix = compute_signal_correlation(factor_panels)
+    # n_months < 6 caveat per factor per horizon. Newey-West HAC on a 3-rebalance
+    # series isn't inference, it's optimism. Surface so consumers don't read
+    # a t-stat that's a sample-size artifact.
+    sample_caveats = []
+    for fr in factor_results:
+        thin_horizons = []
+        for h_label in ("1m", "3m", "6m", "12m"):
+            nm = fr.get(f"n_months_{h_label}", 0) or 0
+            if 0 < nm < 6:
+                thin_horizons.append(f"{h_label} (n_months={nm})")
+        if thin_horizons:
+            sample_caveats.append(
+                f"{short_name(fr['name'])} IC t-stat from too few rebalance periods at: "
+                + ", ".join(thin_horizons)
+                + ". Sample too small for stable Newey-West inference."
+            )
+
+    # Correlation matrix on signals (only on factors that survived the drop threshold)
+    surviving_panels = {k: v for k, v in factor_panels.items() if k not in dropped_factors}
+    corr_names, corr_matrix = compute_signal_correlation(surviving_panels)
 
     # Take
     take = build_take(factor_results, corr_matrix, corr_names)
@@ -1118,26 +1372,36 @@ def main():
         "reconstruct the universe per period; queued as a clean PR extension."
     )
 
+    base_caveats = [
+        f"Interface used: {interface_used}",
+        "Value and quality factors use point-in-time fundamentals: at each "
+        "rebalance, the most recent quarterly filing with "
+        "period_of_report_date <= rebalance_date drives shares-outstanding, "
+        "book_equity, and net_income. Tickers without a pre-rebalance filing "
+        "are excluded from the cross-section for that month only.",
+        "IC t-stats use Newey-West HAC standard errors with lag = horizon - 1 "
+        "months to correct for the overlap induced by k-month forward returns "
+        "on a monthly rebalance. ic_se_<h>m and n_months_<h>m emitted per "
+        "factor per horizon.",
+        "Fundamentals fields use C11.b-style fallback chains: net_income → "
+        "(net_income_loss, net_income, net_income_from_continuing_operations); "
+        "book_equity → (equity, stockholders_equity, total_equity, "
+        "common_stockholders_equity); revenue → (revenues, revenue, "
+        "total_revenue, net_revenue). Missing required inputs drop the name "
+        "from THAT factor's cross-section only; other factors retain it.",
+    ]
+    if dropped_factors:
+        base_caveats.append(
+            "Factors omitted from IC summary due to <"
+            f"{int(_COVERAGE_DROP_PCT*100)}% coverage on ALL rebalances: "
+            + ", ".join(sorted(short_name(d) for d in dropped_factors))
+            + ". Publishing IC on the surviving slice would misrepresent "
+            "the full universe."
+        )
+
     payload = {
         "tier": "A",
-        "tier_caveats": [
-            f"Interface used: {interface_used}",
-            # C2/C4: prior caveat that fundamentals were a single most-recent annual
-            # filing is no longer true. Per-rebalance quarterly filings now drive
-            # value (historical mcap from weighted-diluted shares) and quality
-            # (historical ROE). Tickers without a pre-rebalance filing are dropped
-            # from the cross-section at that rebalance only.
-            "Value and quality factors use point-in-time fundamentals: at each "
-            "rebalance, the most recent quarterly filing with "
-            "period_of_report_date <= rebalance_date drives shares-outstanding, "
-            "book_equity, and net_income. Tickers without a pre-rebalance filing "
-            "are excluded from the cross-section for that month only.",
-            # C3: prior caveat omitted SE inflation entirely. State the convention.
-            "IC t-stats use Newey-West HAC standard errors with lag = horizon - 1 "
-            "months to correct for the overlap induced by k-month forward returns "
-            "on a monthly rebalance. ic_se_<h>m and n_months_<h>m emitted per "
-            "factor per horizon.",
-        ],
+        "tier_caveats": base_caveats + coverage_caveats + sample_caveats,
         "mode": "table",
         "run_at": run_at,
         "universe_definition": {
@@ -1155,9 +1419,39 @@ def main():
             "matrix": [[round(v, 4) for v in row] for row in corr_matrix],
         },
         "factor_returns_sector_neutral": None,
+        "per_rebalance_coverage": per_rebalance_coverage,
+        "dropped_factors": sorted(dropped_factors),
+        "coverage_thresholds": {
+            "caveat_pct": _COVERAGE_CAVEAT_PCT,
+            "drop_pct": _COVERAGE_DROP_PCT,
+        },
         "take": take,
         "sources": sources,
     }
+
+    if args.debug_factor:
+        print("\n[--debug-factor] per_rebalance_coverage:", file=sys.stderr)
+        print(json.dumps(per_rebalance_coverage, indent=2, default=str), file=sys.stderr)
+        print("\n[--debug-factor] per-factor IC raw distribution + NW SE inputs:", file=sys.stderr)
+        for fr in factor_results:
+            print(f"\n  factor: {fr['name']}", file=sys.stderr)
+            for h_label in ("1m", "3m", "6m", "12m"):
+                pairs = fr["n_pairs_per_rebalance"][h_label]
+                ic = fr.get(f"ic_{h_label}")
+                ic_se = fr.get(f"ic_se_{h_label}")
+                t = fr.get(f"ic_tstat_{h_label}")
+                n_m = fr.get(f"n_months_{h_label}")
+                print(
+                    f"    horizon={h_label}: ic={ic}, se={ic_se}, t={t}, "
+                    f"n_months={n_m}, n_rebalances_with_pairs={len(pairs)}",
+                    file=sys.stderr,
+                )
+                # Compact per-rebalance pair-count + IC trace
+                for p in pairs:
+                    print(
+                        f"      {p['date']}: n_pairs={p['n_pairs']}, ic={p['ic']}",
+                        file=sys.stderr,
+                    )
 
     rendered = render(payload)
 
@@ -1187,10 +1481,54 @@ def _definition_for(name):
     if "Value" in name:
         return "1 / (P/B) = book_equity / market_cap (higher = cheaper)"
     if "Quality" in name:
-        return "ROE = net_income_ttm / shareholders_equity (latest annual)"
+        return "ROE = net_income / book_equity (point-in-time per rebalance)"
     if "Low-Vol" in name:
         return "1 / realized_vol_252d (annualized stdev of daily log returns)"
+    if "Size" in name:
+        return "-log(market_cap) (small-minus-big; smaller cap ranks higher)"
     return ""
+
+
+# Map factor display name -> snake_case key used in per_rebalance_coverage.
+# Kept central so the rendering / threshold-check code can look up coverage
+# for any factor without baking the string transformation in two places.
+_COVERAGE_KEY = {
+    "Momentum (12-1M)": "momentum",
+    "Low-Vol (1/realiz)": "low_vol",
+    "Size (-log mcap)": "size",
+    "Value (1/(P/B))": "value",
+    "Quality (ROE)": "quality",
+}
+
+
+# Minimum coverage thresholds. Below CAVEAT_PCT we surface a tier_caveat;
+# below DROP_PCT on *every* rebalance we omit the factor from IC summary.
+#
+# Drop threshold sits at 10% rather than 30%: the spec's intent is "n=30 of
+# an intended n=400 is misleading enough to omit," which is 7.5%. Keeping
+# the drop floor close to that and letting CAVEAT_PCT (50%) carry the
+# middle band gives a richer middle: factors at 15-49% coverage stay in
+# with a loud caveat, only near-empty factors get omitted entirely.
+_COVERAGE_CAVEAT_PCT = 0.50
+_COVERAGE_DROP_PCT = 0.10
+
+
+def _summarize_factor_coverage(coverage, factor_key):
+    """Return (any_below_caveat, all_below_drop, n_rebal, median_pct,
+    n_below_caveat). Walks per-rebalance coverage and aggregates."""
+    pcts = []
+    for c in coverage:
+        fc = c.get("factor_coverage", {}).get(factor_key)
+        if fc is None:
+            continue
+        pcts.append(fc["coverage_pct"])
+    if not pcts:
+        return False, False, 0, None, 0
+    n_below_caveat = sum(1 for p in pcts if p < _COVERAGE_CAVEAT_PCT)
+    any_below_caveat = n_below_caveat > 0
+    all_below_drop = all(p < _COVERAGE_DROP_PCT for p in pcts)
+    median_pct = float(np.median(pcts))
+    return any_below_caveat, all_below_drop, len(pcts), median_pct, n_below_caveat
 
 
 if __name__ == "__main__":
