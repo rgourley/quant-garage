@@ -54,7 +54,7 @@ isn't a better LLM. The fix is wrapping the LLM in a workflow that's
 grounded in real data with the methodology baked in.
 
 That's what each tool here does. It pulls live market data from the
-Massive API (Polygon.io's new name), runs the actual analyst workflow,
+Massive API, runs the actual analyst workflow,
 and returns a result you can trace back to the calls it made and the
 timestamps it made them at. No guesses. No hallucinated peer baskets.
 
@@ -254,7 +254,7 @@ percentile of trailing year, setup-watch day not entry day").
 
 ## What to sign up for
 
-Use **Massive** (formerly Polygon.io). It's the API quant-garage is
+Use **Massive**. It's the API quant-garage is
 built against and the one we recommend you run the tools on. Get a key
 at [massive.com/pricing](https://massive.com/pricing).
 
