@@ -23,7 +23,7 @@ The S3 bucket lives at `s3://flatfiles/`. Endpoint is
 
 **Credentials are NOT the REST API key.** Flat files use S3-compatible
 auth with a **separate access key ID and secret access key** that you
-generate in your Massive/Polygon dashboard under the Flat Files section.
+generate in your Massive dashboard under the Flat Files section.
 These two values are distinct from each other AND distinct from the
 REST API key you use for `api.polygon.io`. A common misconfiguration is
 to hardcode the REST API key as both `aws_access_key_id` and
@@ -55,8 +55,8 @@ should normalize.
 ```bash
 # These are the S3 keys from the Flat Files section of the dashboard,
 # NOT the REST API key. They're two distinct values.
-aws configure set aws_access_key_id ${POLYGON_S3_ACCESS_KEY} --profile massive
-aws configure set aws_secret_access_key ${POLYGON_S3_SECRET_KEY} --profile massive
+aws configure set aws_access_key_id ${MASSIVE_S3_ACCESS_KEY} --profile massive
+aws configure set aws_secret_access_key ${MASSIVE_S3_SECRET_KEY} --profile massive
 aws configure set endpoint_url https://files.polygon.io --profile massive
 
 aws s3 ls s3://flatfiles/us_stocks_sip/day_aggs_v1/2026/06/ --profile massive
@@ -101,8 +101,8 @@ df = pd.read_csv(
     storage_options={
         # Dedicated S3 credentials from the Flat Files dashboard panel,
         # not the REST API key.
-        "key": os.environ["POLYGON_S3_ACCESS_KEY"],
-        "secret": os.environ["POLYGON_S3_SECRET_KEY"],
+        "key": os.environ["MASSIVE_S3_ACCESS_KEY"],
+        "secret": os.environ["MASSIVE_S3_SECRET_KEY"],
         "client_kwargs": {"endpoint_url": "https://files.polygon.io"},
     },
 )
