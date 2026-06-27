@@ -23,7 +23,6 @@ import csv
 import json
 import os
 import sys
-import urllib.parse
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 
@@ -117,42 +116,54 @@ def probe_quote_data(ticker):
 
 def fetch_nbbo_at(ticker, ts_dt):
     """
-    Tier A: pull NBBO ticks straddling ts_dt. Return the most recent
-    quote at or before ts_dt as (bid, ask, quote_ts_iso, endpoint).
+    Tier A: pull the real NBBO at the trade timestamp from /v3/quotes
+    using `timestamp.lte={fill_ns}&order=desc&limit=1` (M2). Return
+    (bid, ask, quote_ts_iso, endpoint).
+
+    Primary query is the literal audit spec: most recent quote at or
+    before the fill timestamp. If the single-row response is empty
+    (thin-quote names where the latest quote is older than the
+    default API window), retry with a 60-second backstop window so
+    the comparison still has a reference quote.
     """
-    ts_iso = ts_dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    # Window: 10s before, 2s after. Thin names may not quote every second;
-    # 10s lookback finds the most recent inside quote that was active at fill time.
-    ts_minus = (ts_dt - timedelta(seconds=10)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
-    ts_plus = (ts_dt + timedelta(seconds=2)).astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    fill_ns = int(ts_dt.timestamp() * 1_000_000_000)
     path = (
         f"/v3/quotes/{ticker}"
-        f"?timestamp.gte={urllib.parse.quote(ts_minus)}"
-        f"&timestamp.lte={urllib.parse.quote(ts_plus)}"
-        f"&order=desc&sort=timestamp&limit=50"
+        f"?timestamp.lte={fill_ns}"
+        f"&order=desc&sort=timestamp&limit=1"
     )
     doc, status = fetch(path)
-    if status != 200:
-        return None, None, None, path
-    fill_ns = int(ts_dt.timestamp() * 1_000_000_000)
     chosen = None
-    for q in doc.get("results", []) or []:
-        sip_ts = q.get("sip_timestamp") or q.get("participant_timestamp")
-        if sip_ts is None:
-            continue
-        if sip_ts <= fill_ns:
-            chosen = q
-            break
+    if status == 200:
+        results = doc.get("results", []) or []
+        if results:
+            chosen = results[0]
+
     if chosen is None:
-        # No quote at or before fill time; take the closest one
+        # Backstop: widen the lookback to 60 seconds. Some thin names
+        # don't quote every second; without this, fetch_nbbo_at can
+        # return None for fills that did have a stale-but-real NBBO.
+        ts_minus_ns = fill_ns - 60 * 1_000_000_000
+        path = (
+            f"/v3/quotes/{ticker}"
+            f"?timestamp.gte={ts_minus_ns}"
+            f"&timestamp.lte={fill_ns}"
+            f"&order=desc&sort=timestamp&limit=1"
+        )
+        doc, status = fetch(path)
+        if status != 200:
+            return None, None, None, path
         results = doc.get("results", []) or []
         if not results:
             return None, None, None, path
-        chosen = results[-1]
+        chosen = results[0]
+
     bid = chosen.get("bid_price")
     ask = chosen.get("ask_price")
     sip_ns = chosen.get("sip_timestamp") or chosen.get("participant_timestamp")
-    qts = datetime.fromtimestamp(sip_ns / 1_000_000_000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
+    qts = None
+    if sip_ns:
+        qts = datetime.fromtimestamp(sip_ns / 1_000_000_000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
     return bid, ask, qts, path
 
 
@@ -329,30 +340,51 @@ def process_fill(fill, tier, sources):
         sources.append({"endpoint": abs_url(apath), "fetched_at": now_iso(), "ticker": ticker})
     adverse = signed_adverse(side, fill_price, final_price)
 
-    # Apply flag categories
+    # Apply flag categories.
+    #
+    # NBBO bucket assignment is mutually exclusive (M1). Each fill lands in
+    # exactly ONE of:
+    #   1. crossed_spread  -- worst case: BUY > ask + 20bps, SELL < bid - 20bps
+    #                         (paid through the inside by a material amount)
+    #   2. off_nbbo        -- outside NBBO but not crossed by enough to be
+    #                         a "paid through" violation: 0 < slip <= 20bps
+    #                         and printed outside the inside
+    #   3. on_nbbo         -- printed at or inside the NBBO band; no violation
+    #
+    # Priority order: crossed_spread > off_nbbo > on_nbbo. Bucket
+    # percentages sum to 100% of fills that had a usable reference quote.
+    # The other reasons (wide_spread_at_fill, high_vwap_slippage,
+    # adverse_selection) are independent context flags and may co-occur.
     reasons = []
-    if slip is not None and slip > 0:
+    nbbo_bucket = None
+    outside_nbbo = (
+        (side == "BUY" and ask is not None and fill_price > ask)
+        or (side == "SELL" and bid is not None and fill_price < bid)
+    )
+    if slip is not None and outside_nbbo and slip > 20:
+        nbbo_bucket = "crossed_spread"
         reasons.append("crossed_spread")
+    elif slip is not None and outside_nbbo and slip > 0:
+        nbbo_bucket = "off_nbbo_buy" if side == "BUY" else "off_nbbo_sell"
+        reasons.append(nbbo_bucket)
+    elif bid is not None and ask is not None:
+        nbbo_bucket = "on_nbbo"
+        # Not appended to `reasons` -- on_nbbo is the clean bucket and
+        # does not by itself flag a fill. Tracked separately for the
+        # 100%-sum invariant in the summary.
+
     if spread is not None and spread > WIDE_SPREAD_BPS:
         reasons.append("wide_spread_at_fill")
-    # Off-NBBO: fill outside the inside by a meaningful amount.
-    # Crossed-spread already captures "paid through the spread";
-    # off_nbbo is the stronger statement that the print landed
-    # outside the NBBO band by enough that it's an investigation,
-    # not just a routing miss. Threshold: 20bps beyond inside.
-    if side == "BUY" and ask is not None and fill_price > ask:
-        if slip is not None and slip > 20:
-            reasons.append("off_nbbo_buy")
-    if side == "SELL" and bid is not None and fill_price < bid:
-        if slip is not None and slip > 20:
-            reasons.append("off_nbbo_sell")
     if vslip is not None and vslip > HIGH_VWAP_SLIPPAGE_BPS:
         reasons.append("high_vwap_slippage")
     if adverse is not None and adverse > ADVERSE_SELECTION_BPS:
         reasons.append("adverse_selection")
 
     if not reasons:
-        return None
+        # Return the NBBO bucket so main() can tally the 100%-sum
+        # crossed_spread / off_nbbo / on_nbbo distribution across all fills,
+        # not just flagged ones. Caller checks the `flagged` flag.
+        return {"flagged": False, "nbbo_bucket": nbbo_bucket}
 
     impl_shortfall = 0.0
     if slip is not None:
@@ -361,6 +393,8 @@ def process_fill(fill, tier, sources):
     suggest = suggest_action(reasons, slip, vslip, adverse, spread)
 
     return {
+        "flagged": True,
+        "nbbo_bucket": nbbo_bucket,
         "ticker": ticker,
         "side": side,
         "qty": qty,
@@ -461,7 +495,10 @@ def render(payload):
             "Note: /v3/quotes returned 403 on this key; falling back to 1-second"
         )
         out.append(
-            "aggregate band as NBBO proxy. Off-NBBO calls are a lower bound on this tier."
+            "aggregate band as NBBO proxy. Bias: under-counts off-NBBO and"
+        )
+        out.append(
+            "crossed_spread, over-counts on-NBBO (off-NBBO is a lower bound)."
         )
 
     if flagged_count == 0:
@@ -551,18 +588,35 @@ def render(payload):
         f"${s['total_implementation_shortfall_usd']:,.0f} across all flagged fills"
     )
 
+    # NBBO bucket distribution (M1): mutually exclusive, sums to 100%.
+    pct = s.get("nbbo_bucket_pct") or {}
+    if pct:
+        out.append("")
+        out.append(
+            f"NBBO bucket distribution ({s['nbbo_bucket_total']} fills with reference quote)"
+        )
+        out.append(f"- crossed_spread: {pct.get('crossed_spread', 0.0):.1f}%")
+        out.append(f"- off_nbbo:       {pct.get('off_nbbo', 0.0):.1f}%")
+        out.append(f"- on_nbbo:        {pct.get('on_nbbo', 0.0):.1f}%")
+
     if payload["tier"] == "B":
         out.append("")
         out.append(
-            "Methodology note: Tier B uses 1-second aggregate bars as the NBBO proxy."
+            "Methodology note: Tier B uses 1-second aggregate bars (bar.l / bar.h)"
         )
         out.append(
-            "Off-NBBO counts are a lower bound. For a Reg NMS compliance review,"
+            "as the NBBO band proxy. Bias direction: the 1s band is wider than"
         )
         out.append(
-            "upgrade to Stocks Developer (entitles /v3/quotes) or use flat-files"
+            "the instantaneous NBBO, so off-NBBO and crossed_spread counts are"
         )
-        out.append("quotes_v1 for the day.")
+        out.append(
+            "UNDER-counted (lower bound) and on_nbbo is OVER-counted. For Reg NMS"
+        )
+        out.append(
+            "review, upgrade to Stocks Developer (entitles /v3/quotes) or use the"
+        )
+        out.append("flat-files quotes_v1 export for the day.")
 
     return "\n".join(out) + "\n"
 
@@ -589,6 +643,10 @@ def main():
 
     sources = []
     flagged = []
+    # nbbo_buckets tallies every fill (flagged or not) that had a usable
+    # reference quote into exactly one of crossed_spread / off_nbbo / on_nbbo.
+    # Used for the 100%-sum invariant in the rendered summary (M1).
+    nbbo_buckets = defaultdict(int)
     for i, fill in enumerate(fills, 1):
         print(f"  [{i}/{len(fills)}] {fill['ticker']} {fill['side']} {fill['qty']}@{fill['price']}", file=sys.stderr)
         try:
@@ -596,7 +654,14 @@ def main():
         except Exception as e:
             print(f"    ERROR: {e}", file=sys.stderr)
             continue
-        if result:
+        if result is None:
+            continue
+        bucket = result.get("nbbo_bucket")
+        if bucket == "off_nbbo_buy" or bucket == "off_nbbo_sell":
+            nbbo_buckets["off_nbbo"] += 1
+        elif bucket:
+            nbbo_buckets[bucket] += 1
+        if result.get("flagged"):
             flagged.append(result)
             print(f"    FLAG: {', '.join(result['reasons'])}", file=sys.stderr)
 
@@ -611,6 +676,21 @@ def main():
     avg_crossed = round(sum(crossed_bps) / len(crossed_bps), 2) if crossed_bps else None
     total_shortfall = round(sum(f["implementation_shortfall_usd"] for f in flagged), 2)
 
+    # NBBO bucket distribution as percentages of fills with a reference quote.
+    # M1 invariant: these must sum to 100%.
+    nbbo_total = sum(nbbo_buckets.values())
+    nbbo_pct = {}
+    if nbbo_total > 0:
+        nbbo_pct = {
+            "crossed_spread": round(nbbo_buckets.get("crossed_spread", 0) / nbbo_total * 100, 1),
+            "off_nbbo": round(nbbo_buckets.get("off_nbbo", 0) / nbbo_total * 100, 1),
+            "on_nbbo": round(nbbo_buckets.get("on_nbbo", 0) / nbbo_total * 100, 1),
+        }
+        # Snap rounding drift onto on_nbbo so the three values sum to 100.0.
+        drift = round(100.0 - sum(nbbo_pct.values()), 1)
+        if drift:
+            nbbo_pct["on_nbbo"] = round(nbbo_pct["on_nbbo"] + drift, 1)
+
     # Take line
     if not flagged:
         take = f"No breaks across {len(fills)} fills · clean session"
@@ -620,6 +700,31 @@ def main():
             f"{len(flagged)} of {len(fills)} fills flagged · "
             f"${total_shortfall:,.0f} implementation shortfall · "
             f"{dominant.replace('_', '-')} is the dominant cost driver"
+        )
+
+    # Tier caveats: per-tier NBBO source and bias direction (M2).
+    # Tier A pulls real NBBO ticks per trade timestamp from /v3/quotes
+    # (timestamp.lte={ns}&order=desc&limit=1 semantics, via a small
+    # straddle window to handle thin-quote names). No NBBO proxy bias.
+    # Tier B uses 1-second aggregate bars (bar.l / bar.h) as the NBBO
+    # band proxy. The band is wider than the instantaneous NBBO because
+    # it covers a whole second of quote churn, so trades that printed
+    # outside the instantaneous NBBO can fall inside the bar's [low, high]
+    # range. Net effect: Tier B UNDER-COUNTS off-NBBO and over-counts
+    # on-NBBO.
+    if tier == "A":
+        tier_caveats = (
+            "NBBO sourced from /v3/quotes per trade timestamp "
+            "(timestamp.lte={trade_ts_ns}&order=desc); no NBBO proxy bias."
+        )
+    else:
+        tier_caveats = (
+            "NBBO inferred from 1-second aggregate bars (bar.l / bar.h) "
+            "because /v3/quotes returned 403 on this key. The 1s band is "
+            "wider than the instantaneous NBBO, so trades that printed "
+            "outside the instantaneous NBBO can fall inside the bar range. "
+            "Bias direction: under-counts off-NBBO and crossed_spread, "
+            "over-counts on-NBBO (off-NBBO percentage is a lower bound)."
         )
 
     timestamps = [f["timestamp"] for f in fills]
@@ -641,8 +746,12 @@ def main():
             "avg_crossed_spread_bps": avg_crossed,
             "total_implementation_shortfall_usd": total_shortfall,
             "break_rate_pct": round(len(flagged) / len(fills) * 100, 1),
+            "nbbo_bucket_counts": dict(nbbo_buckets),
+            "nbbo_bucket_pct": nbbo_pct,
+            "nbbo_bucket_total": nbbo_total,
         },
         "quote_source": quote_source,
+        "tier_caveats": tier_caveats,
         "take": take,
         "sources": dedupe_sources(sources),
     }
