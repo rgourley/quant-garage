@@ -9,6 +9,15 @@ by ID.
 
 ---
 
+## Wave 5 — 2026-06-26 (crypto-vol-scanner + news-scanner)
+
+Commits: `ac4b2a2` (H7), `71f68a7` (H8).
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| H7 | crypto-vol-scanner | Four bugs in one file. (a) `RV_WINDOW_BARS = 24` constant; `rv_24h` slices `hourly_closes_completed[-(RV_WINDOW_BARS+1):]` so the window is fixed not rolling. (b) `MIN_BARS_24H = 20`; under-sampled coins emit `realized_vol_24h_pct=None` + `realized_vol_reason="insufficient_bars"`. (c) New `completed_hourly_closes(hourly_aggs, now_utc)` drops the current incomplete bar; both 24h and 30d distributions consume the filtered list so neither drifts with run time. (d) Each event carries `realized_vol_n_bars` and `realized_vol_reason`; run-level `insufficient_bars_count` in summary. 20-of-24 (~83%) is consistent with the existing 30-day window's ≥5-returns floor |
+| H8 | news-scanner | Two related bugs. (a) `find_first_bar_at_or_after()` replaces the contains-publish-ts lookup; reaction now anchors to the first bar with `t >= publish_ts` within a 24h forward cap, emitting `reaction_anchor_offset_seconds`. No bar within window → `reason="no_bar_after_publish"`, drop event, bump `skipped_no_bar_count`. (b) Baseline fetch widened from 6 calendar days to 12 (`BASELINE_FETCH_CALENDAR_DAYS = 12`) — covers holiday-heavy weeks (Thanksgiving / July 4 / MLK / Memorial Day) without paying for excess history. Dedup by ET trading date so `n_baseline_days` is real trading-day count; <5 → `reason="insufficient_baseline"`, drop event, bump `insufficient_baseline_count`. Skipped events surface in `payload.skipped_events[]` with full context |
+
 ## Wave 4 — 2026-06-26 (quick-win cluster)
 
 Commit: `cd5fc5e`.
