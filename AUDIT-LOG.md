@@ -9,6 +9,18 @@ by ID.
 
 ---
 
+## Wave 7 — 2026-06-26 (best-ex + corp-actions + portfolio-mark)
+
+Commits: `7688094` (M1+M2), `54550ef` (M3+M4), `7682ce8` (M7).
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| M1 | best-ex-check | Three mutually exclusive buckets: `crossed_spread` (outside NBBO + slip > 20bps) > `off_nbbo` (outside NBBO + 0 < slip <= 20bps) > `on_nbbo` (at or inside the inside). Prior logic had no `on_nbbo` bucket at all; a fill 50bps past the ask got both `crossed_spread` and `off_nbbo` labels. Distribution now sums to 100% across the full population, not just breaks |
+| M2 | best-ex-check | Tier A switched to per-fill `/v3/quotes?timestamp.lte={fill_ns}&order=desc&limit=1` with a 60-second backstop window for thin-quote names. Tier B (no quotes entitlement) keeps 1-second aggregate bars as proxy; bias direction documented in `tier_caveats` field and rendered footer: **under-counts off-NBBO and crossed_spread, over-counts on-NBBO** because the 1s band is wider than the instantaneous NBBO |
+| M3 | corp-actions-reconciler | One consolidated record per ticker. Top-level `initial_shares` / `initial_cost_basis` / `final_shares` / `final_cost_basis` / `delta_shares` plus a chronological `adjustments[]` array and `break_state` (`'reconciled'`/`'partial'`/`'unknown_type'`). Spinoff subsidiary positions each get their own consolidated record. Rendered `BREAK N:` block now shows an adjustments timeline instead of N separate entries |
+| M4 | corp-actions-reconciler | `SHARE_TOLERANCE = 1e-6` constant; `shares_equal(a, b)` helper wraps `math.isclose(..., abs_tol=SHARE_TOLERANCE)`. 4 call sites swapped (apply_split CIL, apply_dividend SD/LT CIL, apply_spinoff subsidiary CIL, main share_break compare). Basis comparison left at the existing cent tolerance. Eliminates spurious "break" flags from float drift after successive split-adjust multiplications |
+| M7 | portfolio-mark | LiveRunner subscribes to the `Q.` quote channel in parallel with `T`/`AM`/`FMV`; `_handle_quote()` writes bid, ask, quote_as_of_utc, quote_count to per-symbol state. Prior unconditional `snapshot_mark(sym)` at line 740 (REST round-trip even when stream had the mark) is gone. 5-second startup grace (`STREAM_STARTUP_GRACE_SECONDS`); on grace exhaustion a single REST snapshot fallback runs and tags `mark_source = "snapshot.last_quote"`. New mark_source values: `stream.last_quote`, `snapshot.last_quote`. Inverted/zero quotes rejected. Delayed mode unchanged |
+
 ## Wave 6 — 2026-06-26 (pitch-comps OLS + shared annualization)
 
 Commit: `9809e55`.

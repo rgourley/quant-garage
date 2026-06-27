@@ -4,7 +4,7 @@ Active scorecard for the 2026-06-26 deep audit. Closed items live in
 [`AUDIT-LOG.md`](./AUDIT-LOG.md); the original deep review is preserved
 verbatim in `AUDIT-ORIGINAL.md`.
 
-**Tally (as of 2026-06-26):** 37 closed, 2 foundation-addressed, 11
+**Tally (as of 2026-06-26):** 42 closed, 2 foundation-addressed, 6
 open. All 12 original Critical items closed.
 
 **Legend:**
@@ -27,11 +27,6 @@ open. All 12 original Critical items closed.
 
 | ID | Affects | Resolution path |
 |---|---|---|
-| M1 | best-ex-check | Make off_nbbo exclusive of crossed_spread bucket |
-| M2 | best-ex-check | Use quotes endpoint for NBBO proxy; doc the bias direction correctly |
-| M3 | corp-actions-reconciler | One consolidated break with final state per ticker |
-| M4 | corp-actions-reconciler | Tolerance compare on fractional shares |
-| M7 | portfolio-mark | Use streamed quote in live mode; skip REST round-trip |
 | M9 | options-flow, crypto-vol-scanner, news-scanner | Add percentile/base-rate context on composite scores |
 | M10 | earnings-drilldown, event-study (single mode) | Universe base rate for single-name skills |
 
