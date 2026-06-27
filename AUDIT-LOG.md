@@ -9,6 +9,15 @@ by ID.
 
 ---
 
+## Wave 8 — 2026-06-26 (percentile rank + universe base rate)
+
+Commit: `ada407f`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| M9 | options-flow, crypto-vol-scanner, news-scanner | New `lib/quant_garage/percentile.py` with `percentile_rank` (mean-rule, n<5 returns None, off-distribution clamps), `format_rank_label` (8-bucket map: `top 5%` → `bottom 10%`), `base_rate` (`{n, median, mean, p25, p75}` with linear-interp quantiles). Run-wide distributions per script: options-flow uses every qualifying print across every ticker; crypto-vol-scanner uses every scored event; news-scanner uses every impact-scored event pre-dedup. Each surfaced item carries `percentile_rank`, `rank_label`, `score_universe_n` in JSON and a `(top 5%, 87th %ile, n=247)` suffix in render. Small universes get `rank_reason: "insufficient_universe"` |
+| M10 | event-study (single mode), earnings-drilldown | event-study gained `--with-base-rate` flag; when on, reuses existing `resolve_*` + `compute_event_returns` helpers against a 15-name mega-cap default (excluding subject ticker) to populate `universe_base_rate.by_metric` with `{n, median, mean, p25, p75}` for ar_t1/ar_t3/car_t5/drift_t3/drift_t5. Renderer shows per-metric "this vs universe median/p25/p75" lines. Flag off → schema-compatible `{reason: "live_universe_pull_disabled"}` + tier_caveat. earnings-drilldown is schema-only (no runnable script — only the static aapl example + output-schema.json); `universe_base_rate` property added with `reason` enum (`not_implemented_yet | live_universe_pull_disabled | live_universe_pull_returned_no_events`) |
+
 ## Wave 7 — 2026-06-26 (best-ex + corp-actions + portfolio-mark)
 
 Commits: `7688094` (M1+M2), `54550ef` (M3+M4), `7682ce8` (M7).

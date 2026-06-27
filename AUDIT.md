@@ -4,8 +4,8 @@ Active scorecard for the 2026-06-26 deep audit. Closed items live in
 [`AUDIT-LOG.md`](./AUDIT-LOG.md); the original deep review is preserved
 verbatim in `AUDIT-ORIGINAL.md`.
 
-**Tally (as of 2026-06-26):** 42 closed, 2 foundation-addressed, 6
-open. All 12 original Critical items closed.
+**Tally (as of 2026-06-26):** 44 closed, 2 foundation-addressed, 4
+open. All 12 original Critical items closed. No Medium items remain.
 
 **Legend:**
 
@@ -22,13 +22,6 @@ open. All 12 original Critical items closed.
 | ID | Affects | Resolution path |
 |---|---|---|
 | H9 | best-ex-check | Rename to "slippage cost" or compute true arrival-price IS |
-
-### Medium
-
-| ID | Affects | Resolution path |
-|---|---|---|
-| M9 | options-flow, crypto-vol-scanner, news-scanner | Add percentile/base-rate context on composite scores |
-| M10 | earnings-drilldown, event-study (single mode) | Universe base rate for single-name skills |
 
 ### Doc / code drift
 
