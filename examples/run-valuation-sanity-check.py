@@ -186,7 +186,13 @@ def compute_metrics_from_financials(rows):
         # EV component pieces (C11). long_term_debt kept for back-compat.
         "long_term_debt": None,
         "total_debt": None,
+        # debt_source: 'reported_total' | 'synthesized_ltd_plus_std' |
+        # 'long_term_only' | 'unavailable_defaulted_to_zero'
+        "debt_source": None,
         "cash_and_equivalents": None,
+        # cash_source: a real field name (e.g. 'cash_and_cash_equivalents') or
+        # 'unavailable_defaulted_to_zero'
+        "cash_source": None,
         "operating_lease_liability": None,
         "minority_interest": None,
         # Share-count source (C12)
@@ -248,25 +254,45 @@ def compute_metrics_from_financials(rows):
                 out["revenue_ttm"] / out["revenue_prior_ttm"]) - 1.0
 
     # ----- C11 EV component sourcing -----
-    # total_debt = short-term + long-term where both exist; long-term-only fallback.
+    # Debt fallback chain (spec 2026-06-26 EV fallback fix):
+    #   reported total_debt → synthesized (LTD + STD) → long_term_only → 0.
+    # Source tag emitted in metrics["debt_source"] so consumers know which
+    # path was used (and tier_caveats can fire when too many peers fell back).
+    reported_total, _ = _first_non_null(rows, "balance_sheet", ("total_debt",))
+    lt_debt = out["long_term_debt"]
     st_debt, _ = _first_non_null(rows, "balance_sheet",
                                   ("short_term_debt", "current_debt",
-                                   "debt_current"))
-    lt_debt = out["long_term_debt"]
-    if lt_debt is not None and st_debt is not None:
+                                   "debt_current",
+                                   "short_term_borrowings",
+                                   "current_portion_of_long_term_debt"))
+    if reported_total is not None:
+        out["total_debt"] = float(reported_total)
+        out["debt_source"] = "reported_total"
+    elif lt_debt is not None and st_debt is not None:
         out["total_debt"] = float(lt_debt) + float(st_debt)
+        out["debt_source"] = "synthesized_ltd_plus_std"
     elif lt_debt is not None:
         out["total_debt"] = float(lt_debt)
+        out["debt_source"] = "long_term_only"
     elif st_debt is not None:
         out["total_debt"] = float(st_debt)
+        out["debt_source"] = "short_term_only"
+    # else: leave None; compute_ev_components defaults to 0 + tags source.
 
-    # cash_and_equivalents — required for EV
-    cash, _ = _first_non_null(rows, "balance_sheet",
-                               ("cash_and_cash_equivalents",
-                                "cash_short_term_investments",
-                                "cash"))
+    # Cash fallback chain (spec 2026-06-26 EV fallback fix):
+    #   cash → cash_and_cash_equivalents → cash_and_short_term_investments → 0
+    # AAPL surfaces this: their balance_sheet has no bare 'cash' field; the
+    # value lives under 'cash_and_cash_equivalents' or
+    # 'cash_and_short_term_investments'. Keep 'cash_short_term_investments'
+    # (no leading 'and_') for any rows that emit the older name.
+    cash, cash_field = _first_non_null(rows, "balance_sheet",
+                                        ("cash",
+                                         "cash_and_cash_equivalents",
+                                         "cash_and_short_term_investments",
+                                         "cash_short_term_investments"))
     if cash is not None:
         out["cash_and_equivalents"] = float(cash)
+        out["cash_source"] = cash_field
 
     # operating_lease_liability — optional, current + noncurrent
     lease_nc, _ = _first_non_null(rows, "balance_sheet",
@@ -296,28 +322,42 @@ def compute_metrics_from_financials(rows):
 
 
 def compute_ev_components(market_cap, metrics, ticker):
-    """C11: EV = mcap + total_debt - cash + operating_leases + minority_interest.
+    """EV = mcap + total_debt - cash + operating_leases + minority_interest.
 
-    Required fields: market_cap, total_debt, cash_and_equivalents. Missing
-    any of them raises NotImplementedError so we don't silently emit the
-    old overcounted EV. Optional fields default to 0 and populate
-    `missing_fields` for the audit trail.
+    Required: market_cap. If it's missing we still raise — there's no
+    sensible default for equity value.
+
+    Fallback fix (2026-06-26): cash and total_debt no longer raise. Massive's
+    /vX/reference/financials does not reliably populate either field
+    (AAPL has no 'cash' or 'total_debt' at all; only 'long_term_debt'),
+    so strictly requiring them silently dropped most peers from EV/EBITDA
+    comparison and broke --mc mode (exit_multiple n=0). They now default
+    to 0 with an explicit source tag so the audit trail records which
+    path was used. Tier caveats fire upstream when too many peers in a
+    run fell back.
     """
     if market_cap is None:
         raise NotImplementedError(
             f"{ticker}: market_cap required for EV but missing")
-    total_debt = metrics.get("total_debt")
-    if total_debt is None:
-        raise NotImplementedError(
-            f"{ticker}: total_debt required for EV but missing "
-            f"(checked short_term_debt + long_term_debt)")
-    cash = metrics.get("cash_and_equivalents")
-    if cash is None:
-        raise NotImplementedError(
-            f"{ticker}: cash_and_equivalents required for EV but missing "
-            f"(checked cash_and_cash_equivalents, cash_short_term_investments)")
 
     missing = []
+
+    cash = metrics.get("cash_and_equivalents")
+    cash_source = metrics.get("cash_source")
+    if cash is None:
+        cash = 0.0
+        cash_source = "unavailable_defaulted_to_zero"
+        missing.append("cash")
+
+    total_debt = metrics.get("total_debt")
+    debt_source = metrics.get("debt_source")
+    if total_debt is None:
+        total_debt = 0.0
+        debt_source = "unavailable_defaulted_to_zero"
+        missing.append("total_debt")
+    elif debt_source == "long_term_only":
+        missing.append("short_term_debt")
+
     leases = metrics.get("operating_lease_liability")
     if leases is None:
         missing.append("operating_lease_liability")
@@ -332,7 +372,9 @@ def compute_ev_components(market_cap, metrics, ticker):
     return {
         "mcap": float(market_cap),
         "total_debt": float(total_debt),
+        "debt_source": debt_source,
         "cash": float(cash),
+        "cash_source": cash_source,
         "operating_leases": float(leases),
         "minority": float(minority),
         "ev": ev,
@@ -1177,6 +1219,26 @@ if subject.get("ev_components") and subject["ev_components"].get("missing_fields
     miss = ", ".join(subject["ev_components"]["missing_fields"])
     tier_caveats.append(
         f"Subject EV defaulted optional components to 0: {miss}."
+    )
+
+# EV fallback tier_caveat: count peers whose EV math used a non-reported
+# source for cash or debt. Fires at >= 30% share so the user sees the
+# data-source constraint without being spammed for one stray peer.
+_ev_peers = [p for p in peer_objs if p.get("ev_components")]
+_ev_total = len(_ev_peers)
+_ev_fallback = 0
+for p in _ev_peers:
+    ev = p["ev_components"]
+    debt_src = ev.get("debt_source")
+    cash_src = ev.get("cash_source")
+    if debt_src != "reported_total" or cash_src in (None, "unavailable_defaulted_to_zero"):
+        _ev_fallback += 1
+if _ev_total > 0 and (_ev_fallback / _ev_total) >= 0.30:
+    tier_caveats.append(
+        f"EV math uses fallback inputs on {_ev_fallback}/{_ev_total} peers "
+        f"(Massive financials don't reliably populate cash + total_debt). "
+        f"EV-based multiples may be slightly overstated for those names; "
+        f"see ev_components.* for the source tag per peer."
     )
 
 payload = {
