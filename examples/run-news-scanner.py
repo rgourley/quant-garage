@@ -315,12 +315,53 @@ def find_bar(aggs, target_ms):
     return aggs[-1], len(aggs) - 1
 
 
+# H8 fix: anchor reaction to the FIRST bar at or after publish_ts, rather than
+# the bar containing publish_ts. Publish timestamps frequently land in gaps
+# (weekends, holidays, pre-market) where the prior-containing bar would be
+# stale or wrong.
+NO_BAR_AFTER_PUBLISH_MAX_HOURS = 24
+
+
+def find_first_bar_at_or_after(aggs, target_ms, max_forward_ms=None):
+    """Return (bar, idx) for the first bar with start_time >= target_ms.
+
+    If max_forward_ms is set and no bar starts within that forward window,
+    returns (None, None) so the caller can surface a skip reason.
+    """
+    if not aggs:
+        return None, None
+    cutoff_ms = (target_ms + max_forward_ms) if max_forward_ms is not None else None
+    for i, bar in enumerate(aggs):
+        bar_t = bar.get("t")
+        if bar_t is None:
+            continue
+        if bar_t >= target_ms:
+            if cutoff_ms is not None and bar_t > cutoff_ms:
+                return None, None
+            return bar, i
+    return None, None
+
+
+# H8 fix: 5-trading-day baseline. We need to GUARANTEE >=5 trading days in
+# the fetched range. Fetching publish_ts - 5 calendar days gives <5 trading
+# days whenever a weekend lands in the window (most of the time) and gets
+# worse around holidays. 12 calendar days reliably covers 5 trading days even
+# across Thanksgiving week / July 4 stretches without being wasteful.
+BASELINE_TRADING_DAYS = 5
+BASELINE_FETCH_CALENDAR_DAYS = 12
+
+
 def compute_reaction(ticker, published_at):
-    """Return dict with reaction_pct, window_label, window_minutes, anomaly, baseline, etc."""
+    """Return dict with reaction_pct, window_label, window_minutes, anomaly, baseline, etc.
+
+    On structural skips (no bar after publish, insufficient baseline) returns a
+    dict containing a "reason" key so the caller can surface it.
+    """
     if not published_at:
         return None
-    # Pull a wide window: prior 6 days + day-of, so we have baseline + reaction
-    from_dt = published_at - timedelta(days=6)
+    # H8: widen fetch window so the baseline reliably contains >=5 trading days
+    # even across holiday-heavy weeks. 12 calendar days is the safe choice.
+    from_dt = published_at - timedelta(days=BASELINE_FETCH_CALENDAR_DAYS)
     # Reaction may span overnight; pull through next session
     to_dt = published_at + timedelta(days=2)
     aggs = get_aggs_for_ticker(ticker, from_dt, to_dt, resolution=5)
@@ -328,9 +369,15 @@ def compute_reaction(ticker, published_at):
         return None
 
     pub_ms = epoch_ms(published_at)
-    base_bar, base_idx = find_bar(aggs, pub_ms)
-    if base_bar is None or base_idx is None or base_idx < 0:
-        return None
+    # H8 fix 1: anchor to the FIRST bar at or after publish_ts (next available
+    # trading minute), not the bar containing publish_ts. If no bar starts
+    # within 24h forward of publish, surface a skip reason.
+    base_bar, base_idx = find_first_bar_at_or_after(
+        aggs, pub_ms, max_forward_ms=NO_BAR_AFTER_PUBLISH_MAX_HOURS * 3600 * 1000
+    )
+    if base_bar is None or base_idx is None:
+        return {"reason": "no_bar_after_publish"}
+    reaction_anchor_offset_seconds = round((base_bar["t"] - pub_ms) / 1000)
 
     # Target window: publish + 60min, capped at 16:00 ET of the publish day.
     # zoneinfo handles DST so winter publishes no longer mis-bucket.
@@ -376,6 +423,8 @@ def compute_reaction(ticker, published_at):
             "price_at_publish": base_bar.get("c"),
             "price_at_window_end": None,
             "volume_anomaly_x": None,
+            "reaction_anchor_offset_seconds": reaction_anchor_offset_seconds,
+            "n_baseline_days": None,
         }
 
     base_close = base_bar.get("c") or base_bar.get("o")
@@ -401,26 +450,44 @@ def compute_reaction(ticker, published_at):
     window_minutes_for_vol = max(1, window_minutes)  # 5-min res but normalize to per-minute
     window_per_min_vol = window_vol / window_minutes_for_vol
 
-    # Baseline: same-time-of-day window over prior 5 trading days
+    # H8 fix 2: baseline over prior 5 trading days. Walk back enough calendar
+    # days to GUARANTEE >=5 trading days. We fetched BASELINE_FETCH_CALENDAR_DAYS
+    # of history; walk that whole window so weekends and holidays don't shrink
+    # the sample. Dedup by ET trading date so we count actual trading days.
     baseline_vols_per_min = []
-    for d_back in range(1, 8):  # search 7 days back to find 5 trading days
+    seen_trading_dates = set()
+    for d_back in range(1, BASELINE_FETCH_CALENDAR_DAYS + 1):
         prior_pub = published_at - timedelta(days=d_back)
         prior_target = target_utc - timedelta(days=d_back)
         prior_base, pb_idx = find_bar(aggs, epoch_ms(prior_pub))
         prior_end, pe_idx = find_bar(aggs, epoch_ms(prior_target))
         if prior_base and prior_end and pe_idx is not None and pb_idx is not None and pe_idx > pb_idx:
+            # Use the ET date of the prior_base bar to identify the trading day.
+            bar_dt_et = utc_to_et(datetime.fromtimestamp(prior_base["t"] / 1000, tz=timezone.utc))
+            trading_date = bar_dt_et.date().isoformat()
+            if trading_date in seen_trading_dates:
+                continue
+            seen_trading_dates.add(trading_date)
             bars = aggs[pb_idx : pe_idx + 1]
             v = sum((b.get("v") or 0) for b in bars)
             mins = max(1, round((prior_end["t"] - prior_base["t"]) / 60000))
             baseline_vols_per_min.append(v / mins)
-        if len(baseline_vols_per_min) >= 5:
+        if len(baseline_vols_per_min) >= BASELINE_TRADING_DAYS:
             break
 
-    if baseline_vols_per_min:
-        baseline = sum(baseline_vols_per_min) / len(baseline_vols_per_min)
-        anomaly = (window_per_min_vol / baseline) if baseline > 0 else None
-    else:
-        anomaly = None
+    n_baseline_days = len(baseline_vols_per_min)
+
+    # H8: if we still don't have 5 trading days after walking the full fetch
+    # window, the sample is too small to claim a baseline. Skip with reason.
+    if n_baseline_days < BASELINE_TRADING_DAYS:
+        return {
+            "reason": "insufficient_baseline",
+            "n_baseline_days": n_baseline_days,
+            "reaction_anchor_offset_seconds": reaction_anchor_offset_seconds,
+        }
+
+    baseline = sum(baseline_vols_per_min) / n_baseline_days
+    anomaly = (window_per_min_vol / baseline) if baseline > 0 else None
 
     return {
         "reaction_pct": reaction_pct,
@@ -429,6 +496,8 @@ def compute_reaction(ticker, published_at):
         "price_at_publish": base_close,
         "price_at_window_end": end_close,
         "volume_anomaly_x": anomaly,
+        "reaction_anchor_offset_seconds": reaction_anchor_offset_seconds,
+        "n_baseline_days": n_baseline_days,
     }
 
 
@@ -508,6 +577,11 @@ for t, articles in ticker_news_raw.items():
 
 print(f"  {len(candidates)} candidate events in window", file=sys.stderr)
 
+# H8: run-level counters for new structural skip reasons.
+skipped_no_bar_count = 0
+insufficient_baseline_count = 0
+skipped_events = []
+
 # Score every candidate
 events = []
 for t, a, art_idx in candidates:
@@ -556,6 +630,24 @@ for t, a, art_idx in candidates:
 
     # Reaction
     rx = compute_reaction(t, pub)
+    # H8: structural skip — surface reason, count it, drop the event from the
+    # ranked stream so consumers don't see a half-computed reaction.
+    if isinstance(rx, dict) and rx.get("reason"):
+        reason = rx["reason"]
+        if reason == "no_bar_after_publish":
+            skipped_no_bar_count += 1
+        elif reason == "insufficient_baseline":
+            insufficient_baseline_count += 1
+        skipped_events.append({
+            "ticker": t,
+            "id": a.get("id"),
+            "published_at": pub.isoformat(),
+            "headline": a.get("title") or "",
+            "reason": reason,
+            "n_baseline_days": rx.get("n_baseline_days"),
+            "reaction_anchor_offset_seconds": rx.get("reaction_anchor_offset_seconds"),
+        })
+        continue
     if rx is None:
         rx = {
             "reaction_pct": None,
@@ -564,6 +656,8 @@ for t, a, art_idx in candidates:
             "price_at_publish": None,
             "price_at_window_end": None,
             "volume_anomaly_x": None,
+            "reaction_anchor_offset_seconds": None,
+            "n_baseline_days": None,
         }
 
     div = divergence(sent_score, rx["reaction_pct"])
@@ -610,6 +704,8 @@ for t, a, art_idx in candidates:
         "reaction_pct_since_publish": rx["reaction_pct"],
         "reaction_window_label": rx["reaction_window_label"],
         "reaction_window_minutes": rx["reaction_window_minutes"],
+        "reaction_anchor_offset_seconds": rx.get("reaction_anchor_offset_seconds"),
+        "n_baseline_days": rx.get("n_baseline_days"),
         "price_at_publish": rx["price_at_publish"],
         "price_at_window_end": rx["price_at_window_end"],
         "volume_anomaly_x": rx["volume_anomaly_x"],
@@ -719,9 +815,14 @@ payload = {
         "by_sentiment": sentiment_counts,
         "by_novelty": novelty_counts,
         "divergence_count": divergence_count,
+        # H8: structural skip counts so consumers can see when reaction/baseline
+        # computation dropped articles vs the scan finding nothing.
+        "skipped_no_bar_count": skipped_no_bar_count,
+        "insufficient_baseline_count": insufficient_baseline_count,
     },
     "take": take,
     "skipped_tickers": skipped,
+    "skipped_events": skipped_events,
     "sources": [
         {
             "endpoint": "https://api.polygon.io/v2/reference/news",
@@ -798,6 +899,13 @@ footer = (
 )
 if skipped_names:
     footer += f" {len(skipped_names)} tickers skipped: {', '.join(skipped_names)}."
+# H8: surface structural reaction/baseline skips in the rendered stream so
+# operators reading the tape can see why article counts shrank.
+if skipped_no_bar_count or insufficient_baseline_count:
+    footer += (
+        f" Reaction skips: {skipped_no_bar_count} no_bar_after_publish, "
+        f"{insufficient_baseline_count} insufficient_baseline."
+    )
 lines.append(footer)
 
 rendered = "\n".join(lines)
