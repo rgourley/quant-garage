@@ -46,6 +46,8 @@ from lib.quant_garage import (
     resolve_price,
     resolve_output_format,
     emit_to_stdout,
+    da_annualized,
+    operating_income_annualized,
 )
 
 
@@ -170,7 +172,9 @@ def compute_metrics_from_financials(rows):
         "revenue_prior_ttm": None,
         "revenue_growth_ttm": None,
         "operating_income_ttm": None,
+        "op_income_source": "unavailable",
         "depreciation_amortization_ttm": None,
+        "da_source": "unavailable",
         "da_reported": False,  # C7: was the underlying D&A actually reported?
         "ebitda_ttm": None,
         "ebitda_margin": None,
@@ -206,16 +210,18 @@ def compute_metrics_from_financials(rows):
     if len(with_rev) >= 4:
         ttm = with_rev[:4]
         out["revenue_ttm"] = float(sum(q["rev"] for q in ttm))
-        op_vals = [q["op"] for q in ttm if q["op"] is not None]
-        if len(op_vals) == 4:
-            out["operating_income_ttm"] = float(sum(op_vals))
-        elif op_vals:
-            out["operating_income_ttm"] = float(sum(op_vals) * (4.0 / len(op_vals)))
-        da_vals = [q["da"] for q in ttm if q["da"] is not None]
-        if len(da_vals) > 0:
-            out["depreciation_amortization_ttm"] = float(sum(da_vals)
-                                                          * (4.0 / len(da_vals)))
-            out["da_reported"] = True
+        # H5: route operating income + D&A through the shared lib
+        # helper so this script and pitch-comps produce identical
+        # numbers for the same input financials. Source tags ('LTM' vs
+        # 'Q4' vs 'unavailable') land in the per-ticker JSON output.
+        op_ttm, op_source = operating_income_annualized(rows)
+        out["operating_income_ttm"] = op_ttm
+        out["op_income_source"] = op_source
+        da_ttm, da_source = da_annualized(rows)
+        out["depreciation_amortization_ttm"] = da_ttm
+        out["da_source"] = da_source
+        # C7: was the underlying D&A actually reported on any quarter?
+        out["da_reported"] = da_source != "unavailable"
         if out["operating_income_ttm"] is not None and out["da_reported"]:
             # C7: only compute EBITDA when D&A actually exists in the filings.
             # Otherwise leaving it None signals "EBITDA not measurable" so

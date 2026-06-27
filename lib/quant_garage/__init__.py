@@ -37,6 +37,13 @@ from .universe import (
     concentration_z_score,
 )
 from .output import OutputFormat, resolve_output_format, emit_to_stdout
+from .annualize import (
+    ltm_sum,
+    annualize_quarter,
+    operating_income,
+    operating_income_annualized,
+    da_annualized,
+)
 
 __all__ = [
     "MassiveClient",
@@ -63,4 +70,9 @@ __all__ = [
     "OutputFormat",
     "resolve_output_format",
     "emit_to_stdout",
+    "ltm_sum",
+    "annualize_quarter",
+    "operating_income",
+    "operating_income_annualized",
+    "da_annualized",
 ]

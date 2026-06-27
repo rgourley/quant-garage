@@ -41,7 +41,19 @@ from lib.quant_garage import (
     resolve_price,
     resolve_output_format,
     emit_to_stdout,
+    critical_t,
+    is_significant,
+    da_annualized,
+    operating_income_annualized,
 )
+
+
+# Minimum peer count for OLS regression. Below this we skip the
+# regression block entirely and emit per-peer numbers + summary stats
+# only. With < 5 peers (k=3 with intercept) df is 2 or fewer; CI widths
+# explode and the implied multiple is dominated by noise. Documented in
+# references/regression-adjustment.md.
+MIN_PEERS_FOR_OLS = 5
 
 
 client = MassiveClient()
@@ -161,7 +173,9 @@ def compute_metrics_from_financials(rows):
         "revenue_prior_ttm": None,
         "revenue_growth_ttm": None,
         "operating_income_ttm": None,
+        "op_income_source": "unavailable",
         "depreciation_amortization_ttm": None,
+        "da_source": "unavailable",
         "ebitda_ttm": None,
         "ebitda_margin": None,
         "diluted_eps_ttm": None,
@@ -205,17 +219,16 @@ def compute_metrics_from_financials(rows):
     if len(with_rev) >= 4:
         ttm = with_rev[:4]
         out["revenue_ttm"] = float(sum(q["rev"] for q in ttm))
-        op_vals = [q["op"] for q in ttm if q["op"] is not None]
-        if len(op_vals) == 4:
-            out["operating_income_ttm"] = float(sum(op_vals))
-        elif op_vals:
-            # Annualize from what we have
-            out["operating_income_ttm"] = float(sum(op_vals) * (4.0 / len(op_vals)))
-        da_vals = [q["da"] for q in ttm if q["da"] is not None]
-        if len(da_vals) > 0:
-            # Use what's available; fall back to zero contribution in EBITDA
-            out["depreciation_amortization_ttm"] = float(sum(da_vals)
-                                                          * (4.0 / len(da_vals)))
+        # H5: route operating income + D&A through the shared lib helper
+        # so pitch-comps and valuation-sanity-check produce identical
+        # numbers for the same input financials. Source tags ('LTM' vs
+        # 'Q4' vs 'unavailable') land in the per-ticker JSON output.
+        op_ttm, op_source = operating_income_annualized(rows)
+        out["operating_income_ttm"] = op_ttm
+        out["op_income_source"] = op_source
+        da_ttm, da_source = da_annualized(rows)
+        out["depreciation_amortization_ttm"] = da_ttm
+        out["da_source"] = da_source
         if out["operating_income_ttm"] is not None:
             out["ebitda_ttm"] = (out["operating_income_ttm"]
                                   + (out["depreciation_amortization_ttm"] or 0.0))
@@ -418,54 +431,154 @@ def summarize(values):
 
 # ----- Regression-adjusted multiples -----
 
+def _controls_for(multiple_key, controls):
+    """H4: drop the endogenous regressor for `ev_ebitda`.
+
+    `ev_ebitda` = EV / EBITDA and `ebitda_margin` = EBITDA / revenue
+    both contain EBITDA mechanically; regressing one on the other gives
+    a coefficient driven by the shared EBITDA term rather than by the
+    economic relationship between margin quality and multiple
+    expansion. We drop `ebitda_margin` from the control set for the
+    `ev_ebitda` regression and surface what was dropped in
+    `regressor_dropped` so the audit trail is explicit.
+
+    `ev_sales` and `p_e` are kept on the full control set: revenue
+    growth is a ratio of two revenue levels (no mechanical link to
+    EV/Sales) and EPS is post-tax, post-D&A so the EBITDA-margin
+    correlation is indirect.
+    """
+    if multiple_key == "ev_ebitda":
+        kept = tuple(c for c in controls if c != "ebitda_margin")
+        return kept, "ebitda_margin"
+    return tuple(controls), None
+
+
 def fit_implied(peers, subject, multiple_key,
                 controls=("revenue_growth_ttm", "ebitda_margin"),
-                outlier_cap=80.0):
+                outlier_cap=80.0,
+                min_peers=MIN_PEERS_FOR_OLS):
     """OLS multiple ~ controls across peers; predict subject's implied multiple.
 
     Peers with `multiple_key > outlier_cap` are excluded from the regression
     (they remain in the displayed table). This handles PANW's 232x EV/EBITDA
     and similar accounting-anomaly multiples that pull OLS to nonsense.
     The cap is documented in references/regression-adjustment.md.
+
+    Closes H4: emits SE, t-stat, 95% CI, and is_significant per
+    coefficient using df-aware critical_t. Enforces a minimum peer
+    count and drops the endogenous regressor for `ev_ebitda`. When
+    n < min_peers, returns a result dict tagged `regression_skipped`
+    so the renderer can surface the reason without dropping the row.
     """
+    effective_controls, dropped = _controls_for(multiple_key, controls)
     rows = []
     for p in peers:
         m = (p.get("multiples") or {}).get(multiple_key)
         if m is None or m <= 0 or m > outlier_cap:
             continue
-        ctrl_vals = [(p.get("metrics") or {}).get(c) for c in controls]
+        ctrl_vals = [(p.get("metrics") or {}).get(c) for c in effective_controls]
         if any(v is None for v in ctrl_vals):
             continue
         rows.append((float(m), [float(v) for v in ctrl_vals]))
-    if len(rows) < 4:
-        return None, len(rows)
+    n = len(rows)
+    if n < min_peers:
+        return {
+            "regression_skipped": True,
+            "reason": "insufficient_peers",
+            "n": n,
+            "min_required": min_peers,
+            "controls_used": list(effective_controls),
+            "regressor_dropped": dropped,
+        }, n
     y = np.array([r[0] for r in rows])
-    X_cols = [np.ones(len(rows))]
-    for i in range(len(controls)):
+    X_cols = [np.ones(n)]
+    for i in range(len(effective_controls)):
         X_cols.append(np.array([r[1][i] for r in rows]))
     X = np.column_stack(X_cols)
+    k = X.shape[1]  # number of params including intercept
     coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
-    subj_ctrl = [(subject.get("metrics") or {}).get(c) for c in controls]
+    subj_ctrl = [(subject.get("metrics") or {}).get(c) for c in effective_controls]
     if any(v is None for v in subj_ctrl):
-        return None, len(rows)
+        return {
+            "regression_skipped": True,
+            "reason": "subject_missing_controls",
+            "n": n,
+            "controls_used": list(effective_controls),
+            "regressor_dropped": dropped,
+        }, n
     implied = float(coef[0] + sum(coef[i+1] * subj_ctrl[i]
-                                    for i in range(len(controls))))
+                                    for i in range(len(effective_controls))))
     actual = (subject.get("multiples") or {}).get(multiple_key)
     disc = ((actual / implied) - 1.0) if (actual and implied and implied > 0) else None
     y_pred = X @ coef
-    ss_res = float(((y - y_pred) ** 2).sum())
+    residuals = y - y_pred
+    ss_res = float((residuals ** 2).sum())
     ss_tot = float(((y - y.mean()) ** 2).sum())
     r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else None
+    # H4: proper SE / t-stat / CI per coefficient
+    df_resid = n - k
+    coef_block = {}
+    if df_resid > 0:
+        sigma2 = ss_res / df_resid
+        try:
+            xtx_inv = np.linalg.inv(X.T @ X)
+            se_vec = np.sqrt(np.maximum(np.diag(xtx_inv) * sigma2, 0.0))
+        except np.linalg.LinAlgError:
+            se_vec = np.full(k, float("nan"))
+        # critical_t expects n (df = n-1), we have df = df_resid; pass
+        # df_resid+1 so the df arg lines up. is_significant uses the
+        # same convention.
+        t_crit = critical_t(df_resid + 1, alpha=0.05, two_sided=True)
+        names = ["intercept"] + list(effective_controls)
+        for i, name in enumerate(names):
+            b = float(coef[i])
+            se = float(se_vec[i])
+            t_stat = (b / se) if se > 0 else float("nan")
+            ci_lo = b - t_crit * se
+            ci_hi = b + t_crit * se
+            coef_block[name] = {
+                "coef": round(b, 6),
+                "se": round(se, 6) if np.isfinite(se) else None,
+                "t_stat": round(t_stat, 4) if np.isfinite(t_stat) else None,
+                "ci_lower": round(ci_lo, 6) if np.isfinite(ci_lo) else None,
+                "ci_upper": round(ci_hi, 6) if np.isfinite(ci_hi) else None,
+                "is_significant": (
+                    is_significant(t_stat, df_resid + 1, alpha=0.05)
+                    if np.isfinite(t_stat) else False
+                ),
+            }
+    else:
+        # Degenerate: no residual df, can't compute SE. Emit coefs only.
+        names = ["intercept"] + list(effective_controls)
+        for i, name in enumerate(names):
+            coef_block[name] = {
+                "coef": round(float(coef[i]), 6),
+                "se": None,
+                "t_stat": None,
+                "ci_lower": None,
+                "ci_upper": None,
+                "is_significant": False,
+            }
     return {
+        "regression_skipped": False,
+        "n": n,
+        "df_resid": df_resid,
+        "controls_used": list(effective_controls),
+        "regressor_dropped": dropped,
         "implied": round(implied, 2),
         "actual": round(float(actual), 2) if actual is not None else None,
         "discount_or_premium": round(disc, 4) if disc is not None else None,
-        "coefficients": {
+        "coefficients": coef_block,
+        # Back-compat: also expose a flat coef dict so existing
+        # consumers that read .coefficients[name] (not the new block
+        # shape) keep working.
+        "coefficients_point": {
             "intercept": round(float(coef[0]), 4),
-            **{c: round(float(coef[i+1]), 6) for i, c in enumerate(controls)},
+            **{c: round(float(coef[i+1]), 6)
+                for i, c in enumerate(effective_controls)},
         },
         "r_squared": round(r2, 4) if r2 is not None else None,
-    }, len(rows)
+    }, n
 
 
 def generate_read(subject_ticker, regression_results, peers, subject,
@@ -652,18 +765,23 @@ summary["ebitda_margin"] = summarize(
 # ----- Regression-adjusted multiples -----
 
 reg_results = {}
+reg_skipped = {}
 n_used_max = 0
 for key in ("ev_sales", "ev_ebitda", "p_e"):
     result, n_used = fit_implied(peer_objs, subject, key)
-    if result is not None:
+    if result is not None and result.get("regression_skipped"):
+        reg_skipped[key] = result
+    elif result is not None:
         reg_results[key] = result
         n_used_max = max(n_used_max, n_used)
 
 regression_adjusted = {
     "controls": ["revenue_growth_ttm", "ebitda_margin"],
+    "min_peers_for_ols": MIN_PEERS_FOR_OLS,
     "n_peers_used": n_used_max,
     "low_n_warning": n_used_max < 8,
     "results": reg_results,
+    "skipped": reg_skipped,
 }
 
 # ----- Read -----
@@ -871,6 +989,20 @@ def render(payload):
 
     # Regression-adjusted block
     reg = payload["regression_adjusted"]
+    skipped = reg.get("skipped") or {}
+    if skipped and not reg["results"]:
+        lines.append("Regression-adjusted (skipped)")
+        label_map = {"ev_sales": "EV/Sales",
+                      "ev_ebitda": "EV/EBITDA",
+                      "p_e": "P/E"}
+        for key, info in skipped.items():
+            reason = info.get("reason", "skipped")
+            n_peers = info.get("n", 0)
+            lines.append(
+                f"- {label_map.get(key, key)}: skipped ({reason}, "
+                f"n={n_peers} < min {reg.get('min_peers_for_ols', '?')})"
+            )
+        lines.append("")
     if reg["results"]:
         lines.append("Regression-adjusted (controls for growth + EBITDA margin)")
         label_map = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}
