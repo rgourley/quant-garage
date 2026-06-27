@@ -9,6 +9,15 @@ by ID.
 
 ---
 
+## Wave 6 — 2026-06-26 (pitch-comps OLS + shared annualization)
+
+Commit: `9809e55`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| H5 | valuation-sanity-check, pitch-comps | New `lib/quant_garage/annualize.py` with `ltm_sum`, `annualize_quarter`, `operating_income`, `operating_income_annualized`, `da_annualized`. Both scripts now route every D&A and operating-income calc through the helper; EBITDA-derived numbers match across the two for identical input financials. `metrics.da_source` and `metrics.op_income_source` audit fields land in per-ticker JSON output. Source tag is one of `'LTM'`, `'Q4'`, `'unavailable'` |
+| H4 | pitch-comps | OLS regression now emits `coef`, `se`, `t_stat`, `ci_lower`, `ci_upper`, `is_significant` per coefficient using df-aware `critical_t` from `lib.quant_garage.stats`. `MIN_PEERS_FOR_OLS = 5` floor; below that `regression_skipped: true, reason: "insufficient_peers", n, min_required` appears in output and the render emits a "Regression-adjusted (skipped)" block. **Endogenous regressor dropped:** `ebitda_margin` removed from the `ev_ebitda` regression only (EBITDA appears in y's denominator and the regressor's numerator — mechanical inverse, not economic signal). `ev_sales` and `p_e` keep both controls (no mechanical tie). `regressor_dropped: "ebitda_margin"` surfaces in the output |
+
 ## Wave 5 — 2026-06-26 (crypto-vol-scanner + news-scanner)
 
 Commits: `ac4b2a2` (H7), `71f68a7` (H8).

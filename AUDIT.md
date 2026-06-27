@@ -4,7 +4,7 @@ Active scorecard for the 2026-06-26 deep audit. Closed items live in
 [`AUDIT-LOG.md`](./AUDIT-LOG.md); the original deep review is preserved
 verbatim in `AUDIT-ORIGINAL.md`.
 
-**Tally (as of 2026-06-26):** 35 closed, 2 foundation-addressed, 13
+**Tally (as of 2026-06-26):** 37 closed, 2 foundation-addressed, 11
 open. All 12 original Critical items closed.
 
 **Legend:**
@@ -21,8 +21,6 @@ open. All 12 original Critical items closed.
 
 | ID | Affects | Resolution path |
 |---|---|---|
-| H4 | pitch-comps | Min-n enforcement; SE/t-stat/CI on OLS; drop endogenous regressor |
-| H5 | valuation, pitch-comps | Consistent D&A and operating-income annualization in shared lib |
 | H9 | best-ex-check | Rename to "slippage cost" or compute true arrival-price IS |
 
 ### Medium
