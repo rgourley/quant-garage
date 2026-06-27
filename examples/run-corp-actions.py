@@ -50,6 +50,20 @@ if len(sys.argv) < 2:
 CSV_PATH = sys.argv[1]
 TODAY = today()
 
+# Absolute tolerance for fractional-share comparisons. Successive
+# split-adjust multiplications (e.g. a 3:1 split followed by a 7:5
+# stock dividend) accumulate float-precision noise on the order of
+# 1e-12; 1e-6 of a share is below any broker's reporting granularity
+# but well above that noise floor. Audit item M4 (2026-06-26).
+SHARE_TOLERANCE = 1e-6
+
+
+def shares_equal(a, b):
+    """Tolerance-aware equality for fractional share counts."""
+    if a is None or b is None:
+        return a is b
+    return math.isclose(float(a), float(b), abs_tol=SHARE_TOLERANCE)
+
 # Spinoffs overrides: there is no /v3/reference/spinoffs endpoint, so
 # operators supply known spinoff events here. Format matches
 # references/spinoffs-methodology.md.
@@ -132,9 +146,10 @@ def apply_split(state, split, fetched_at):
     pre_shares = state["shares"]
     raw_post = pre_shares * ratio
     # Floor to whole shares; brokers pay CIL on the fractional. See
-    # references/edge-cases.md.
+    # references/edge-cases.md. Tolerance-aware compare so a raw value
+    # of 100.0000000003 from float drift doesn't flag spurious CIL.
     post_shares = math.floor(raw_post)
-    cil_expected = post_shares != raw_post
+    cil_expected = not math.isclose(post_shares, raw_post, abs_tol=SHARE_TOLERANCE)
 
     pre_basis = state["cost_basis"]
     post_basis = pre_basis / ratio if pre_basis is not None else None
@@ -241,7 +256,7 @@ def apply_dividend(state, div, fetched_at):
         pre_shares = state["shares"]
         raw_post = pre_shares * ratio
         post_shares = math.floor(raw_post)
-        cil_expected = post_shares != raw_post
+        cil_expected = not math.isclose(post_shares, raw_post, abs_tol=SHARE_TOLERANCE)
 
         pre_basis = state["cost_basis"]
         post_basis = pre_basis / ratio if pre_basis is not None else None
@@ -332,7 +347,7 @@ def apply_spinoff(state, spin, fetched_at):
 
     raw_sub_shares = state["shares"] * ratio_y_per_x
     sub_shares_whole = math.floor(raw_sub_shares)
-    sub_cil = sub_shares_whole != raw_sub_shares
+    sub_cil = not math.isclose(sub_shares_whole, raw_sub_shares, abs_tol=SHARE_TOLERANCE)
 
     state["cost_basis"] = post_basis
     state["actions_applied"] += 1
@@ -466,83 +481,87 @@ def render(payload):
     lines.append("")
 
     for idx, b in enumerate(payload["breaks"], start=1):
-        kind = b["kind"]
         ticker = b["ticker"]
-        action = b["action"]
-        if kind == "spinoff_new_position":
-            parent = action.get("parent_ticker", "?")
+        adjustments = b.get("adjustments", [])
+        # Identify a single-spinoff-new-position record so we can keep
+        # the old "(new position from PARENT spin)" header.
+        is_new_sub = (
+            len(adjustments) == 1
+            and adjustments[0].get("kind") == "spinoff_new_position"
+        )
+
+        if is_new_sub:
+            adj = adjustments[0]
+            parent = adj.get("parent_ticker", "?")
             lines.append(f"BREAK {idx}: {ticker} (new position from {parent} spin)")
             lines.append("  Recorded:    not in input file")
             lines.append(
-                f"  Action:      Spinoff distribution at {action['spin_ratio_y_per_x']} per share, ex-date {action['ex_date']}"
+                f"  Action:      Spinoff distribution at {adj['spin_ratio_y_per_x']} per share, ex-date {adj['ex_date']}"
             )
             basis_str = (
-                f", basis ${b['expected_cost_basis']:.4f}/sh"
-                if b.get("expected_cost_basis") is not None else ""
+                f", basis ${b['final_cost_basis']:.4f}/sh"
+                if b.get("final_cost_basis") is not None else ""
             )
-            lines.append(f"  Expected:    {fmt_shares(b['expected_shares'])} shares{basis_str}")
+            lines.append(
+                f"  Expected:    {fmt_shares(b['final_shares'])} shares{basis_str}"
+            )
             if b.get("cash_in_lieu_expected"):
                 lines.append("  Note:        Fractional from ratio, broker CIL expected")
-            lines.append(f"  Source:      {b['source']['endpoint']}")
-            lines.append(f"  Verified:    {b['source']['fetched_at']}")
+            srcs = b.get("sources") or []
+            if srcs:
+                lines.append(f"  Source:      {srcs[0]['endpoint']}")
+                lines.append(f"  Verified:    {srcs[0]['fetched_at']}")
             lines.append("")
             continue
-
-        if kind == "spinoff":
-            lines.append(f"BREAK {idx}: {ticker} (parent basis adjustment)")
-            lines.append(
-                f"  Recorded:    {fmt_shares(b['current_shares'])} shares as of {b['recorded_as_of']}, basis ${b['current_cost_basis']:.2f}/sh"
-            )
-            lines.append(
-                f"  Action:      Spinoff of {action['spinoff_ticker']} at {action['spin_ratio_y_per_x']} per share, ex-date {action['ex_date']}"
-            )
-            lines.append(
-                f"  Expected:    {fmt_shares(b['expected_shares'])} shares (no change), basis ${b['expected_cost_basis']:.4f}/sh"
-            )
-            lines.append(f"  Source:      {b['source']['endpoint']}")
-            lines.append(f"  Verified:    {b['source']['fetched_at']}")
-            lines.append("")
-            continue
-
-        # Standard split or dividend break.
-        if kind == "reverse_split":
-            action_str = f"{action['ratio']} reverse split, ex-date {action['ex_date']}"
-        elif kind == "split":
-            action_str = f"{action['ratio']} split, ex-date {action['ex_date']}"
-        elif kind == "cash_dividend_basis":
-            amount = action.get("amount", 0)
-            dtype = action.get("dividend_type", "RC")
-            label = "Special cash" if action.get("is_special") or dtype == "SC" else "RC"
-            action_str = (
-                f"{label} dividend ${amount:.4f}/share applied to cost basis, "
-                f"ex-date {action['ex_date']}"
-            )
-        elif kind == "stock_dividend":
-            rate = action.get("rate", 0)
-            action_str = (
-                f"SD {rate * 100:.2f}% stock dividend applied as share-count "
-                f"adjustment, ex-date {action['ex_date']}"
-            )
-        elif kind == "large_stock_dividend":
-            rate = action.get("rate", 0)
-            action_str = (
-                f"LT large stock dividend {rate * 100:.2f}% (treated as split per "
-                f"IRS), ex-date {action['ex_date']}"
-            )
-        else:
-            action_str = f"{kind}, ex-date {action.get('ex_date')}"
 
         lines.append(f"BREAK {idx}: {ticker}")
         lines.append(
-            f"  Recorded:    {fmt_shares(b['current_shares'])} shares as of {b['recorded_as_of']}"
+            f"  Recorded:    {fmt_shares(b['initial_shares'])} shares as of {b['recorded_as_of']}"
+            + (
+                f", basis ${b['initial_cost_basis']:.2f}/sh"
+                if b.get("initial_cost_basis") is not None else ""
+            )
         )
-        lines.append(f"  Action:      {action_str}")
-        lines.append(f"  Expected:    {fmt_shares(b['expected_shares'])} shares")
+        lines.append(f"  Adjustments: {len(adjustments)} action(s) applied")
+        for adj in adjustments:
+            kind = adj["kind"]
+            ex_date = adj.get("ex_date")
+            if kind == "reverse_split":
+                desc = f"{adj['ratio']} reverse split"
+            elif kind == "split":
+                desc = f"{adj['ratio']} split"
+            elif kind == "cash_dividend_basis":
+                amount = adj.get("amount", 0) or 0
+                dtype = adj.get("dividend_type", "RC")
+                label = (
+                    "Special cash"
+                    if adj.get("is_special") or dtype == "SC"
+                    else "RC"
+                )
+                desc = f"{label} dividend ${amount:.4f}/share -> basis"
+            elif kind == "stock_dividend":
+                rate = adj.get("rate", 0) or 0
+                desc = f"SD {rate * 100:.2f}% stock dividend"
+            elif kind == "large_stock_dividend":
+                rate = adj.get("rate", 0) or 0
+                desc = f"LT {rate * 100:.2f}% large stock dividend (split per IRS)"
+            elif kind == "spinoff":
+                desc = (
+                    f"Spinoff of {adj['spinoff_ticker']} at "
+                    f"{adj['spin_ratio_y_per_x']}/share"
+                )
+            else:
+                desc = kind
+            line = f"    - {ex_date}: {desc}"
+            if adj.get("cash_in_lieu_expected"):
+                line += " (CIL)"
+            lines.append(line)
+        lines.append(f"  Expected:    {fmt_shares(b['final_shares'])} shares")
         delta = b["delta_shares"]
-        if delta > 0:
+        if delta > SHARE_TOLERANCE:
             direction = "under-allocated"
             delta_str = f"+{fmt_shares(delta)}"
-        elif delta < 0:
+        elif delta < -SHARE_TOLERANCE:
             direction = "over-allocated"
             delta_str = fmt_shares(delta)
         else:
@@ -550,17 +569,22 @@ def render(payload):
             delta_str = "0"
         lines.append(f"  Delta:       {delta_str} ({direction})")
         if (
-            b.get("current_cost_basis") is not None
-            and b.get("expected_cost_basis") is not None
-            and abs(b["current_cost_basis"] - b["expected_cost_basis"]) > 0.005
+            b.get("initial_cost_basis") is not None
+            and b.get("final_cost_basis") is not None
+            and abs(b["initial_cost_basis"] - b["final_cost_basis"]) > 0.005
         ):
             lines.append(
-                f"  Basis:       ${b['expected_cost_basis']:.4f}/sh (was ${b['current_cost_basis']:.2f}/sh)"
+                f"  Basis:       ${b['final_cost_basis']:.4f}/sh "
+                f"(was ${b['initial_cost_basis']:.2f}/sh)"
             )
         if b.get("cash_in_lieu_expected"):
             lines.append("  Note:        Fractional share expected, broker CIL")
-        lines.append(f"  Source:      {b['source']['endpoint']}")
-        lines.append(f"  Verified:    {b['source']['fetched_at']}")
+        if b.get("break_state") and b["break_state"] != "reconciled":
+            lines.append(f"  State:       {b['break_state']}")
+        srcs = b.get("sources") or []
+        if srcs:
+            lines.append(f"  Source:      {srcs[0]['endpoint']}")
+            lines.append(f"  Verified:    {srcs[0]['fetched_at']}")
         lines.append("")
 
     caveats = payload.get("tier_caveats") or []
@@ -576,6 +600,14 @@ def render(payload):
             else:
                 lines.append(f"- {c}")
         lines.append("")
+
+    # M4: surface the share-comparison tolerance in the rendered output
+    # so operators know why a 1e-9 drift won't show as a break.
+    lines.append(
+        f"Share comparisons use an absolute tolerance of {SHARE_TOLERANCE:g} "
+        "to absorb float-precision noise from successive split-adjust "
+        "multiplications. Deltas smaller than that are treated as matched."
+    )
 
     return "\n".join(lines).rstrip() + "\n"
 
@@ -602,7 +634,10 @@ def main():
         expected_shares = state["shares"]
         expected_basis = state["cost_basis"]
 
-        share_break = expected_shares != recorded_shares
+        # M4: tolerance-aware share comparison. Successive split-adjust
+        # multiplications drift on the order of 1e-12; exact equality
+        # was producing phantom "breaks" on clean books.
+        share_break = not shares_equal(expected_shares, recorded_shares)
         basis_break = (
             recorded_basis is not None
             and expected_basis is not None
@@ -627,80 +662,124 @@ def main():
             })
             continue
 
-        # Surface every action as a break for the audit trail.
+        # M3: consolidate to ONE break record per ticker. Each applied
+        # corporate action becomes an entry in adjustments[]; the top
+        # level surfaces initial vs final state and the overall break
+        # status. Spinoffs that create a new subsidiary position get a
+        # separate consolidated record (one per spinoff ticker), since
+        # they represent a distinct security.
+        adjustments = []
+        parent_sources = []
+        any_cil = False
+        break_state = "reconciled"
         for action in actions:
             if action["kind"] == "spinoff_new_position":
-                # Will be handled in new_positions loop.
+                # Handled below as its own record.
                 continue
             kind = action["kind"]
             ex_date = action["ex_date"]
             if kind in ("split", "reverse_split"):
-                ratio_str = action["ratio"]
-                action_obj = {
+                adj = {
+                    "kind": kind,
                     "ex_date": ex_date,
-                    "ratio": ratio_str,
+                    "ratio": action["ratio"],
                     "split_to": action["split_to"],
                     "split_from": action["split_from"],
+                    "pre_shares": action.get("pre_shares"),
+                    "post_shares": action.get("post_shares"),
+                    "pre_cost_basis": action.get("pre_cost_basis"),
+                    "post_cost_basis": action.get("post_cost_basis"),
                 }
             elif kind == "cash_dividend_basis":
-                action_obj = {
+                adj = {
+                    "kind": kind,
                     "ex_date": ex_date,
                     "amount": action.get("amount"),
                     "currency": action.get("currency", "USD"),
                     "dividend_type": action.get("dividend_type"),
                     "is_special": action.get("is_special", False),
+                    "pre_cost_basis": action.get("pre_cost_basis"),
+                    "post_cost_basis": action.get("post_cost_basis"),
                 }
             elif kind in ("stock_dividend", "large_stock_dividend"):
-                action_obj = {
+                adj = {
+                    "kind": kind,
                     "ex_date": ex_date,
                     "dividend_type": action.get("dividend_type"),
                     "rate": action.get("rate"),
                     "ratio_str": action.get("ratio_str"),
+                    "pre_shares": action.get("pre_shares"),
+                    "post_shares": action.get("post_shares"),
+                    "pre_cost_basis": action.get("pre_cost_basis"),
+                    "post_cost_basis": action.get("post_cost_basis"),
                 }
             elif kind == "spinoff":
-                action_obj = {
+                adj = {
+                    "kind": kind,
                     "ex_date": ex_date,
                     "spinoff_ticker": action["spinoff_ticker"],
                     "spin_ratio_y_per_x": action["spin_ratio_y_per_x"],
                     "alloc_method": action["alloc_method"],
                     "parent_alloc_pct": action["parent_alloc_pct"],
+                    "pre_cost_basis": action.get("pre_cost_basis"),
+                    "post_cost_basis": action.get("post_cost_basis"),
                 }
             else:
-                action_obj = {"ex_date": ex_date}
+                # Unknown kind: still record it but mark the overall
+                # break_state so the operator notices.
+                adj = {
+                    "kind": kind,
+                    "ex_date": ex_date,
+                }
+                break_state = "unknown_type"
+            if action.get("cash_in_lieu_expected"):
+                adj["cash_in_lieu_expected"] = True
+                any_cil = True
+            parent_sources.append(action["source"])
+            adjustments.append(adj)
+
+        if adjustments:
             breaks.append({
                 "ticker": ticker,
-                "kind": kind,
                 "recorded_as_of": pos["as_of_date"],
-                "current_shares": recorded_shares,
-                "expected_shares": action.get("post_shares", expected_shares),
-                "delta_shares": (
-                    action.get("post_shares", expected_shares) - recorded_shares
-                ),
-                "current_cost_basis": recorded_basis,
-                "expected_cost_basis": action.get("post_cost_basis"),
-                "cash_in_lieu_expected": action.get("cash_in_lieu_expected", False),
-                "action": action_obj,
-                "source": action["source"],
+                "initial_shares": recorded_shares,
+                "initial_cost_basis": recorded_basis,
+                "final_shares": expected_shares,
+                "final_cost_basis": expected_basis,
+                "delta_shares": expected_shares - recorded_shares,
+                "adjustments": adjustments,
+                "break_state": break_state,
+                "share_break": share_break,
+                "basis_break": basis_break,
+                "cash_in_lieu_expected": any_cil,
+                "sources": parent_sources,
             })
 
+        # Each spinoff-created subsidiary is a distinct ticker, so it
+        # gets its own consolidated record with a single-element
+        # adjustments[] list. Keeps "one record per ticker" honest.
         for new_pos in new_positions:
             breaks.append({
                 "ticker": new_pos["spinoff_ticker"],
-                "kind": "spinoff_new_position",
                 "recorded_as_of": pos["as_of_date"],
-                "current_shares": 0,
-                "expected_shares": new_pos["expected_shares"],
+                "initial_shares": 0,
+                "initial_cost_basis": None,
+                "final_shares": new_pos["expected_shares"],
+                "final_cost_basis": new_pos["expected_cost_basis"],
                 "delta_shares": new_pos["expected_shares"],
-                "current_cost_basis": None,
-                "expected_cost_basis": new_pos["expected_cost_basis"],
-                "cash_in_lieu_expected": new_pos["cash_in_lieu_expected"],
-                "action": {
+                "adjustments": [{
+                    "kind": "spinoff_new_position",
                     "ex_date": new_pos["ex_date"],
                     "spinoff_ticker": new_pos["spinoff_ticker"],
                     "parent_ticker": new_pos["parent_ticker"],
                     "spin_ratio_y_per_x": new_pos["spin_ratio_y_per_x"],
-                },
-                "source": new_pos["source"],
+                    "cash_in_lieu_expected": new_pos["cash_in_lieu_expected"],
+                }],
+                "break_state": "reconciled",
+                "share_break": True,
+                "basis_break": False,
+                "cash_in_lieu_expected": new_pos["cash_in_lieu_expected"],
+                "sources": [new_pos["source"]],
             })
 
     payload = {
