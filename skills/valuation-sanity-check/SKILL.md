@@ -1,6 +1,6 @@
 ---
 name: valuation-sanity-check
-description: Sanity-check an internal analyst valuation thesis against the live peer set. Input the target price, assumed revenue growth, assumed EBITDA margin, and horizon; the skill pulls the current name, builds the peer cohort, computes target-implied multiples vs the peer 25-75 band, compares the growth and margin assumptions to the peer distribution, runs a simplified reverse-DCF to back out the revenue CAGR the current stock price already requires given the assumed margin, and emits a one-page sell-side flash note answering "is this target defensible or has the model drifted from reality." Use when a banker, PM, or analyst is stress-testing a price target or pitch-deck valuation. Requires Stocks Starter.
+description: Sanity-check an internal analyst valuation thesis against the live peer set. Input the target price, assumed revenue growth, assumed EBITDA margin, and horizon; the skill pulls the current name, builds the peer cohort, computes target-implied multiples vs the peer 25-75 band, compares the growth and margin assumptions to the peer distribution, runs a simplified reverse-DCF, and emits either a single-point fair-value estimate or a full fair-value distribution (--mc flag) as a one-page sell-side flash note answering "is this target defensible or has the model drifted from reality." Use when a banker, PM, or analyst is stress-testing a price target or pitch-deck valuation. Requires Stocks Starter.
 ---
 
 # valuation-sanity-check
@@ -113,6 +113,41 @@ A custom UI consumes the JSON and renders the three sanity sections
 as side-by-side comparison bars (assumption vs peer band) with a
 scatter inset for the reverse-DCF view. Claude Code users read the
 rendered note.
+
+## MC mode
+
+Pass `--mc` when the single-point fair value reads as implausibly
+precise; emits a sampled distribution + sensitivity ranking instead.
+Drivers (growth, margin, exit multiple) come from the same peer set
+the point-estimate path uses. See [`references/monte-carlo.md`](./references/monte-carlo.md)
+for the methodology, sampling defaults, and what MC mode does NOT do
+(it is not a forecast; it is a sensitivity sweep around peer-derived
+inputs).
+
+Flags:
+
+- `--mc` — enable Monte Carlo fair-value distribution (default off).
+- `--mc-samples N` — sample count, clamped to `[1000, 100000]`,
+  default `10000`.
+- `--mc-distribution {peer,normal}` — `peer` resamples from the peer
+  empirical distribution (default); `normal` fits N(mu, sigma) to the
+  peer set, useful for small cohorts where the empirical histogram
+  is chunky.
+- `--mc-seed N` — seed for reproducible runs.
+
+When `--mc` is on the JSON gains a `monte_carlo` block with the p5..p95
+fair-value distribution, the percentile of current and target price
+within that distribution, per-driver Spearman sensitivity, and the
+underlying driver pools. The rendered note appends a distribution
+table, an adaptive "Translation:" line keyed to where the current
+price sits inside the IQR, and a sensitivity bar chart.
+
+Drivers are sampled INDEPENDENTLY. True peer growth and margin
+correlate (rho ~ 0.3-0.5 historically), so MC tail percentiles
+understate slightly. This caveat is surfaced in `tier_caveats`.
+
+When `--mc` is off the script's behavior, JSON keys, and rendered
+output are byte-identical to the pre-MC release.
 
 ## Endpoints used
 

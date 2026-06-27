@@ -48,6 +48,10 @@ from lib.quant_garage import (
     emit_to_stdout,
     da_annualized,
     operating_income_annualized,
+    sample_empirical,
+    sample_normal,
+    spearman_sensitivity,
+    percentile_summary,
 )
 
 
@@ -500,6 +504,132 @@ def fair_value_at_peer_median(subject, peer_median_cagr, assumed_margin,
     return fair_mcap / shares
 
 
+# ----- Monte Carlo fair-value distribution -----
+
+def compute_mc_fair_value(
+    *,
+    growth_values,
+    margin_values,
+    exit_multiple_values,
+    revenue_ttm,
+    wacc,
+    horizon,
+    ev_net_non_mcap,
+    shares,
+    n_samples,
+    distribution,
+    seed,
+    current_price,
+    target_price,
+):
+    """Sample a joint draw of (growth, margin, exit_multiple) and compute the
+    induced fair-value distribution.
+
+    Returns a dict ready to drop into the `monte_carlo` JSON block, OR a
+    `{reason: 'insufficient_peers', ...}` dict if any driver has < 5 valid
+    values. Drivers are sampled INDEPENDENTLY; correlation caveat is
+    surfaced in the caller's tier_caveats.
+
+    Factored out so it can be tested with synthetic inputs (no live API).
+    """
+    def _n_valid(vs):
+        return sum(1 for v in vs if v is not None and np.isfinite(float(v)))
+
+    n_g = _n_valid(growth_values)
+    n_m = _n_valid(margin_values)
+    n_x = _n_valid(exit_multiple_values)
+
+    if n_g < 5 or n_m < 5 or n_x < 5:
+        return {
+            "reason": "insufficient_peers",
+            "n_peers_growth": n_g,
+            "n_peers_margin": n_m,
+            "n_peers_exit_multiple": n_x,
+            "samples": None,
+        }
+
+    sampler = sample_empirical if distribution == "peer" else sample_normal
+    # Use distinct seeds per driver so callers passing seed=42 don't get
+    # perfectly co-moving samples across drivers.
+    seed_g = seed
+    seed_m = (seed + 1) if seed is not None else None
+    seed_x = (seed + 2) if seed is not None else None
+
+    g_samples = sampler(growth_values, n=n_samples, seed=seed_g)
+    m_samples = sampler(margin_values, n=n_samples, seed=seed_m)
+    x_samples = sampler(exit_multiple_values, n=n_samples, seed=seed_x)
+
+    # Per-draw fair value. Uses the SAME formula as fair_value_at_peer_median.
+    revenue_h = revenue_ttm * np.power(1.0 + g_samples, horizon)
+    ebitda_h = revenue_h * m_samples
+    ev_h = ebitda_h * x_samples
+    ev_pv = ev_h / ((1.0 + wacc) ** horizon)
+    fv_samples = (ev_pv - (ev_net_non_mcap or 0.0)) / shares
+
+    fv_summary = percentile_summary(fv_samples)
+    fv_summary = {k: (round(v, 4) if isinstance(v, float) else v)
+                  for k, v in fv_summary.items()}
+
+    # Percentile of current/target price within the fv distribution.
+    def _pct_of(price):
+        if price is None:
+            return None
+        finite = fv_samples[np.isfinite(fv_samples)]
+        if finite.size == 0:
+            return None
+        return float(np.mean(finite <= price) * 100.0)
+
+    current_pct = _pct_of(current_price)
+    target_pct = _pct_of(target_price)
+
+    sensitivity = spearman_sensitivity(
+        {"growth": g_samples, "margin": m_samples, "exit_multiple": x_samples},
+        fv_samples,
+    )
+    sensitivity = [
+        {"driver": s["driver"], "rho": round(s["rho"], 3),
+         "abs_rho": round(s["abs_rho"], 3)}
+        for s in sensitivity
+    ]
+
+    def _driver_block(values, n_valid):
+        cleaned = np.asarray(
+            [float(v) for v in values
+             if v is not None and np.isfinite(float(v))],
+            dtype=float,
+        )
+        source = "peer_empirical" if distribution == "peer" else "peer_normal_fit"
+        return {
+            "source": source,
+            "n_peers": n_valid,
+            "p25": round(float(np.percentile(cleaned, 25)), 4),
+            "p50": round(float(np.percentile(cleaned, 50)), 4),
+            "p75": round(float(np.percentile(cleaned, 75)), 4),
+        }
+
+    return {
+        "samples": n_samples,
+        "seed": seed,
+        "distribution": distribution,
+        "fv_per_share": fv_summary,
+        "current_price_percentile": round(current_pct, 1) if current_pct is not None else None,
+        "target_price_percentile": round(target_pct, 1) if target_pct is not None else None,
+        "sensitivity": sensitivity,
+        "drivers_used": {
+            "growth": _driver_block(growth_values, n_g),
+            "margin": _driver_block(margin_values, n_m),
+            "exit_multiple": _driver_block(exit_multiple_values, n_x),
+        },
+        "tier_caveats": [
+            ("Drivers sampled independently; true peer growth/margin show "
+             "rho ~ 0.3-0.5 historically, so tail percentiles may be slightly "
+             "understated"),
+            (f"WACC held constant at {wacc*100:.1f}%; consider sensitivity "
+             "analysis at +/- 100bps separately"),
+        ],
+    }
+
+
 # ----- Take + read generation -----
 
 def fmt_pp(x, decimals=0):
@@ -695,8 +825,25 @@ ap.add_argument("--peers", type=str, default=None,
                 help="Comma-separated peer override (skips curated map)")
 ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                 help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
+ap.add_argument("--mc", action="store_true",
+                help="Run Monte Carlo fair-value distribution (default off)")
+ap.add_argument("--mc-samples", type=int, default=10000,
+                help="MC sample count (default 10000, min 1000, max 100000)")
+ap.add_argument("--mc-distribution", choices=["peer", "normal"], default="peer",
+                help="'peer' = empirical resample (default); 'normal' = N(mu,sigma) fit")
+ap.add_argument("--mc-seed", type=int, default=None,
+                help="Seed for reproducible MC runs")
 args = ap.parse_args()
 fmt = resolve_output_format(args.format)
+
+# Validate MC sample count
+if args.mc:
+    if args.mc_samples < 1000 or args.mc_samples > 100000:
+        print(
+            f"ERROR: --mc-samples must be in [1000, 100000], got {args.mc_samples}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 subject_ticker = args.ticker.upper()
 
@@ -933,6 +1080,39 @@ reverse_dcf = {
 }
 
 
+# ----- Monte Carlo (optional) -----
+
+monte_carlo_block = None
+if args.mc:
+    # Reuse the SAME peer driver pools the point estimate consumes.
+    # `peer_ev_ebitda` already excludes peers without D&A (C7 fix).
+    mc_growth_vals = [v for v in peer_growth_vals if v is not None]
+    mc_margin_vals = [v for v in peer_margin_vals if v is not None]
+    mc_exit_vals = [v for v in peer_ev_ebitda if v is not None]
+
+    if revenue_ttm is None or shares is None or shares <= 0:
+        monte_carlo_block = {
+            "reason": "subject_data_missing",
+            "samples": None,
+        }
+    else:
+        monte_carlo_block = compute_mc_fair_value(
+            growth_values=mc_growth_vals,
+            margin_values=mc_margin_vals,
+            exit_multiple_values=mc_exit_vals,
+            revenue_ttm=revenue_ttm,
+            wacc=WACC,
+            horizon=args.horizon,
+            ev_net_non_mcap=_ev_net_non_mcap,
+            shares=shares,
+            n_samples=args.mc_samples,
+            distribution=args.mc_distribution,
+            seed=args.mc_seed,
+            current_price=current_price,
+            target_price=target_price,
+        )
+
+
 # ----- peers_used summary -----
 
 peers_used = []
@@ -1043,6 +1223,13 @@ payload = {
     "read": read,
     "sources": sources,
 }
+
+if monte_carlo_block is not None:
+    payload["monte_carlo"] = monte_carlo_block
+    # Surface the MC-specific tier caveats up to the top-level list so
+    # the rendered note keeps a single source of caveats.
+    for caveat in monte_carlo_block.get("tier_caveats", []) or []:
+        tier_caveats.append(caveat)
 
 
 # ----- Renderer -----
@@ -1155,6 +1342,93 @@ def render(payload):
                 f"{fmt_price(rd['fair_value_at_peer_median'])}"
             )
         lines.append("")
+
+    # Monte Carlo (only when --mc was passed and we got a valid block)
+    mc = payload.get("monte_carlo")
+    if mc is not None:
+        if mc.get("samples") is None:
+            reason = mc.get("reason", "unavailable")
+            if reason == "insufficient_peers":
+                lines.append(
+                    f"Monte Carlo skipped: insufficient peers "
+                    f"(growth n={mc.get('n_peers_growth')}, "
+                    f"margin n={mc.get('n_peers_margin')}, "
+                    f"exit n={mc.get('n_peers_exit_multiple')}; min 5 each)."
+                )
+            else:
+                lines.append(f"Monte Carlo skipped: {reason}.")
+            lines.append("")
+        else:
+            fv = mc["fv_per_share"]
+            dist_label = mc["distribution"]
+            label_map = {"peer": "peer-empirical", "normal": "peer-normal-fit"}
+            lines.append(
+                f"Fair value distribution (n={mc['samples']}, "
+                f"{label_map.get(dist_label, dist_label)}):"
+            )
+            lines.append(
+                f"  p10 {fmt_price(fv['p10'])}     p50 {fmt_price(fv['p50'])}"
+            )
+            lines.append(
+                f"  p25 {fmt_price(fv['p25'])}     p75 {fmt_price(fv['p75'])}"
+            )
+            lines.append(
+                f"  mean {fmt_price(fv['mean'])}    p90 {fmt_price(fv['p90'])}"
+            )
+            lines.append("")
+            cur_pct = mc.get("current_price_percentile")
+            tgt_pct = mc.get("target_price_percentile")
+            if cur_pct is not None and subj.get("current_price") is not None:
+                lines.append(
+                    f"Current price {fmt_price(subj['current_price'])} -> "
+                    f"{cur_pct:.0f}th percentile of fair-value distribution."
+                )
+            if tgt_pct is not None:
+                lines.append(
+                    f"Target price {fmt_price(an['target_price'])} -> "
+                    f"{tgt_pct:.0f}th percentile."
+                )
+            lines.append("")
+
+            # Adaptive translation line based on where current price sits.
+            if cur_pct is not None:
+                if cur_pct < 25:
+                    translation = (
+                        "Translation: at the consensus drivers your name is "
+                        "priced for the bottom quintile of outcomes. Bull case "
+                        "requires top-quartile growth AND top-quartile multiple."
+                    )
+                elif cur_pct > 75:
+                    translation = (
+                        "Translation: priced above the IQR of plausible "
+                        "outcomes - pricing in upside that requires top-"
+                        "quartile execution."
+                    )
+                else:
+                    translation = (
+                        "Translation: priced inside the IQR of plausible "
+                        "outcomes. The cohort math supports the current tape "
+                        "without requiring tail assumptions."
+                    )
+                lines.append(translation)
+                lines.append("")
+
+            # Sensitivity bar chart (~12 char max).
+            sens = mc.get("sensitivity") or []
+            if sens:
+                lines.append("Sensitivity:")
+                max_abs = max((s["abs_rho"] for s in sens), default=0.0)
+                bar_max = 12
+                for s in sens:
+                    name = s["driver"]
+                    rho = s["rho"]
+                    bar_len = (int(round((s["abs_rho"] / max_abs) * bar_max))
+                               if max_abs > 0 else 0)
+                    bar = "█" * bar_len
+                    lines.append(
+                        f"  {name:<14}   rho={rho:+.2f}   {bar}"
+                    )
+                lines.append("")
 
     # Read
     lines.append(payload["read"])

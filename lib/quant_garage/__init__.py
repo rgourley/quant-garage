@@ -45,6 +45,13 @@ from .annualize import (
     da_annualized,
 )
 from .percentile import percentile_rank, format_rank_label, base_rate
+from .monte_carlo import (
+    sample_empirical,
+    sample_normal,
+    spearman_sensitivity,
+    percentile_summary,
+    DistributionKind,
+)
 
 __all__ = [
     "MassiveClient",
@@ -79,4 +86,9 @@ __all__ = [
     "percentile_rank",
     "format_rank_label",
     "base_rate",
+    "sample_empirical",
+    "sample_normal",
+    "spearman_sensitivity",
+    "percentile_summary",
+    "DistributionKind",
 ]
