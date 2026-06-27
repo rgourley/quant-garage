@@ -198,6 +198,13 @@ class MassiveClient:
         First call uses `path` + `params`. Subsequent calls follow the
         absolute URL in `next_url` from each response. apiKey is stripped
         from next_url; the Authorization header is the single auth source.
+
+        Warning:
+            A few endpoints break the envelope convention and return a bare
+            JSON array (e.g., `/v1/marketstatus/upcoming`). For those, use
+            `get()` directly and check `isinstance(body, list)`. `paginate()`
+            will silently yield zero rows on bare-array endpoints because
+            `body.get("results")` returns None.
         """
         url_or_path = path
         current_params = params

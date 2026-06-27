@@ -445,10 +445,23 @@ def classify_trades_against_nbbo(occ_ticker, contract_type, contrib):
 
 
 def compute_score(vol_avg_ratio, vol_oi_ratio, premium_usd, chain_share):
-    """See references/unusual-activity-detection.md."""
+    """See references/unusual-activity-detection.md.
+
+    When vol_oi_ratio is None (zero-OI / freshly-listed contract) the OI
+    component is dropped and the remaining weights are renormalized so
+    the score stays comparable to scored-with-OI candidates.
+    """
+    if vol_oi_ratio is None:
+        # Drop the OI term and renormalize the other three weights
+        # (0.40 + 0.20 + 0.10 = 0.70) up to 1.0.
+        return (
+            (vol_avg_ratio / 3.0) * (0.40 / 0.70)
+            + (premium_usd / 1_000_000) * (0.20 / 0.70)
+            + (chain_share / 0.05) * (0.10 / 0.70)
+        )
     return (
         (vol_avg_ratio / 3.0) * 0.40
-        + (min(vol_oi_ratio or 0, 50) / 5.0) * 0.30
+        + (min(vol_oi_ratio, 50) / 5.0) * 0.30
         + (premium_usd / 1_000_000) * 0.20
         + (chain_share / 0.05) * 0.10
     )
@@ -510,7 +523,15 @@ def scan_ticker(ticker):
         if premium_usd < MIN_PREMIUM_USD:
             continue
 
-        vol_oi_ratio = (vol / oi) if oi and oi > 0 else (vol / 1.0)
+        # Zero-OI / freshly-listed contracts have no real open-interest
+        # signal. Carry None through so compute_score and position_signal
+        # drop the OI term explicitly rather than treating it as OI=1.
+        if oi is None or oi <= 0:
+            vol_oi_ratio = None
+            zero_oi = True
+        else:
+            vol_oi_ratio = vol / oi
+            zero_oi = False
         chain_share = (vol / chain_total_vol) if chain_total_vol > 0 else 0
 
         candidates.append({
@@ -518,6 +539,7 @@ def scan_ticker(ticker):
             "spot": (o.get("underlying_asset") or {}).get("price") or spot,
             "vol": vol,
             "oi": oi or 0,
+            "zero_oi": zero_oi,
             "vol_oi_ratio": vol_oi_ratio,
             "premium_usd": premium_usd,
             "chain_share": chain_share,
@@ -611,6 +633,7 @@ def scan_ticker(ticker):
             "volume": c["vol"],
             "volume_to_avg_ratio": vol_avg_ratio,
             "volume_to_oi_ratio": c["vol_oi_ratio"],
+            "zero_oi": c["zero_oi"],
             "avg_volume_30d": avg_30d,
             "avg_volume_source": avg_source,
             "price_vs_nbbo": nbbo_tag,
@@ -648,6 +671,8 @@ for tk in TICKERS:
 all_prints.sort(key=lambda p: p["score"], reverse=True)
 all_prints = all_prints[:MAX_PRINTS]
 
+zero_oi_count = sum(1 for p in all_prints if p.get("zero_oi"))
+
 # Build payload
 payload = {
     "tier": "B",
@@ -667,6 +692,7 @@ payload = {
         "strike_band_pct": STRIKE_BAND_PCT,
     },
     "prints": all_prints,
+    "zero_oi_count": zero_oi_count,
     "skipped_tickers": skipped,
     "sources": [
         {"endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}", "fetched_at": utcnow_iso(), "context": "spot price per ticker"},
@@ -740,7 +766,10 @@ def render_block(p):
     line2 = " · ".join(line2_parts)
 
     spot_str = f"spot ${p['spot_at_print']:.2f}" if p["spot_at_print"] else "spot n/a"
-    oi_str = f"OI {p['oi_pre_trade']:,} ({p['oi_position_signal']})"
+    if p.get("zero_oi"):
+        oi_str = "OI: 0 (new)"
+    else:
+        oi_str = f"OI {p['oi_pre_trade']:,} ({p['oi_position_signal']})"
     iv_str = f"IV {round((p['iv_at_print'] or 0) * 100)}%" if p["iv_at_print"] else "IV n/a"
     line3 = f"{spot_str} · {oi_str} · {iv_str}"
 

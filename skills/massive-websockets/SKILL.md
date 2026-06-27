@@ -100,6 +100,8 @@ ws.on("message", (data) => {
   for (const msg of messages) {
     if (msg.ev === "status" && msg.status === "auth_success") {
       ws.send(JSON.stringify({ action: "subscribe", params: "T.AAPL,T.MSFT" }));
+    } else if (msg.ev === "status" && msg.status === "auth_failed") {
+      throw new Error(msg.message);  // bad/expired key
     } else if (msg.ev === "T") {
       handleTrade(msg);
     }
@@ -109,6 +111,23 @@ ws.on("message", (data) => {
 
 Messages arrive as JSON arrays (multiple events per frame). Always
 iterate.
+
+**Status enum reference** (verified against the official Polygon Python
+client's mock server, which mirrors the live protocol):
+
+| `ev` | `status` | When | `message` example |
+|---|---|---|---|
+| `status` | `connected` | Right after TCP handshake | `"Connected Successfully"` |
+| `status` | `auth_success` | Auth message accepted | `"authenticated"` |
+| `status` | `auth_failed` | Bad / expired / wrong-tier API key | varies |
+| `status` | `success` | Subscribe or unsubscribe ack | `"subscribed to: T.AAPL"` |
+| `status` | `error` | Subscribe rejected by entitlement | `"not authorized"` |
+
+Track `auth_failed` separately from `error` + `"not authorized"`: the
+former means the key itself is bad (operator must rotate), the latter
+means the key is fine but doesn't carry the entitlement for that
+channel (operator must upgrade or sign an addendum, OR your code
+should fall back to the next preferred channel).
 
 ## Channels
 

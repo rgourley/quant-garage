@@ -31,7 +31,7 @@ import sys
 import threading
 import time
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, date, timezone, timedelta
 from typing import Optional
 
 try:
@@ -132,6 +132,44 @@ _PRICE_SOURCE_MAP = {
 }
 
 
+# Per-run cache of 30-day ADV by ticker. These scripts are run-once,
+# so a module-level dict is fine. Avoids re-fetching the same 22 days
+# of daily aggs across overlapping symbol lookups.
+_ADV_CACHE: dict[str, Optional[float]] = {}
+
+
+def fetch_adv_30d(ticker: str, ref_date: date) -> Optional[float]:
+    """Mean daily volume over the prior ~22 trading sessions.
+
+    Window is `ref_date - 45 calendar days .. ref_date - 1 calendar day`,
+    which covers ~22-23 trading sessions and excludes ref_date itself.
+    Returns None if fewer than 5 valid sessions come back, in which case
+    the caller falls back to the `unknown_adv` bucket.
+    """
+    if ticker in _ADV_CACHE:
+        return _ADV_CACHE[ticker]
+
+    end = (ref_date - timedelta(days=1)).isoformat()
+    start = (ref_date - timedelta(days=45)).isoformat()
+    path = (
+        f"/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
+        f"?adjusted=true&sort=desc&limit=50"
+    )
+    try:
+        doc, _ = client.get(path)
+    except FetchError:
+        _ADV_CACHE[ticker] = None
+        return None
+    results = doc.get("results") or []
+    vols = [a.get("v") for a in results if a.get("v") is not None]
+    if len(vols) < 5:
+        _ADV_CACHE[ticker] = None
+        return None
+    mean = sum(vols) / len(vols)
+    _ADV_CACHE[ticker] = mean
+    return mean
+
+
 def snapshot_mark(ticker: str) -> dict:
     """Walk the fallback chain and return mark + source + freshness + quote."""
     try:
@@ -216,8 +254,13 @@ def snapshot_mark(ticker: str) -> dict:
 # ----- Confidence -----
 
 def confidence_for(mark_age_sec: Optional[float], spread_bps: Optional[float],
-                   day_volume: Optional[float], mark_source: Optional[str]) -> tuple:
-    """Returns (confidence, reason_codes)."""
+                   adv_30d: Optional[float], mark_source: Optional[str]) -> tuple:
+    """Returns (confidence, reason_codes).
+
+    `adv_30d` is the 30-day mean daily volume (prior ~22 trading sessions),
+    not today's volume. Today's session can run light on a high-ADV name
+    and falsely flag it as `low_adv` if we bucket on day.v alone.
+    """
     reasons: list = []
 
     # Recency bucket
@@ -244,12 +287,13 @@ def confidence_for(mark_age_sec: Optional[float], spread_bps: Optional[float],
         spread_bucket = "low"
         reasons.append("wide_spread")
 
-    # ADV bucket
-    if day_volume is None:
+    # ADV bucket (30-day mean, not today's volume)
+    if adv_30d is None:
         adv_bucket = "medium"
-    elif day_volume >= HIGH_ADV_SHARES:
+        reasons.append("unknown_adv")
+    elif adv_30d >= HIGH_ADV_SHARES:
         adv_bucket = "high"
-    elif day_volume >= MEDIUM_ADV_SHARES:
+    elif adv_30d >= MEDIUM_ADV_SHARES:
         adv_bucket = "medium"
     else:
         adv_bucket = "low"
@@ -292,11 +336,13 @@ def detail_lines(reasons: list, pos: dict, ref_utc: datetime) -> list:
         elif r == "thin_quote":
             out.append("Bid or ask missing in snapshot; quote book likely thin")
         elif r == "low_adv":
-            vol = pos.get("day_volume")
-            if vol is not None:
-                out.append(f"Today's volume {int(vol):,} (well below 500k mid-ADV cutoff)")
+            adv = pos.get("adv_30d")
+            if adv is not None:
+                out.append(f"30d ADV {int(adv):,} (below 500k mid-ADV cutoff)")
             else:
-                out.append("Day volume unavailable; ADV tier defaulted to thin")
+                out.append("30d ADV unavailable; ADV tier defaulted to thin")
+        elif r == "unknown_adv":
+            out.append("30d ADV unavailable (fewer than 5 sessions in window); bucket defaulted to medium")
         elif r == "fallback_chain_step_3_or_later":
             short = {
                 "snapshot.min.c": "minute_close",
@@ -330,12 +376,20 @@ def run_delayed(positions: list) -> dict:
 
     out_positions = []
     flagged = []
-    sources = [{
-        "endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
-        "fetched_at": utcnow_iso(),
-        "context": "one snapshot per unique symbol",
-    }]
+    sources = [
+        {
+            "endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+            "fetched_at": utcnow_iso(),
+            "context": "one snapshot per unique symbol",
+        },
+        {
+            "endpoint": "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}",
+            "fetched_at": utcnow_iso(),
+            "context": "30-day daily aggs for ADV bucketing (~22 trading sessions, cached per ticker)",
+        },
+    ]
 
+    ref_date = marked_at.date()
     for pos in positions:
         snap = snapshot_mark(pos["ticker"])
         mark = snap["mark_price"]
@@ -348,7 +402,8 @@ def run_delayed(positions: list) -> dict:
                 spread_bps = (ask - bid) / mid * 10000
 
         age = (marked_at - as_of).total_seconds() if as_of else None
-        conf, reasons = confidence_for(age, spread_bps, snap.get("day_volume"), snap["mark_source"])
+        adv_30d = fetch_adv_30d(pos["ticker"], ref_date)
+        conf, reasons = confidence_for(age, spread_bps, adv_30d, snap["mark_source"])
 
         pos_record = {
             "ticker": pos["ticker"],
@@ -367,6 +422,7 @@ def run_delayed(positions: list) -> dict:
             "market_value_usd": (pos["shares"] * mark) if mark is not None else None,
             "tick_count": None,
             "day_volume": snap.get("day_volume"),
+            "adv_30d": adv_30d,
         }
         out_positions.append(pos_record)
 
@@ -645,10 +701,16 @@ def run_live(positions: list, listen_seconds: int) -> dict:
     out_positions = []
     flagged = []
     live_tape: list = []
-    sources = [{"endpoint": WS_URL, "fetched_at": utcnow_iso(),
-                "context": f"WebSocket stream, listen window {listen_seconds}s"}]
+    sources = [
+        {"endpoint": WS_URL, "fetched_at": utcnow_iso(),
+         "context": f"WebSocket stream, listen window {listen_seconds}s"},
+        {"endpoint": "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}",
+         "fetched_at": utcnow_iso(),
+         "context": "30-day daily aggs for ADV bucketing (~22 trading sessions, cached per ticker)"},
+    ]
     snapshot_used = False
 
+    ref_date = marked_at.date()
     for pos in positions:
         sym = pos["ticker"]
         s = runner.state[sym]
@@ -686,7 +748,8 @@ def run_live(positions: list, listen_seconds: int) -> dict:
                 spread_bps = (ask - bid) / mid * 10000
 
         age = (marked_at - as_of).total_seconds() if as_of else None
-        conf, reasons = confidence_for(age, spread_bps, day_volume, mark_source)
+        adv_30d = fetch_adv_30d(sym, ref_date)
+        conf, reasons = confidence_for(age, spread_bps, adv_30d, mark_source)
         if "stream_downgrade" in runner.caveats and channel_used != "T":
             reasons.append("stream_downgrade")
             if conf == "high":
@@ -710,6 +773,7 @@ def run_live(positions: list, listen_seconds: int) -> dict:
             "market_value_usd": (pos["shares"] * mark) if mark is not None else None,
             "tick_count": s["tick_count"],
             "day_volume": day_volume,
+            "adv_30d": adv_30d,
         }
         out_positions.append(pos_record)
 

@@ -18,9 +18,18 @@ the entire US universe in a few minutes.
 
 ## Access
 
-The S3 bucket lives at `s3://flatfiles/`. Auth uses your Massive API key
-as the S3 access key (the secret key is the same value). Endpoint is
+The S3 bucket lives at `s3://flatfiles/`. Endpoint is
 `https://files.polygon.io` (legacy hostname, still works).
+
+**Credentials are NOT the REST API key.** Flat files use S3-compatible
+auth with a **separate access key ID and secret access key** that you
+generate in your Massive/Polygon dashboard under the Flat Files section.
+These two values are distinct from each other AND distinct from the
+REST API key you use for `api.polygon.io`. A common misconfiguration is
+to hardcode the REST API key as both `aws_access_key_id` and
+`aws_secret_access_key`, which returns `403 Forbidden` on every S3
+operation. If you hit 403s out of the gate, regenerate the dedicated
+S3 keys from the dashboard before suspecting an entitlement issue.
 
 **Entitlement gotcha (verified 2026-06-23):** flat-files access is not
 automatically included with every paid plan despite what the marketing
@@ -44,8 +53,10 @@ schema of `ticker` / `close` / `volume` / etc (lowercase); your loader
 should normalize.
 
 ```bash
-aws configure set aws_access_key_id ${MASSIVE_API_KEY} --profile massive
-aws configure set aws_secret_access_key ${MASSIVE_API_KEY} --profile massive
+# These are the S3 keys from the Flat Files section of the dashboard,
+# NOT the REST API key. They're two distinct values.
+aws configure set aws_access_key_id ${POLYGON_S3_ACCESS_KEY} --profile massive
+aws configure set aws_secret_access_key ${POLYGON_S3_SECRET_KEY} --profile massive
 aws configure set endpoint_url https://files.polygon.io --profile massive
 
 aws s3 ls s3://flatfiles/us_stocks_sip/day_aggs_v1/2026/06/ --profile massive
@@ -82,13 +93,16 @@ parallelism accordingly.
 ## Reading a day file
 
 ```python
+import os
 import pandas as pd
 
 df = pd.read_csv(
     "s3://flatfiles/us_stocks_sip/day_aggs_v1/2026/06/2026-06-20.csv.gz",
     storage_options={
-        "key": MASSIVE_API_KEY,
-        "secret": MASSIVE_API_KEY,
+        # Dedicated S3 credentials from the Flat Files dashboard panel,
+        # not the REST API key.
+        "key": os.environ["POLYGON_S3_ACCESS_KEY"],
+        "secret": os.environ["POLYGON_S3_SECRET_KEY"],
         "client_kwargs": {"endpoint_url": "https://files.polygon.io"},
     },
 )

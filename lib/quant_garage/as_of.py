@@ -31,10 +31,14 @@ def today() -> date:
 
 
 def utcnow_iso() -> str:
-    """Real-wall-clock UTC timestamp, ISO 8601 with timezone suffix.
+    """Real-wall-clock UTC timestamp, ISO 8601 with `Z` suffix.
 
     Always returns the actual current time, regardless of any
     QUANT_GARAGE_AS_OF override. Per-call provenance should not be
     frozen even when the run's reference date is.
+
+    The trailing `Z` (vs `+00:00`) makes UTC interpretation unambiguous
+    and matches the common `Z$` regex JSON consumers use to detect UTC
+    timestamps in serialized payloads.
     """
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
