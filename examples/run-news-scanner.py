@@ -81,6 +81,18 @@ WINDOW_START_UTC = NOW_UTC - timedelta(hours=WINDOW_HOURS)
 EFFECTIVE_NEWS_WINDOW_HOURS = max(WINDOW_HOURS, 7 * 24)
 NEWS_FETCH_START_UTC = NOW_UTC - timedelta(hours=EFFECTIVE_NEWS_WINDOW_HOURS)
 
+# Scale max_pages with the window so high-news megacaps (NVDA/TSLA/AAPL)
+# aren't silently truncated at 200 articles. Heuristic target: 25 articles
+# per day per ticker (covers ~99th percentile names without burning pages
+# on quiet names). At 50 articles/page that's ceil(days * 25 / 50) + 1
+# pages, floor of 4 (preserves prior behavior on short windows).
+#   7-day window  → max(4, 3+1)  = 4   (200 articles, unchanged)
+#   30-day window → max(4, 15+1) = 16  (800 articles)
+#   90-day window → max(4, 45+1) = 46  (2300 articles)
+EFFECTIVE_WINDOW_DAYS = EFFECTIVE_NEWS_WINDOW_HOURS / 24
+MAX_PAGES_PER_TICKER = max(4, int(EFFECTIVE_WINDOW_DAYS * 25 / 50) + 1)
+MAX_ARTICLES_PER_TICKER = MAX_PAGES_PER_TICKER * 50
+
 REACTION_MINUTES_DEFAULT = 60
 MIN_REACTION_FOR_DIVERGENCE = 0.005
 MIN_SENTIMENT_FOR_DIVERGENCE = 0.4
@@ -126,9 +138,16 @@ STOPWORDS = {
 
 # -------- HTTP --------
 
-def fetch_news(ticker, gte_iso, limit_per_page=50, max_pages=4):
-    """Pull /v2/reference/news for a ticker since gte_iso. Paginate."""
+def fetch_news(ticker, gte_iso, limit_per_page=50, max_pages=None):
+    """Pull /v2/reference/news for a ticker since gte_iso. Paginate.
+
+    Returns (articles, capped) where `capped` is True when the pagination
+    loop exited at `max_pages` while the last fetched page was still full
+    (heuristic: a full last page implies more pages were available).
+    """
     global news_last_fetched_at
+    if max_pages is None:
+        max_pages = MAX_PAGES_PER_TICKER
     params = {
         "ticker": ticker,
         "published_utc.gte": gte_iso,
@@ -138,13 +157,21 @@ def fetch_news(ticker, gte_iso, limit_per_page=50, max_pages=4):
     }
     out = []
     pages_seen = 0
+    capped = False
+    last_page_len = 0
     for page, fetched_at in client.paginate("/v2/reference/news", params):
         out.extend(page)
         news_last_fetched_at = fetched_at
         pages_seen += 1
+        last_page_len = len(page)
         if pages_seen >= max_pages:
+            # paginate() doesn't expose next_url state. Heuristic: if the last
+            # page was full, more pages likely exist and we just truncated.
+            # A partial last page means we hit the natural end of data.
+            if last_page_len == limit_per_page:
+                capped = True
             break
-    return out
+    return out, capped
 
 
 def fetch_minute_aggs(ticker, frm_date, to_date, resolution=5):
@@ -534,14 +561,25 @@ print(f"Scanning {len(TICKERS)} tickers over last {WINDOW_HOURS}h...", file=sys.
 # user's actual WINDOW_HOURS.
 ticker_news_raw = {}
 benzinga_present = False
+# Track tickers where pagination hit MAX_PAGES_PER_TICKER with a full last
+# page (heuristic: more articles in the window existed but weren't fetched).
+pagination_capped_tickers = []
 for t in TICKERS:
     print(f"  fetching news: {t}", file=sys.stderr)
     try:
-        articles = fetch_news(t, NEWS_FETCH_START_UTC.isoformat())
+        articles, capped = fetch_news(t, NEWS_FETCH_START_UTC.isoformat())
     except Exception as e:
         print(f"  warn: {t}: {e}", file=sys.stderr)
         articles = []
+        capped = False
     ticker_news_raw[t] = articles
+    if capped:
+        pagination_capped_tickers.append({"ticker": t, "n_fetched": len(articles)})
+        print(
+            f"  warn: {t}: pagination cap hit at {len(articles)} articles "
+            f"({MAX_PAGES_PER_TICKER} pages × 50); older articles in window not fetched",
+            file=sys.stderr,
+        )
     if any(a.get("insights") for a in articles):
         benzinga_present = True
 
@@ -817,17 +855,33 @@ if top_movers:
 else:
     take = "No material reactions in window."
 
+# Tier caveats: tier-A starts empty, tier-B carries the sentiment-source
+# warnings. Either tier picks up a pagination caveat when any ticker was
+# truncated at MAX_PAGES_PER_TICKER (corpus reflects most-recent-N, not
+# the full window).
+tier_caveats = (
+    []
+    if tier == "A"
+    else [
+        "Benzinga insights[] unavailable or forced-off; sentiment from keyword scorer.",
+        "Sentiment is article-level, not sentence-level; sarcasm and negation are not handled.",
+    ]
+)
+if pagination_capped_tickers:
+    capped_names = ", ".join(c["ticker"] for c in pagination_capped_tickers)
+    tier_caveats.append(
+        f"Pagination cap hit on {len(pagination_capped_tickers)} tickers "
+        f"({capped_names}). Up to {MAX_PAGES_PER_TICKER} × 50 = "
+        f"{MAX_ARTICLES_PER_TICKER} articles fetched per ticker; older "
+        f"articles in the window were not retrieved. Corpus for these "
+        f"tickers reflects the most-recent {MAX_ARTICLES_PER_TICKER} "
+        f"articles, not the full window."
+    )
+
 # Payload
 payload = {
     "tier": tier,
-    "tier_caveats": (
-        []
-        if tier == "A"
-        else [
-            "Benzinga insights[] unavailable or forced-off; sentiment from keyword scorer.",
-            "Sentiment is article-level, not sentence-level; sarcasm and negation are not handled.",
-        ]
-    ),
+    "tier_caveats": tier_caveats,
     "mode": "stream",
     "run_at": NOW_UTC.isoformat(),
     "scan_params": {
@@ -865,6 +919,11 @@ payload = {
             "context": "5-minute aggregates for reaction window and volume anomaly baseline",
         },
     ],
+    "pagination_status": {
+        "max_pages_per_ticker": MAX_PAGES_PER_TICKER,
+        "max_articles_per_ticker": MAX_ARTICLES_PER_TICKER,
+        "capped_tickers": pagination_capped_tickers,
+    },
 }
 
 
