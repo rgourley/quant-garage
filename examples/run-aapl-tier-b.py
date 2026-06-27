@@ -417,6 +417,14 @@ spot_snap_body, spot_snap_fetched_at = client.get(
     f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}"
 )
 spot_snap = spot_snap_body["ticker"]
+# N2: this script intentionally bypasses lib.quant_garage.snapshot.resolve_price
+# and reads lastQuote.p inline. lastQuote.p is a quote-mid (a synthetic estimate
+# derived from the current bid/ask), structurally different from a trade print.
+# Tier B keys often run on quiet names with no recent trade, so the quote-mid
+# is the only fresh estimate available before the snapshot falls back to a
+# stale day close. resolve_price() is a trade-only chain by design, and folding
+# lastQuote.p into it would mix trades and quotes for every other consumer.
+# Do not extend resolve_price() to include this field.
 spot = spot_snap["lastQuote"]["p"] if spot_snap.get("lastQuote") else spot_snap["day"]["c"]
 
 # Next print date: project from the latest acceptance (~91 days). EDGAR doesn't

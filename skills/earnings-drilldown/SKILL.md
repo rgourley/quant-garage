@@ -64,8 +64,8 @@ Claude Code users read this.
 
 ## How it works
 
-The skill runs four analyses in parallel, each documented in its own
-reference:
+The skill runs three analyses by default plus an optional fourth, each
+documented in its own reference:
 
 1. **Implied vs realized move** ([`references/implied-vs-realized.md`](./references/implied-vs-realized.md)):
    front-week straddle pricing vs realized 8-print average, with IV30
@@ -78,11 +78,15 @@ reference:
    so the user knows whether the pattern is significant or noise.
 4. **Peer reaction** ([`references/peer-reaction.md`](./references/peer-reaction.md)):
    how sector peers traded same-day on this name's past prints, with
-   per-peer betas to the print-day return.
+   per-peer betas to the print-day return. Tier A `run-aapl.py` emits
+   `peer_reaction: null` with a `peer_reaction_note` explaining the
+   skip; SIC-based selection misclassifies mega-cap tech and a curated
+   override list lands separately. Tier B `run-aapl-tier-b.py` runs the
+   analysis against an explicit `PEER_OVERRIDES` map.
 
-The take at the top of the rendered output is generated from these
-four: it surfaces the most actionable insight, usually the implied-vs-
-realized mispricing or a sharp PEAD pattern.
+The take at the top of the rendered output is generated from whichever
+analyses produced data: it surfaces the most actionable insight,
+usually the implied-vs-realized mispricing or a sharp PEAD pattern.
 
 ## Foundations used
 

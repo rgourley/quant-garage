@@ -4,9 +4,10 @@ Reference implementation of the portfolio-mark skill.
 
 Marks a CSV of positions to current fair value. Two modes:
 
-  delayed:  one REST snapshot per symbol, walks the fallback chain
-            (snapshot.last.price -> lastTrade.p -> min.c -> day.c -> prevDay.c)
-            and emits a one-shot report.
+  delayed:  one REST snapshot per symbol, walks the 4-step fallback
+            chain via lib.quant_garage.snapshot.resolve_price
+            (lastTrade.p -> min.c -> day.c -> prevDay.c) and emits a
+            one-shot report.
 
   live:     opens one WebSocket to wss://business.polygon.io/stocks,
             subscribes per-symbol with channel fallback

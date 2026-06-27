@@ -48,21 +48,28 @@ and includes auth context.
 
 ## The best-price fallback chain
 
-Never quote a price from a single field. Walk this chain and stop at the
-first non-null value:
+Never quote a price from a single field. The v2 snapshot response nests
+everything under `ticker`, so all reads start there. Walk this 4-step
+chain and stop at the first non-null value:
 
-1. `snapshot.last.price` (most recent trade)
-2. `snapshot.lastTrade.p` (older field name on some endpoints)
-3. `snapshot.min.c` (current minute close)
-4. `snapshot.day.c` (today's last)
-5. `snapshot.prevDay.c` (yesterday's close)
+1. `snapshot.ticker.lastTrade.p` (most recent trade across exchanges)
+2. `snapshot.ticker.min.c` (current minute bar close, intraday only)
+3. `snapshot.ticker.day.c` (today's session close)
+4. `snapshot.ticker.prevDay.c` (previous session close, off-hours or
+   quiet names)
 
-Always emit the timestamp of whichever field you used so the caller knows
-how stale the price is.
+Always emit the timestamp of whichever field won so the caller knows how
+stale the price is. `lastTrade.t` and `min.t` are nanosecond epochs; the
+daily fields don't always carry a timestamp.
 
-This is the generic pattern. Massive's proprietary **FMV** metric is a
-different thing (Business plan only) and not what these skills mean by
-"fair value."
+`lib/quant_garage/snapshot.py::resolve_price` is the canonical
+implementation. Every skill in this repo that needs a current price
+imports it rather than rewriting the walk.
+
+This is the generic REST pattern. Massive's proprietary **FMV** metric
+is a different thing (Business plan, stream-only on the WebSocket FMV
+channel) and not what these skills mean by "fair value." It is not a
+field on the v2 snapshot response.
 
 ## Error codes
 
@@ -93,13 +100,6 @@ curl -sS --max-time 15 \
 
 The response includes the full snapshot. Walk the fallback chain to pick
 the price field, then emit `{ticker, price, source_field, timestamp}`.
-
-## What lives here
-
-- `references/endpoints.md`: the REST endpoints used across this suite,
-  grouped by asset class
-- `references/error-handling.md`: full error matrix with retry logic
-- `references/throttling.md`: rate-limit detection and backoff patterns
 
 ## What does NOT live here
 

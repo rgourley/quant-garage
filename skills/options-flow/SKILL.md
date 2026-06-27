@@ -103,11 +103,14 @@ crypto-vol-scanner).
 
 - `GET /v3/snapshot/options/{ticker}`: paginated options chain with
   per-contract day volume, OI, IV, greeks, last quote (NBBO).
-- `GET /v3/trades/{occ_ticker}`: tick-level trades for a contract.
-  Returns size, price, conditions array (219 = ISO sweep), and
-  exchange. Used to classify sweep vs block and to compare against
-  NBBO. Real-time on Options Business; 15-min delayed on Options
-  Developer.
+- `GET /v3/trades/{occ_ticker}?timestamp.gte={start_ns}&timestamp.lte={end_ns}`:
+  tick-level trades for a contract over today's session window. Returns
+  size, price, conditions array (219 = ISO sweep), and exchange. Used
+  to classify sweep vs block. Real-time on Options Business; 15-min
+  delayed on Options Developer.
+- `GET /v3/quotes/{occ_ticker}?timestamp.lte={trade_ns}`: NBBO at each
+  contributing trade's `sip_timestamp`, used for direction inference
+  per-trade rather than against a single most-recent quote.
 - `GET /v2/aggs/ticker/{occ_ticker}/range/1/day/{from}/{to}`: per-day
   volume aggregates for the contract's recent history, used to compute
   30-day average volume.
@@ -117,9 +120,10 @@ crypto-vol-scanner).
 ## Doesn't handle (yet)
 
 - Multi-leg detection (spreads, condors, butterflies). Massive's trade
-  feed marks them via conditions 232-240, but constructing the underlying
-  strategy requires linking the legs by sequence_number which the v1
-  skill doesn't attempt.
+  feed marks them via conditions 232-245, which the script excludes
+  from sweep/block classification. Constructing the underlying strategy
+  requires linking the legs by `sequence_number`, which the v1 skill
+  doesn't attempt.
 - Dealer positioning / GEX. The skill documents the methodology in
   [`references/dealer-positioning.md`](./references/dealer-positioning.md)
   but doesn't compute it. v2 candidate.

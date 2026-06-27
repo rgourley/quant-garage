@@ -66,9 +66,13 @@ Same compute, two consumption surfaces.
    (splits) and `ex_dividend_date > as_of_date` (dividends).
 2. Apply each split's `split_to / split_from` ratio to the recorded
    share count, in chronological order. Cost basis moves inversely.
-3. Walk dividend records: cash dividends are informational by default;
-   special-cash, return-of-capital, and stock dividends adjust basis or
-   share count per the [dividends methodology](./references/dividends-methodology.md).
+3. Walk dividend records and route by Massive's `dividend_type`. RC
+   (regular cash) and SC (special cash) reduce cost basis per share by
+   the cash amount. SD (stock dividend) and LT (large stock dividend,
+   treated as a split per IRS Rev. Rul.) adjust share count and prorate
+   basis. ST routes through the split path defensively. Unknown types
+   are surfaced in `tier_caveats` rather than silently dropped. See
+   [dividends methodology](./references/dividends-methodology.md).
 4. Read spinoff entries from a `spinoffs.json` overrides file (no
    dedicated Massive spinoffs endpoint as of June 2026); adjust the
    parent position's basis and create a new position for the
@@ -116,8 +120,8 @@ GOOGL,50,2800.00,2022-06-01" > positions.csv
 # > /corp-actions-reconciler positions.csv
 ```
 
-The skill streams findings as it processes each row, so you see breaks
-the moment they're found instead of waiting for the full report.
+The skill processes positions sequentially and writes a single JSON +
+rendered report at the end of the run.
 
 ## Foundations used
 

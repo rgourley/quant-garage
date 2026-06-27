@@ -66,8 +66,11 @@ the bottom.
 2. **Pull current price + market cap** for the subject and each peer.
    One snapshot call and one ticker-details call per name. Compute
    enterprise value per [`references/multiples-methodology.md`](./references/multiples-methodology.md)
-   (market cap + long-term debt, with documented simplifications when
-   the balance-sheet fields aren't broken out).
+   as `market_cap + total_debt - cash + operating_leases +
+   minority_interest`. `total_debt` and `cash` are required; if either
+   is missing for a name, EV-based multiples are emitted as `null` and
+   the missing field is recorded on the per-name `ev_components` audit
+   trail.
 3. **Pull TTM financials** for the subject and each peer: revenue,
    operating income, depreciation and amortization (often null on
    software comps, see methodology), net income, diluted EPS. Compute
@@ -95,8 +98,9 @@ the bottom.
 ## Foundations used
 
 - [`massive-api-patterns`](../massive-api-patterns) for REST auth, rate
-  limiting, the bulk-snapshot fallback chain, and the
-  `lastTrade → day.c → prevDay.c → fmv` price waterfall.
+  limiting, and the 4-step `lastTrade.p → min.c → day.c → prevDay.c`
+  snapshot fallback chain. FMV is not a field on the v2 snapshot
+  response and is not in this waterfall.
 
 ## Output mode: table
 
@@ -116,9 +120,9 @@ rendered table.
   details. Market cap, sector, shares outstanding, name. One call per
   name.
 - `GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}`: current
-  price for each name. Cheap; falls back through the
-  `lastTrade → day.c → prevDay.c → fmv` waterfall per the API patterns
-  foundation.
+  price for each name. Cheap; falls back through the 4-step
+  `lastTrade.p → min.c → day.c → prevDay.c` waterfall per the API
+  patterns foundation.
 - `GET /vX/reference/financials?ticker={ticker}&timeframe=quarterly&limit=8&order=desc`:
   eight quarters of financials per name. TTM revenue = sum of the most
   recent 4 with revenue data, prior TTM = sum of quarters 5-8 for the
@@ -132,20 +136,15 @@ shipping; field names and versions shift.
 
 ## Doesn't handle (yet)
 
-- **Cash and short-term investments not subtracted from EV.** Massive's
-  financials endpoint exposes `current_assets` and `noncurrent_assets`
-  but does not break out `cash_and_equivalents` or
-  `short_term_investments` as named fields. EV here is `market_cap +
-  long_term_debt` (with documented null-fallback to `market_cap` when
-  debt isn't reported). True net-debt EV requires parsing the raw XBRL
-  filing.
 - **D&A often missing for software comps.** EBITDA in v1 is computed as
   `operating_income + d_a_or_zero` and labeled as such in the schema.
   For software peers where D&A isn't broken out, the "EV/EBITDA"
   multiple is closer to EV/EBIT. Documented in `multiples-methodology.md`.
-- **Minority interest and preferred stock** are not added to EV. The
-  balance sheet endpoint doesn't expose these as separate fields; the
-  simplification is documented and is a clean PR extension.
+- **Preferred stock** is not added to EV. The balance sheet endpoint
+  doesn't expose it as a separate field; the simplification is
+  documented and is a clean PR extension. Minority interest IS pulled
+  via `_first_non_null` against `noncontrolling_interest` /
+  `redeemable_noncontrolling_interest`.
 - **P/B and P/FCF** are out of scope for v1. P/B requires book value
   per share (derivable from `equity / shares`); P/FCF requires true
   FCF which is the same blocker as the operating-cash-flow-yield work

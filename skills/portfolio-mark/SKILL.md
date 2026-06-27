@@ -29,11 +29,12 @@ desks usually leave implicit.
 
 ### Delayed mode (default)
 
-REST snapshot per position. Walks the fallback chain
-(`snapshot.last.price` → `lastTrade.p` → `min.c` → `day.c` →
-`prevDay.c`) and emits the timestamp of whichever field won. Works on
-any paid Stocks plan; on Free Basic the rate limit caps batch size to
-~5 positions per minute but the methodology is identical.
+REST snapshot per position. Walks the 4-step fallback chain
+(`snapshot.ticker.lastTrade.p` → `min.c` → `day.c` → `prevDay.c`) via
+`lib/quant_garage/snapshot.py::resolve_price` and emits the timestamp of
+whichever field won. Works on any paid Stocks plan; on Free Basic the
+rate limit caps batch size to ~5 positions per minute but the
+methodology is identical.
 
 Use this for end-of-day reporting, weekly statements, and any context
 where a 15-minute lag on the underlying is acceptable. Cheaper
@@ -50,15 +51,16 @@ symbol.
 Live mode reads from the **business cluster**
 (`wss://business.polygon.io/stocks`) and prefers, in order:
 
-1. `FMV.{ticker}` (Business-tier Fair Market Value stream)
+1. `T.{ticker}` (tick trades; requires Stocks Advanced + signed
+   real-time agreement)
 2. `AM.{ticker}` (per-minute aggregates; available on Stocks Business
    without the real-time addendum)
-3. `T.{ticker}` (tick trades; requires Stocks Advanced + signed
-   real-time agreement)
+3. `FMV.{ticker}` (Business-tier Fair Market Value stream)
 
-If `T.{ticker}` returns `not authorized`, the skill falls back to
+If `T.{ticker}` returns `not authorized`, the skill resubscribes to
 `AM.{ticker}` automatically and notes the downgrade in the rendered
-output. See [`references/live-vs-delayed.md`](./references/live-vs-delayed.md)
+output. Quote channel `Q.{ticker}` is subscribed in parallel so bid/ask
+flow from the stream without a REST round-trip. See [`references/live-vs-delayed.md`](./references/live-vs-delayed.md)
 for the tier matrix and which channels each plan actually delivers
 (the published Massive docs and the lived entitlement behavior diverge,
 see notes there).
@@ -146,13 +148,15 @@ Delayed mode:
 
 - `GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}`: mark,
   bid/ask, recent OHLC. The single REST call per symbol.
-- `GET /v3/reference/tickers/{ticker}`: optional, for ADV lookup when
-  the snapshot doesn't carry recent daily volume.
+- `GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}`: ~22 sessions
+  of daily aggregates for the 30-day ADV bucketing in confidence
+  scoring. Cached per ticker per run.
 
 Live mode (in addition to the REST snapshot for fallback):
 
-- `wss://business.polygon.io/stocks` channels: `FMV.{ticker}`,
-  `AM.{ticker}`, `T.{ticker}` (subscribe-time fallback).
+- `wss://business.polygon.io/stocks` channels: `T.{ticker}`,
+  `AM.{ticker}`, `FMV.{ticker}` (subscribe-time fallback in that
+  order), plus `Q.{ticker}` for bid/ask.
 
 ## Doesn't handle (yet)
 
