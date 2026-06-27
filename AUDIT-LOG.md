@@ -9,6 +9,12 @@ by ID.
 
 ---
 
+## Wave 9 — 2026-06-26 (slippage-cost honest rename)
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| H9 | slippage-cost (renamed from best-ex-check) | The script measures fill vs NBBO at fill time. It does NOT compute true arrival-price Implementation Shortfall (which would require a pre-decision benchmark price the input CSV never carries). The "best-ex-check" name implied a best-execution audit; the work is actually slippage measurement. Honest rename across folder (`skills/best-ex-check` → `skills/slippage-cost`), reference script (`examples/run-best-ex-check.py` → `examples/run-slippage-cost.py`), `name:` frontmatter in SKILL.md, output-schema.json title/description, requires.yml, all references/*, README.md, PLAN-MATRIX.md, assets/skills.html, plus in-prose mentions in CONTRIBUTING and the lib timezones docstring. Suggested-next-action prose updated from "No clear best-ex violation" to "No clear fill-vs-NBBO violation" in the script and the rendering/flag-categories references. No behavior change |
+
 ## Wave 8 — 2026-06-26 (percentile rank + universe base rate)
 
 Commit: `ada407f`.
@@ -18,14 +24,14 @@ Commit: `ada407f`.
 | M9 | options-flow, crypto-vol-scanner, news-scanner | New `lib/quant_garage/percentile.py` with `percentile_rank` (mean-rule, n<5 returns None, off-distribution clamps), `format_rank_label` (8-bucket map: `top 5%` → `bottom 10%`), `base_rate` (`{n, median, mean, p25, p75}` with linear-interp quantiles). Run-wide distributions per script: options-flow uses every qualifying print across every ticker; crypto-vol-scanner uses every scored event; news-scanner uses every impact-scored event pre-dedup. Each surfaced item carries `percentile_rank`, `rank_label`, `score_universe_n` in JSON and a `(top 5%, 87th %ile, n=247)` suffix in render. Small universes get `rank_reason: "insufficient_universe"` |
 | M10 | event-study (single mode), earnings-drilldown | event-study gained `--with-base-rate` flag; when on, reuses existing `resolve_*` + `compute_event_returns` helpers against a 15-name mega-cap default (excluding subject ticker) to populate `universe_base_rate.by_metric` with `{n, median, mean, p25, p75}` for ar_t1/ar_t3/car_t5/drift_t3/drift_t5. Renderer shows per-metric "this vs universe median/p25/p75" lines. Flag off → schema-compatible `{reason: "live_universe_pull_disabled"}` + tier_caveat. earnings-drilldown is schema-only (no runnable script — only the static aapl example + output-schema.json); `universe_base_rate` property added with `reason` enum (`not_implemented_yet | live_universe_pull_disabled | live_universe_pull_returned_no_events`) |
 
-## Wave 7 — 2026-06-26 (best-ex + corp-actions + portfolio-mark)
+## Wave 7 — 2026-06-26 (slippage-cost + corp-actions + portfolio-mark)
 
 Commits: `7688094` (M1+M2), `54550ef` (M3+M4), `7682ce8` (M7).
 
 | ID | Affects | Closure notes |
 |---|---|---|
-| M1 | best-ex-check | Three mutually exclusive buckets: `crossed_spread` (outside NBBO + slip > 20bps) > `off_nbbo` (outside NBBO + 0 < slip <= 20bps) > `on_nbbo` (at or inside the inside). Prior logic had no `on_nbbo` bucket at all; a fill 50bps past the ask got both `crossed_spread` and `off_nbbo` labels. Distribution now sums to 100% across the full population, not just breaks |
-| M2 | best-ex-check | Tier A switched to per-fill `/v3/quotes?timestamp.lte={fill_ns}&order=desc&limit=1` with a 60-second backstop window for thin-quote names. Tier B (no quotes entitlement) keeps 1-second aggregate bars as proxy; bias direction documented in `tier_caveats` field and rendered footer: **under-counts off-NBBO and crossed_spread, over-counts on-NBBO** because the 1s band is wider than the instantaneous NBBO |
+| M1 | slippage-cost | Three mutually exclusive buckets: `crossed_spread` (outside NBBO + slip > 20bps) > `off_nbbo` (outside NBBO + 0 < slip <= 20bps) > `on_nbbo` (at or inside the inside). Prior logic had no `on_nbbo` bucket at all; a fill 50bps past the ask got both `crossed_spread` and `off_nbbo` labels. Distribution now sums to 100% across the full population, not just breaks |
+| M2 | slippage-cost | Tier A switched to per-fill `/v3/quotes?timestamp.lte={fill_ns}&order=desc&limit=1` with a 60-second backstop window for thin-quote names. Tier B (no quotes entitlement) keeps 1-second aggregate bars as proxy; bias direction documented in `tier_caveats` field and rendered footer: **under-counts off-NBBO and crossed_spread, over-counts on-NBBO** because the 1s band is wider than the instantaneous NBBO |
 | M3 | corp-actions-reconciler | One consolidated record per ticker. Top-level `initial_shares` / `initial_cost_basis` / `final_shares` / `final_cost_basis` / `delta_shares` plus a chronological `adjustments[]` array and `break_state` (`'reconciled'`/`'partial'`/`'unknown_type'`). Spinoff subsidiary positions each get their own consolidated record. Rendered `BREAK N:` block now shows an adjustments timeline instead of N separate entries |
 | M4 | corp-actions-reconciler | `SHARE_TOLERANCE = 1e-6` constant; `shares_equal(a, b)` helper wraps `math.isclose(..., abs_tol=SHARE_TOLERANCE)`. 4 call sites swapped (apply_split CIL, apply_dividend SD/LT CIL, apply_spinoff subsidiary CIL, main share_break compare). Basis comparison left at the existing cent tolerance. Eliminates spurious "break" flags from float drift after successive split-adjust multiplications |
 | M7 | portfolio-mark | LiveRunner subscribes to the `Q.` quote channel in parallel with `T`/`AM`/`FMV`; `_handle_quote()` writes bid, ask, quote_as_of_utc, quote_count to per-symbol state. Prior unconditional `snapshot_mark(sym)` at line 740 (REST round-trip even when stream had the mark) is gone. 5-second startup grace (`STREAM_STARTUP_GRACE_SECONDS`); on grace exhaustion a single REST snapshot fallback runs and tags `mark_source = "snapshot.last_quote"`. New mark_source values: `stream.last_quote`, `snapshot.last_quote`. Inverted/zero quotes rejected. Delayed mode unchanged |
@@ -93,7 +99,7 @@ Commits: `183bddf`, `29cb063`, `39211d9`, foundation refactor.
 | ID | Affects | Closure notes |
 |---|---|---|
 | C1 | backtest-data-prep | Honest-labeling fix. `--survivorship` argparse now only accepts `biased`; `delisted_during_window_count: None` when no inactive pull happened (was misleading 0); render block unconditionally says "Active only (current snapshot)". Real `active=false` union deferred to a follow-up sprint |
-| C8 | options-flow | NBBO at trade time via per-trade `/v3/quotes?timestamp.lte={ns}&order=desc&limit=1`. Trades pulled with `timestamp.gte/lte` window instead of `order=desc limit=200` so sweeps outside the recent window no longer silently downgrade. The `fetch_nbbo_at` helper kept inline (couldn't cleanly share with best-ex-check; different lookback windows and fetch wrappers) |
+| C8 | options-flow | NBBO at trade time via per-trade `/v3/quotes?timestamp.lte={ns}&order=desc&limit=1`. Trades pulled with `timestamp.gte/lte` window instead of `order=desc limit=200` so sweeps outside the recent window no longer silently downgrade. The `fetch_nbbo_at` helper kept inline (couldn't cleanly share with slippage-cost; different lookback windows and fetch wrappers) |
 | C9 | corp-actions-reconciler | `apply_dividend()` now switches on `dividend_type`: RC (cash basis adj), SC (special cash, basis adj + flag), SD (stock dividend as fractional split), LT (large stock dividend as fractional split per IRS), ST (reshapes and routes to `apply_split()`). Unknown types append to `tier_caveats` rather than silently skipping |
 | C10 | t+1-settlement-prep | Cum-dividend entitlement requires `trade_date < ex_dividend_date` strictly; ex-date trades emit informational "NOT allocated to buyer" notice instead of being flagged as entitled |
 | L1 | event-study | SEC EDGAR 8-K item 2.02 fallback implemented (was stubbed `return []`); volume-spike mode-detection bug fixed (single ticker + window now resolves to aggregate, not single); script migrated to lib.quant_garage. Verified on AAPL single, mega-cap cross-section, mega-cap aggregate, and NVDA volume-spike |
@@ -106,7 +112,7 @@ Commits: `a062e90` (batch 1), `143b3f5` (batch 2), `2aa7724` (batch 3).
 
 | ID | Affects | Closure notes |
 |---|---|---|
-| H1 | best-ex-check, news-scanner, portfolio-mark, earnings-drilldown | All 16 scripts now use `utc_to_et()` from zoneinfo. DST math correct year-round |
+| H1 | slippage-cost, news-scanner, portfolio-mark, earnings-drilldown | All 16 scripts now use `utc_to_et()` from zoneinfo. DST math correct year-round |
 | H2 | most scripts | All 16 scripts now use `today()`. `QUANT_GARAGE_AS_OF` env override is the documented way to freeze for reproducible runs |
 | H3 | universe-builder, factor-research | universe-builder's false "Survivorship: clean" assertion is gone; mode now derived from evidence (`fetched_inactive AND delisted_in_window > 0`) |
 | M5 | universe-builder | Now uses `top_quartile_threshold()`. The `*0.75-1` indexing bug is gone |

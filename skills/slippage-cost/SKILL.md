@@ -1,29 +1,37 @@
 ---
-name: best-ex-check
-description: Transaction cost analysis on an executed-fills CSV. For each fill, pulls the NBBO at trade time, computes slippage versus the inside quote and session VWAP, and flags fills that crossed the spread, traded off-NBBO, paid through a wide spread, or showed adverse selection in the 30 seconds after the print. Exception-report mode: only flagged fills surface. Use when an execution desk or PM hands over a fill log and asks "did we get good fills today."
+name: slippage-cost
+description: Slippage analysis on an executed-fills CSV. For each fill, pulls the NBBO at the fill timestamp, computes slippage versus the inside quote and session VWAP, and flags fills that crossed the spread, traded off-NBBO, paid through a wide spread, or showed adverse selection in the 30 seconds after the print. Compares fill price to NBBO at fill time, NOT to arrival-price benchmark. This is not true Implementation Shortfall. IS would compare fills against the decision-time benchmark; this compares against NBBO at fill time. See `tier_caveats` for the bias direction. Exception-report mode: only flagged fills surface. Use when an execution desk or PM hands over a fill log and asks "how much did we leak vs the inside today."
 ---
 
-# best-ex-check
+# slippage-cost
 
 You hand over a fill log. The skill walks every line against the NBBO
 at the fill timestamp, computes slippage in basis points, and emits an
 exception report listing only the fills that deserve scrutiny.
 
-This is the TCA workflow that buy-side compliance and execution desks
-run after every session. The output answers two questions the regulator
-asks (off-NBBO prints, wide-spread fills) and two questions the PM asks
-(VWAP slippage, adverse selection). Same data, different audiences.
+This is not a true best-execution audit and not true Implementation
+Shortfall. IS compares each fill against the decision-time (arrival)
+benchmark price; this skill compares against the NBBO at fill time.
+The input CSV doesn't carry an arrival timestamp, so arrival-price IS
+isn't computable here. See `tier_caveats` for the bias direction
+introduced by the Tier B aggregate proxy.
+
+The output answers two questions the regulator asks (off-NBBO prints,
+wide-spread fills) and two questions the PM asks (VWAP slippage,
+adverse selection). Same data, different audiences.
 
 ## When to invoke
 
-- Execution desk says "run TCA on yesterday's fills" or "best-ex check
-  this CSV"
-- A PM asks "did we get good fills" or "what's our slippage versus
-  arrival price"
+- Execution desk says "run slippage on yesterday's fills" or "check
+  this CSV for fill quality"
+- A PM asks "did we get good fills" or "how much did we leak versus
+  the inside"
 - Compliance review of a month's executions for Reg NMS off-NBBO
   prints
-- A broker performance review where you're comparing implementation
-  shortfall across venues
+- A broker performance review where you're comparing fill-vs-NBBO
+  slippage across venues. (Note: this is not arrival-price IS; if you
+  need that, the input CSV needs to carry a decision/arrival timestamp
+  and the methodology changes.)
 
 ## What you need
 
@@ -145,7 +153,7 @@ BREAK 1: AAPL BUY 1,000 @ $300.85 · 2026-06-23 10:14:18 ET
 cat examples/sample-fills.csv
 
 # Invoke from Claude Code
-# > /best-ex-check examples/sample-fills.csv
+# > /slippage-cost examples/sample-fills.csv
 ```
 
 The skill processes fills in order and emits flagged ones immediately,

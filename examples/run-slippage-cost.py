@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """
-Reference implementation of the best-ex-check skill.
+Reference implementation of the slippage-cost skill.
 
-Takes a CSV of executed fills and runs TCA (transaction cost analysis)
+Takes a CSV of executed fills and runs fill-vs-NBBO slippage analysis
 against the NBBO at the fill timestamp. Flags fills that crossed the
 spread, traded off-NBBO, paid through a wide spread, slipped versus
 session VWAP, or experienced adverse selection in the 30 seconds after
 the fill.
+
+Not true Implementation Shortfall: IS compares against the arrival /
+decision-time benchmark; this compares against NBBO at fill time. The
+input CSV doesn't carry an arrival timestamp.
 
 Two tiers:
   A: /v3/quotes/{ticker} returns 200 -> use microsecond NBBO ticks
@@ -14,10 +18,10 @@ Two tiers:
                                         aggregate bars as NBBO proxy
 
 Usage:
-    python3 examples/run-best-ex-check.py examples/sample-fills.csv
+    python3 examples/run-slippage-cost.py examples/sample-fills.csv
 
 Reads MASSIVE_API_KEY from env, never from a file.
-Writes JSON and rendered exception report to examples/best-ex-check-output.md
+Writes JSON and rendered exception report to examples/slippage-cost-output.md
 """
 import csv
 import json
@@ -48,7 +52,7 @@ WIDE_SPREAD_BPS = 50.0
 HIGH_VWAP_SLIPPAGE_BPS = 25.0
 ADVERSE_SELECTION_BPS = 5.0
 
-OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "best-ex-check-output.md")
+OUTPUT_PATH = os.path.join(os.path.dirname(__file__), "slippage-cost-output.md")
 
 client = MassiveClient()
 
@@ -421,7 +425,7 @@ def process_fill(fill, tier, sources):
 def suggest_action(reasons, slip, vslip, adverse, spread):
     rs = set(reasons)
     if rs == {"wide_spread_at_fill"}:
-        return "No clear best-ex violation; trader took available liquidity in thin tape"
+        return "No clear fill-vs-NBBO violation; trader took available liquidity in thin tape"
     if "off_nbbo_buy" in rs or "off_nbbo_sell" in rs:
         return "Trade printed outside NBBO proxy; verify timestamp accuracy and check for block/dark print carveout"
     if "adverse_selection" in rs and "crossed_spread" in rs:
@@ -625,7 +629,7 @@ def render(payload):
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: run-best-ex-check.py <fills.csv>", file=sys.stderr)
+        print("Usage: run-slippage-cost.py <fills.csv>", file=sys.stderr)
         sys.exit(1)
     csv_path = sys.argv[1]
     fills = load_fills(csv_path)

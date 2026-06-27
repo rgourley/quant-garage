@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "best-ex-check output",
-  "description": "Canonical output of the best-ex-check skill. Layer 1 (structured) consumed by UIs and downstream agents. Claude Code rendering described in references/rendering.md.",
+  "title": "slippage-cost output",
+  "description": "Canonical output of the slippage-cost skill (fill-vs-NBBO slippage; NOT arrival-price Implementation Shortfall). Layer 1 (structured) consumed by UIs and downstream agents. Claude Code rendering described in references/rendering.md.",
   "type": "object",
   "required": ["tier", "mode", "scan_params", "fills_checked", "flagged_count", "flagged", "summary", "quote_source", "take", "sources"],
   "properties": {

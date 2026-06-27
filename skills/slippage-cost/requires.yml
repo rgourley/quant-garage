@@ -1,4 +1,4 @@
-name: best-ex-check
+name: slippage-cost
 kind: skill
 interface: rest
 output_mode: exception-report

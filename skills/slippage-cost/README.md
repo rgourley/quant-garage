@@ -1,17 +1,23 @@
-# best-ex-check
+# slippage-cost
 
 You hand the tool yesterday's executed fills. It pulls the
 microsecond NBBO at each trade time, computes slippage vs the
 inside, and flags fills that crossed the spread, printed off-NBBO,
 hit a wide spread moment, or showed adverse selection in the 30
-seconds after fill. Compliance teams use this kind of post-trade
-TCA. The exception report is short by design: only the broken stuff
-surfaces.
+seconds after fill. The exception report is short by design: only
+the broken stuff surfaces.
+
+This is NOT true Implementation Shortfall. IS compares each fill
+against the decision-time (arrival) benchmark price; this skill
+compares against NBBO at fill time. The input CSV doesn't carry an
+arrival timestamp, so arrival-price IS isn't computable here. Use
+this when you want to know "how much did we leak vs the inside,"
+not "did execution match the PM's decision price."
 
 ## Quick start
 
 ```bash
-python3 examples/run-best-ex-check.py examples/sample-fills.csv
+python3 examples/run-slippage-cost.py examples/sample-fills.csv
 ```
 
 ## What you get back

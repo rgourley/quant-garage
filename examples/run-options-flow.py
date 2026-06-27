@@ -196,7 +196,7 @@ def get_trades_window(occ_ticker, start_ns, end_ns, hard_cap=TRADES_WINDOW_HARD_
 def fetch_nbbo_at(occ_ticker, ts_ns):
     """Return the most-recent quote at or before ts_ns as (bid, ask, qts_iso).
 
-    Lifted from examples/run-best-ex-check.py's fetch_nbbo_at. Same
+    Lifted from examples/run-slippage-cost.py's fetch_nbbo_at. Same
     pattern: pull a small window of quotes ending at ts_ns, take the
     last one whose sip_timestamp <= ts_ns. The window approach (vs a
     single limit=1&order=desc with timestamp.lte) protects against

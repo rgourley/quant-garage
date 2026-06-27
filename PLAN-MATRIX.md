@@ -57,8 +57,8 @@ A few things to know up front:
 | `event-study` (recent) | REST | Stocks Developer | Tick aggregates around recent events |
 | `event-study` (historical) | Flat files | Stocks Starter | Bulk pull years of events |
 | `backtest-data-prep` | Flat files | Stocks Starter | The primary flat-files workflow |
-| `best-ex-check` (historical) | Flat files | Stocks Starter | NBBO from quote files |
-| `best-ex-check` (live) | WebSocket | Stocks Advanced | Real-time NBBO stream |
+| `slippage-cost` (historical) | Flat files | Stocks Starter | NBBO from quote files |
+| `slippage-cost` (live) | WebSocket | Stocks Advanced | Real-time NBBO stream |
 | `options-flow` (scan, delayed) | REST | Stocks Starter + Options Developer | 15-min delayed tape; methodology identical to real-time |
 | `options-flow` (scan, real-time) | REST | Stocks Business + Options Business | Sub-second sweep detection on the live tape |
 | `options-flow` (live stream) | WebSocket | Options Business | OPRA WebSocket feed |
@@ -81,7 +81,7 @@ the paid step is worth it.
 
 **Any paid stocks plan.** Adds unlimited REST calls and the entire flat-
 files S3 bucket. `backtest-data-prep`, full `factor-research`, historical
-`event-study`, and historical `best-ex-check` all become accessible
+`event-study`, and historical `slippage-cost` all become accessible
 without touching a higher tier.
 
 **Stocks Developer.** Adds ten years of tick-level trades and quotes via
@@ -103,7 +103,7 @@ real-time IV side of `earnings-drilldown`.
 crypto leg of `portfolio-mark`.
 
 **Stocks Advanced.** Adds real-time stocks and WebSocket streaming for
-live `portfolio-mark` and live `best-ex-check`.
+live `portfolio-mark` and live `slippage-cost`.
 
 ## On Massive's "FMV"
 

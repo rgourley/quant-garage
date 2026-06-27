@@ -56,7 +56,7 @@ Every skill ships two outputs from one analysis:
    - `table` mode: tabular comparison, Bloomberg-screener style.
      Used by universe-builder, factor-research, pitch-comps.
    - `exception-report` mode: only flagged items. Used by
-     reconcilers and best-ex checks.
+     reconcilers and slippage-cost.
    - `list`, `dataset`, `hybrid` are also valid; see the existing
      skills for examples.
 

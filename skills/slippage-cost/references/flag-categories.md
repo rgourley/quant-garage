@@ -47,7 +47,7 @@ The trader took available liquidity in a thin moment. The exception
 report includes these so the analyst doesn't burn time investigating
 fills that looked off-NBBO but were just inside a wide spread. A
 fill with `wide_spread_at_fill` only (no other reasons) usually
-resolves to "no clear best-ex violation; thin tape" in the
+resolves to "no clear fill-vs-NBBO violation; thin tape" in the
 suggested-next-action field.
 
 **Tier B note.** Bar high-low range is the proxy. A 50bp range on a
@@ -124,7 +124,7 @@ prose prioritizes the most actionable reason for that fill.
 
 | Combo | Suggested next action |
 |---|---|
-| Just `wide_spread_at_fill` | No clear best-ex violation; trader took available liquidity in thin tape |
+| Just `wide_spread_at_fill` | No clear fill-vs-NBBO violation; trader took available liquidity in thin tape |
 | `crossed_spread` only | Investigate venue routing; price improvement opportunity missed |
 | `crossed_spread` + `high_vwap_slippage` | Investigate execution timing and venue choice; cost was material to portfolio |
 | `off_nbbo_buy` or `off_nbbo_sell` | Trade printed outside NBBO; verify timestamp accuracy and check for block/dark print carveout |

@@ -145,13 +145,14 @@ novelty score (is this a re-run or a new angle), and a price-vs-
 sentiment divergence flag. A "positive" article that the stock sold
 off on means the market already knew; that's a flag worth surfacing.
 
-**[`best-ex-check`](skills/best-ex-check)**
+**[`slippage-cost`](skills/slippage-cost)**
 You hand the tool yesterday's executed fills. It pulls the microsecond
 NBBO at each trade time, computes slippage vs the inside, and flags
 fills that crossed the spread, printed off-NBBO, hit a wide spread
 moment, or showed adverse selection in the 30 seconds after fill.
-Compliance teams use this kind of post-trade TCA. The exception report
-is short by design: only the broken stuff surfaces.
+Measures fill vs NBBO at fill time, not arrival-price Implementation
+Shortfall. The exception report is short by design: only the broken
+stuff surfaces.
 
 ### Risk and operations
 
@@ -299,7 +300,7 @@ Not a backtest framework with PnL accounting. `backtest-data-prep`
 gets you a clean dataset; you write the strategy on top.
 
 Not a production execution system. `portfolio-mark` reports marks;
-`best-ex-check` reports TCA exceptions. Neither places orders.
+`slippage-cost` reports fill-vs-NBBO exceptions. Neither places orders.
 
 Not a regulated advisor. None of the outputs are investment advice.
 

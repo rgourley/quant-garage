@@ -2,7 +2,7 @@
 Eastern timezone helpers using stdlib zoneinfo.
 
 Fixes H1 from the 2026-06-26 audit: scripts hardcoded EASTERN = UTC-4
-and ET_OFFSET_HOURS = -4 across best-ex-check, news-scanner,
+and ET_OFFSET_HOURS = -4 across slippage-cost, news-scanner,
 portfolio-mark, and earnings. That's wrong from early November to
 mid-March (EST is UTC-5). Bug shifts NBBO bars by an hour and
 mis-buckets BMO/AMC sessions during the winter half of the year.

@@ -1,4 +1,4 @@
-# Rendering: best-ex-check
+# Rendering: slippage-cost
 
 The skill emits canonical JSON matching `output-schema.json`. This
 reference shows how that JSON renders for human consumption in
@@ -90,7 +90,7 @@ BREAK header line so the operator sees the context immediately:
 BREAK 3: NVDA BUY 200 @ $201.18 · 2026-06-23 14:08:42 ET (in 80bps spread window)
   Spread:      $201.10 × $201.26 (80 bps inside, wide)
   Reasons:     wide_spread_at_fill
-  Suggest:     No clear best-ex violation; trader took available liquidity in thin tape
+  Suggest:     No clear fill-vs-NBBO violation; trader took available liquidity in thin tape
 ```
 
 ## Summary block
@@ -169,7 +169,7 @@ BREAK 1: AAPL BUY 1,000 @ $300.85 · 2026-06-23 10:14:18 ET
 BREAK 2: NVDA BUY 200 @ $201.18 · 2026-06-23 14:08:42 ET (in 80bps spread window)
   Spread:      $201.10 × $201.26 (80 bps inside, wide)
   Reasons:     wide_spread_at_fill
-  Suggest:     No clear best-ex violation; trader took available liquidity in thin tape
+  Suggest:     No clear fill-vs-NBBO violation; trader took available liquidity in thin tape
 
 Summary
 - 6 flagged of 18 (33% break rate)
