@@ -15,7 +15,7 @@ Both ways work because every skill ships the same compute as two
 layers: the JSON contract for developers and a rendered note, table,
 stream, or report for humans.
 
-Fourteen tools. One framework. Built in the garage, not the trading
+Fifteen tools. One framework. Built in the garage, not the trading
 floor.
 
 ## The idea
@@ -70,7 +70,7 @@ alpha, you build on top of this; you don't deploy this.
 
 ![14 skills, one framework](./assets/skills.png)
 
-## The 14 tools, with real use cases
+## The 15 tools, with real use cases
 
 ### Earnings work
 
@@ -108,6 +108,16 @@ check? The tool runs the reverse-DCF at the current price and tells
 you what CAGR is actually priced in. When I ran it, the $250 target
 came back understated against the semi peer set, which was the
 opposite of what I expected.
+
+**[`position-sizer`](skills/position-sizer)**
+You like the names — NVDA, AMZN, GOOGL, META all going in. How much
+of each? Run the tool and get four canonical sizing methods side by
+side: vol-target, fractional Kelly, risk parity, equal weight. The
+methods usually disagree; that's the point. Vol-target cuts the
+high-vol names so they don't dominate. Kelly tilts toward names with
+the highest edge per variance (you supply the edges). Risk parity
+equalizes each name's contribution to portfolio variance. Pick the
+column whose worldview matches your conviction.
 
 ### Quant research and screening
 
@@ -214,7 +224,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Eleven of the fourteen tools run
+that powers the universe screeners. Twelve of the fifteen tools run
 on this tier.
 
 Specific tools need specific add-ons:

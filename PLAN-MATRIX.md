@@ -50,6 +50,7 @@ A few things to know up front:
 | `factor-research` (full) | Flat files | Stocks Starter | Bulk daily aggregates, no rate-limit pain |
 | `pitch-comps` | REST | Stocks Starter | Fundamentals + delayed price |
 | `valuation-sanity-check` | REST | Stocks Starter | Current price + financials |
+| `position-sizer` | REST | Stocks Starter | Daily aggs per name; runs on free Basic too, slower |
 | `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |
 | `earnings-drilldown` (lite, Tier A) | REST | Stocks Starter + Benzinga Earnings | Adds consensus EPS, surprise %, beat/miss bucketing |
 | `earnings-drilldown` (full, Tier A) | REST | Stocks Starter + Options Developer + Benzinga Earnings | Full fidelity: implied vs realized + beat/miss |

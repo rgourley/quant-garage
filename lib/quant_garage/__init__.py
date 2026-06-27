@@ -52,6 +52,16 @@ from .monte_carlo import (
     percentile_summary,
     DistributionKind,
 )
+from .sizing import (
+    annualized_vol,
+    correlation_matrix,
+    covariance_matrix,
+    shrink_correlation,
+    vol_target_weights,
+    fractional_kelly_weights,
+    risk_parity_weights,
+    equal_weights,
+)
 
 __all__ = [
     "MassiveClient",
@@ -91,4 +101,12 @@ __all__ = [
     "spearman_sensitivity",
     "percentile_summary",
     "DistributionKind",
+    "annualized_vol",
+    "correlation_matrix",
+    "covariance_matrix",
+    "shrink_correlation",
+    "vol_target_weights",
+    "fractional_kelly_weights",
+    "risk_parity_weights",
+    "equal_weights",
 ]

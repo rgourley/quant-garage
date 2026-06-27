@@ -1,0 +1,55 @@
+name: position-sizer
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_basket_pull]
+  B:
+    label: "Free Basic (rate-limited, runs slowly)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_basket_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Table-mode skill that emits four canonical position-sizing methods
+  side-by-side on a user-supplied basket of tickers. Methods: vol-target
+  (inverse-vol scaled to a target portfolio vol), fractional Kelly (matrix
+  form, user-supplied edges), risk parity (Equal Risk Contribution via
+  iterative fixed-point), equal weight.
+
+  The skill does NOT pick names and does NOT predict returns. It does
+  descriptive math on the basket the user already chose. Kelly requires
+  the user to supply an edge per name; without edges the Kelly column is
+  skipped with a tier_caveats note.
+
+  Data layer: daily aggregates per ticker, close-to-close log returns,
+  aligned to the intersection of date indices, 5% identity-shrunk
+  correlation matrix for numerical safety. Per-name vol = sample std
+  annualized at sqrt(252).
+
+  Caveats surfaced in every run:
+    - Vol estimates use realized history; future vol may differ.
+    - Correlation matrix is shrunk 5% toward identity.
+    - Kelly assumes user-supplied edges are correct.
+    - Tickers with fewer than 60 aligned trading days are excluded.
+
+  Long-only v1. Negative Kelly signals are floored at zero and surfaced
+  via the negative_signals_floored flag.
+fallbacks:
+  - massive-api-patterns

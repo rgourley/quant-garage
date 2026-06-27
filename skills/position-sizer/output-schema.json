@@ -1,0 +1,142 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "position-sizer output",
+  "description": "Canonical structured output for the position-sizer skill. Layer 1 (the data); Layer 2 (rendered side-by-side table) is described in the SKILL.md render section.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "tickers_requested",
+    "tickers_used",
+    "lookback_days",
+    "target_vol",
+    "leverage_cap",
+    "name_stats",
+    "correlation_matrix",
+    "sizings",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "position-sizer" },
+    "as_of": { "type": "string", "format": "date", "description": "Local 'as-of' date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "tickers_requested": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tickers the caller passed via --tickers."
+    },
+    "tickers_used": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tickers that survived the history filter and were sized. Sorted alphabetically."
+    },
+    "tickers_excluded": {
+      "type": "array",
+      "description": "Tickers dropped from the book and why.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "reason"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string", "enum": ["insufficient_history"] },
+          "n_obs": { "type": "integer" },
+          "min_required": { "type": "integer" }
+        }
+      }
+    },
+    "lookback_days": { "type": "integer", "description": "Trading days of daily returns pulled." },
+    "n_obs_aligned": { "type": "integer", "description": "Trading days remaining after intersecting all return series." },
+    "target_vol": { "type": "number", "description": "Annualized portfolio vol target used by the vol-target method. Decimal." },
+    "leverage_cap": { "type": "number", "description": "Max gross exposure (Σ|w|) enforced on every method." },
+    "max_weight": { "type": ["number", "null"], "description": "Per-name weight cap (decimal), or null for no cap." },
+    "kelly_scale": { "type": "number", "description": "Fractional Kelly scale used by the kelly method." },
+    "methods_requested": {
+      "type": "array",
+      "items": { "type": "string", "enum": ["vol_target", "kelly", "risk_parity", "equal_weight"] }
+    },
+    "methods_emitted": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Methods whose output actually landed in 'sizings'. May exclude kelly if edges were not supplied."
+    },
+    "name_stats": {
+      "type": "object",
+      "description": "Per-ticker realized stats over the aligned panel.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["vol_annualized", "n_obs"],
+        "properties": {
+          "vol_annualized": { "type": "number", "description": "Sample std of daily log returns annualized at sqrt(252). Decimal." },
+          "n_obs": { "type": "integer", "description": "Trading days in the aligned series." },
+          "mean_return_annualized": { "type": "number", "description": "Mean daily log return * 252. Display-only; NOT used as a Kelly edge." }
+        }
+      }
+    },
+    "correlation_matrix": {
+      "type": "object",
+      "required": ["tickers", "raw", "shrunk", "shrinkage"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" }, "description": "Order matches rows/cols of raw + shrunk." },
+        "raw": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "Empirical pairwise Pearson correlation." },
+        "shrunk": { "type": "array", "items": { "type": "array", "items": { "type": "number" } }, "description": "(1-shrinkage) * raw + shrinkage * I." },
+        "shrinkage": { "type": "number", "description": "Identity-shrinkage weight (decimal)." }
+      }
+    },
+    "sizings": {
+      "type": "object",
+      "description": "One key per emitted method: vol_target, kelly_quarter, risk_parity, equal_weight.",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["weights", "portfolio_vol_annualized", "gross_exposure"],
+        "properties": {
+          "weights": {
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "description": "Position weight per ticker (decimal of book)."
+          },
+          "portfolio_vol_annualized": { "type": "number", "description": "sqrt(w' Σ w). Annualized." },
+          "gross_exposure": { "type": "number", "description": "Σ|w| at the final weights." },
+          "binding_constraint": {
+            "type": ["string", "null"],
+            "enum": ["target_vol", "leverage_cap", "max_weight", "no_positive_edge", null],
+            "description": "Which constraint actually bound the final result, or null if none did."
+          },
+          "scale": { "type": "number", "description": "Fractional Kelly scale (kelly only)." },
+          "edges_used": {
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "description": "Per-ticker edges consumed by Kelly. Decimal annualized."
+          },
+          "negative_signals_floored": { "type": "boolean", "description": "True if any Kelly raw weight was negative and floored at 0 (long-only v1)." },
+          "iterations": { "type": "integer", "description": "Iterations the ERC solver consumed (risk_parity only)." },
+          "converged": { "type": "boolean", "description": "Whether ERC converged within tol (risk_parity only)." },
+          "marginal_risk_contributions": {
+            "type": "object",
+            "additionalProperties": { "type": "number" },
+            "description": "Per-ticker share of total portfolio variance (risk_parity only). Should equal 1/N at convergence."
+          }
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats: excluded tickers, missing Kelly edges, convergence fallback, the always-on vol/shrinkage caveats."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit.",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
