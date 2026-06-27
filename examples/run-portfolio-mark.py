@@ -10,10 +10,14 @@ Marks a CSV of positions to current fair value. Two modes:
 
   live:     opens one WebSocket to wss://business.polygon.io/stocks,
             subscribes per-symbol with channel fallback
-            (FMV -> AM -> T), listens for --listen seconds, then emits
-            the most recent mark per symbol plus an optional live-tape
-            trailer. Symbols that never ticked during the window get a
-            REST snapshot backfill.
+            (FMV -> AM -> T) for the price stream AND Q for the quote
+            stream, listens for --listen seconds, then emits the most
+            recent mark per symbol plus an optional live-tape trailer.
+            Bid/ask are taken from the Q stream directly; no REST
+            round-trip while the stream is healthy. A 5-second startup
+            grace window falls back to REST snapshot for any symbol
+            that has not received a stream message yet, and symbols
+            that never tick during the window get a REST backfill.
 
 Usage:
     python3 examples/run-portfolio-mark.py examples/sample-book.csv
@@ -69,6 +73,18 @@ WS_URL = "wss://business.polygon.io/stocks"
 # Channel preference order on a Business key (FMV/AM available, T gated).
 # On Stocks Advanced this list can start with T.
 PREFERRED_CHANNELS = ["T", "AM", "FMV"]
+
+# Quote channel — always Q on stocks. Subscribed in parallel with the
+# trade/price channel so that bid/ask can be derived from the stream
+# directly instead of a REST snapshot round-trip (M7).
+QUOTE_CHANNEL = "Q"
+
+# Startup grace window: if a symbol has not received any stream message
+# (price or quote) within this many seconds of the listen window opening,
+# fall back to a REST snapshot to seed bid/ask + mark. Five seconds is
+# enough for a healthy NBBO feed on liquid names (sub-100ms is typical)
+# while still bounding the worst-case wait on illiquid tickers.
+STREAM_STARTUP_GRACE_SECONDS = 5
 
 # Confidence thresholds (see references/confidence-scoring.md)
 HIGH_RECENCY_SECONDS = 60
@@ -488,17 +504,24 @@ class LiveRunner:
     def __init__(self, tickers: list, listen_seconds: int):
         self.tickers = tickers
         self.listen_seconds = listen_seconds
-        self.deadline = time.time() + listen_seconds
+        self.start_time = time.time()
+        self.deadline = self.start_time + listen_seconds
         self.state: dict = {
             t: {"channel": None, "mark": None, "as_of_utc": None,
-                "tick_count": 0, "tape": deque(maxlen=5)}
+                "tick_count": 0, "tape": deque(maxlen=5),
+                # streamed quote (Q channel) state
+                "bid": None, "ask": None, "quote_as_of_utc": None,
+                "quote_count": 0}
             for t in tickers
         }
         self.caveats: list = []
         self.channel_used: dict[str, Optional[str]] = {t: None for t in tickers}
         self.reconnect_count = 0
         self.auth_ok = False
+        # Track price-channel and quote-channel subscribe attempts separately;
+        # Q has its own entitlement gate from T/AM/FMV.
         self.subscribe_attempts: dict[str, list] = {t: [] for t in tickers}
+        self.quote_subscribed = False
         self.subscribe_complete = False
         self._lock = threading.Lock()
         self._queue: deque = deque()
@@ -543,6 +566,9 @@ class LiveRunner:
             return
         if ev in ("T", "AM", "FMV"):
             self._handle_data(m, ev)
+            return
+        if ev == "Q":
+            self._handle_quote(m)
 
     def _handle_status(self, m: dict) -> None:
         status = m.get("status")
@@ -550,13 +576,16 @@ class LiveRunner:
         if status == "auth_success":
             self.auth_ok = True
             self._subscribe_pass(self._ws, channel=PREFERRED_CHANNELS[0])
+            # Subscribe to Q in parallel so bid/ask flow in alongside the
+            # price stream (M7: no REST round-trip in live mode).
+            self._subscribe_quotes(self._ws)
             return
         if status == "success" and "subscribed to" in message.lower():
             # message format: "subscribed to: T.AAPL"
             param = message.split(":", 1)[-1].strip()
             if "." in param:
                 channel, tk = param.split(".", 1)
-                if tk in self.state:
+                if tk in self.state and channel != QUOTE_CHANNEL:
                     self.channel_used[tk] = channel
                     self.state[tk]["channel"] = channel
             return
@@ -564,7 +593,14 @@ class LiveRunner:
             # Channel-level downgrade. We tried T (or AM); fall back.
             # We don't know from the status which symbol this maps to,
             # so on the first not_authorized after a subscribe pass we
-            # roll the entire pass to the next channel.
+            # roll the entire pass to the next channel. Q failures are
+            # treated as a soft downgrade — REST snapshot fills the
+            # gap in the run loop.
+            if QUOTE_CHANNEL in message:
+                if "quote_stream_unavailable" not in self.caveats:
+                    self.caveats.append("quote_stream_unavailable")
+                self.quote_subscribed = False
+                return
             self._handle_not_authorized()
             return
 
@@ -587,6 +623,13 @@ class LiveRunner:
             if channel not in self.subscribe_attempts[t]:
                 self.subscribe_attempts[t].append(channel)
         params = ",".join(f"{channel}.{t}" for t in self.tickers)
+        ws.send(json.dumps({"action": "subscribe", "params": params}))
+
+    def _subscribe_quotes(self, ws: Optional["websocket.WebSocketApp"]) -> None:
+        if ws is None:
+            return
+        self.quote_subscribed = True
+        params = ",".join(f"{QUOTE_CHANNEL}.{t}" for t in self.tickers)
         ws.send(json.dumps({"action": "subscribe", "params": params}))
 
     def _handle_data(self, m: dict, ev: str) -> None:
@@ -624,6 +667,31 @@ class LiveRunner:
             "trade_size": int(size) if size else None,
             "trade_time_et": fmt_et(ts),
         })
+
+    def _handle_quote(self, m: dict) -> None:
+        # Q: {"ev":"Q","sym":"AAPL","bp":<bid>,"bs":<bs>,"ap":<ask>,"as":<as>,"t":<ns>}
+        sym = m.get("sym")
+        if not sym or sym not in self.state:
+            return
+        bp = m.get("bp")
+        ap = m.get("ap")
+        ts_ns = m.get("t")
+        if bp is None or ap is None:
+            return
+        # Drop inverted or otherwise corrupt quote ticks; the snapshot
+        # path has the same sanity rule.
+        bid_f = float(bp)
+        ask_f = float(ap)
+        if bid_f <= 0 or ask_f <= 0 or ask_f < bid_f:
+            return
+        st = self.state[sym]
+        st["bid"] = bid_f
+        st["ask"] = ask_f
+        st["quote_as_of_utc"] = (
+            datetime.fromtimestamp(ts_ns / 1e9, tz=timezone.utc)
+            if ts_ns else datetime.now(timezone.utc)
+        )
+        st["quote_count"] += 1
 
     # ----- top-level run -----
 
@@ -686,11 +754,19 @@ def run_live(positions: list, listen_seconds: int) -> dict:
     total_ticks = sum(s["tick_count"] for s in runner.state.values())
     print(f"  total ticks across window: {total_ticks}", file=sys.stderr)
 
+    total_quotes = sum(s["quote_count"] for s in runner.state.values())
     caveats = []
     if runner.auth_ok:
         caveats.append("WebSocket auth + subscribe completed end-to-end on wss://business.polygon.io/stocks.")
+    caveats.append(
+        f"Quote stream (Q channel) subscribed: bid/ask sourced from stream when available, "
+        f"REST snapshot only as fallback after a {STREAM_STARTUP_GRACE_SECONDS}s startup grace window. "
+        f"Quote messages received: {total_quotes}."
+    )
     if "stream_downgrade" in runner.caveats:
         caveats.append("Channel T returned not_authorized on this key; resubscribed to AM. See live-vs-delayed.md for the entitlement matrix.")
+    if "quote_stream_unavailable" in runner.caveats:
+        caveats.append("Quote channel Q returned not_authorized on this key; bid/ask backfilled from REST snapshot for every position.")
     if total_ticks == 0:
         caveats.append("Zero stream events received during the listen window (market may be closed or symbols inactive). Marks backfilled from REST snapshot.")
     for c in runner.caveats:
@@ -710,7 +786,15 @@ def run_live(positions: list, listen_seconds: int) -> dict:
     ]
     snapshot_used = False
 
+    # Day-volume cache: stream channels don't carry today's cumulative
+    # volume, so we still resolve it from a single REST snapshot per
+    # symbol — but only on the symbols that need it (REST fallback
+    # path) so we honor M7's "no REST round-trip while stream is
+    # healthy" goal. ADV bucketing in `fetch_adv_30d` remains a
+    # separate cached daily-aggs call.
     ref_date = marked_at.date()
+    grace_deadline = runner.start_time + STREAM_STARTUP_GRACE_SECONDS
+    grace_exhausted = time.time() >= grace_deadline
     for pos in positions:
         sym = pos["ticker"]
         s = runner.state[sym]
@@ -723,8 +807,17 @@ def run_live(positions: list, listen_seconds: int) -> dict:
         reason_extra: list = []
 
         channel_used = runner.channel_used.get(sym) or s["channel"]
+        stream_quote_bid = s["bid"]
+        stream_quote_ask = s["ask"]
+        stream_quote_as_of = s["quote_as_of_utc"]
 
+        # Decide bid/ask source. Stream Q is preferred; REST snapshot is
+        # the fallback either when no Q ticked in time (grace exhausted)
+        # or when we already need a REST hit for the price (mark is None).
         if mark is None:
+            # No price-stream tick for this symbol — fall back to REST
+            # for both mark and quote. This is the existing
+            # backfill path; mark_source comes from snapshot_mark().
             snap = snapshot_mark(sym)
             snapshot_used = True
             mark = snap["mark_price"]
@@ -735,11 +828,32 @@ def run_live(positions: list, listen_seconds: int) -> dict:
             if s["tick_count"] == 0:
                 reason_extra.append("no_ticks_in_window")
         else:
-            mark_source = f"stream.{channel_used}" if channel_used else "stream.T"
-            # Pull bid/ask + day volume from a cheap REST snapshot for confidence
-            snap = snapshot_mark(sym)
-            bid, ask = snap["bid"], snap["ask"]
-            day_volume = snap.get("day_volume")
+            # Price came from the stream. Decide where the quote comes
+            # from. Stream Q wins when we have one; otherwise honor the
+            # startup grace window — if it hasn't elapsed yet for this
+            # symbol, we still expect a quote tick, so skip the REST
+            # call and leave bid/ask null this pass. If the grace window
+            # has elapsed with no quote, fall back to REST snapshot for
+            # bid/ask + day volume only.
+            if stream_quote_bid is not None and stream_quote_ask is not None:
+                bid = stream_quote_bid
+                ask = stream_quote_ask
+                # The quote drives as_of_utc + mark_source per M7.
+                # Trade-channel timestamp is still recorded in tape entries.
+                as_of = stream_quote_as_of or as_of
+                mark_source = "stream.last_quote"
+            elif grace_exhausted:
+                snap = snapshot_mark(sym)
+                snapshot_used = True
+                bid, ask = snap["bid"], snap["ask"]
+                day_volume = snap.get("day_volume")
+                mark_source = "snapshot.last_quote"
+            else:
+                # Grace window still open; report the trade-channel
+                # source so the run is auditable, and leave bid/ask null.
+                # confidence_for() will down-rank this to medium via the
+                # thin_quote bucket, which is correct: we don't yet know.
+                mark_source = f"stream.{channel_used}" if channel_used else "stream.T"
 
         spread_bps = None
         if bid and ask:
@@ -831,6 +945,8 @@ SHORT_SOURCE = {
     "stream.T": "live_trade",
     "stream.AM": "live_minute",
     "stream.FMV": "live_fmv",
+    "stream.last_quote": "live_quote",
+    "snapshot.last_quote": "snap_quote",
     "snapshot.last.price": "last_trade",
     "snapshot.lastTrade.p": "last_trade",
     "snapshot.min.c": "minute_close",
