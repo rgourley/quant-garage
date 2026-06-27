@@ -73,6 +73,7 @@ from .risk import (
     concentration_stats,
     worst_n_days,
 )
+from .peers import select_peers
 
 __all__ = [
     "MassiveClient",
@@ -129,4 +130,5 @@ __all__ = [
     "position_variance_contributions",
     "concentration_stats",
     "worst_n_days",
+    "select_peers",
 ]

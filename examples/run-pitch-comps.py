@@ -45,6 +45,7 @@ from lib.quant_garage import (
     is_significant,
     da_annualized,
     operating_income_annualized,
+    select_peers,
 )
 
 
@@ -759,6 +760,8 @@ subject_ticker = args.ticker.upper()
 
 # ----- Peer selection -----
 
+peer_result = None  # set below when select_peers() runs; used for tier_caveats
+
 if args.peers:
     peers_list = [p.strip().upper() for p in args.peers.split(",") if p.strip()]
     peer_selection_method = "curated_override"  # user-supplied counts as override
@@ -766,30 +769,23 @@ elif subject_ticker in PEER_OVERRIDES:
     peers_list = PEER_OVERRIDES[subject_ticker]
     peer_selection_method = "curated_override"
 else:
-    # Last-resort SIC fallback (skipping correlation here for simplicity; the
-    # correlation path is documented in references/peer-selection.md and is a
-    # clean PR extension).
-    det = get_ticker_details(subject_ticker)
-    if not det:
-        print(f"ERROR: subject {subject_ticker} not found", file=sys.stderr)
-        sys.exit(1)
-    sic = det.get("sic_code")
-    if not sic:
-        print(f"ERROR: no SIC code for {subject_ticker}; can't peer-select",
+    # Massive's /v3/reference/tickers silently ignores sic_code and
+    # returns alphabetical results, so the old SIC-filter path produced
+    # garbage peers (AACI, AACO, AAL for a biotech). Use
+    # /v1/related-companies via lib.quant_garage.select_peers instead.
+    # See lib/quant_garage/peers.py and references/peer-selection.md.
+    print(f"Peer fallback via /v1/related-companies (SIC-validated)...",
+          file=sys.stderr)
+    try:
+        peer_result = select_peers(client, subject_ticker, n=8, validate_sic=True)
+    except (ValueError, FetchError) as exc:
+        print(f"ERROR: peer selection failed for {subject_ticker}: {exc}",
+              file=sys.stderr)
+        print(f"Pass --peers TICKER1,TICKER2,... to override.",
               file=sys.stderr)
         sys.exit(1)
-    print(f"Peer SIC fallback on SIC {sic}; querying reference tickers...",
-          file=sys.stderr)
-    path = f"/v3/reference/tickers?market=stocks&active=true&type=CS&sic_code={sic}&limit=50"
-    try:
-        doc, _ = client.get(path)
-        rows = doc.get("results") or []
-    except FetchError as exc:
-        print(f"ERROR: SIC fallback fetch failed: {exc}", file=sys.stderr)
-        sys.exit(1)
-    peers_list = [r["ticker"] for r in rows
-                  if r.get("ticker") and r["ticker"] != subject_ticker][:8]
-    peer_selection_method = "sic_fallback"
+    peers_list = peer_result["peers"]
+    peer_selection_method = peer_result["method"]
 
 # ----- Pull data -----
 
@@ -871,6 +867,32 @@ if _ev_total > 0 and (_ev_fallback / _ev_total) >= 0.30:
         f"EV-based multiples may be slightly overstated for those names; "
         f"see ev_components.* for the source tag per peer."
     )
+
+# Peer-selection method caveats. Curated overrides need no caveat;
+# related-companies (with or without SIC validation) gets a note so
+# the reader knows the peer set wasn't human-curated.
+if peer_result is not None:
+    if peer_result["method"] == "related_companies":
+        tier_caveats.append(
+            "Peers from Massive's /v1/related-companies endpoint; "
+            "not SIC-validated. Some peers may be co-movement matches "
+            "rather than business-model matches."
+        )
+    elif peer_result["method"] == "related_companies_sic_validated":
+        n_dropped = peer_result.get("n_dropped_sic_mismatch", 0)
+        n_pre = peer_result.get("n_candidates_pre_filter", 0)
+        sic = peer_result.get("subject_sic")
+        if n_dropped > 0:
+            tier_caveats.append(
+                f"Peer set: kept {len(peers_list)} of {n_pre} "
+                f"/v1/related-companies candidates with matching SIC "
+                f"{sic}; dropped {n_dropped} with mismatched SIC."
+            )
+        else:
+            tier_caveats.append(
+                f"Peers from /v1/related-companies, SIC-validated against "
+                f"subject SIC {sic} ({len(peers_list)} of {n_pre} candidates)."
+            )
 
 # ----- Payload -----
 
