@@ -9,6 +9,16 @@ by ID.
 
 ---
 
+## Wave 14 — 2026-06-27 (factor-research hardening)
+
+Wave 3 closed the methodology bugs (C2/C3/C4), but the script's silent-failure modes on Massive's sparse balance-sheet feed stayed unaddressed.
+
+Commit: `d504cff`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| FACTOR | factor-research | (1) Field-name fallback chains matching the C11.b pattern via shared `_pick_from_filing()` helper. Net income: `net_income_loss → net_income → net_income_from_continuing_operations`; equity: `equity → stockholders_equity → total_equity → common_stockholders_equity`; revenue: `revenues → revenue → total_revenue → net_revenue`. Filings carry `*_source` audit tags. Cache bumped to `fundamentals_pit_v2.json` so a stale v1 cache doesn't poison new runs. (2) Per-rebalance coverage diagnostics at `payload.per_rebalance_coverage[]` with `n_scored`, `coverage_pct`, `dropped_for_reason` per factor per rebalance. Drop reasons are factor-specific (`missing_equity`, `negative_or_zero_equity`, `roe_out_of_bounds`, `insufficient_history`, etc.). (3) Thresholds: `coverage_pct < 0.50` fires a tier_caveat; factors stuck below 10% on ALL rebalances are omitted from the IC summary entirely (10% chosen because n≈40 of an intended n=400 is misleading enough to omit, matching the spec's intent better than my over-stated 30%). Module-level constants `_COVERAGE_CAVEAT_PCT` and `_COVERAGE_DROP_PCT` for retuning. (4) IC n surfacing: `n_pairs_per_rebalance` per horizon per factor as `{date, n_pairs, ic}` entries so consumers see the cross-section size driving each per-month IC; `n_months_{h}m` already per horizon; `n_months < 6` now surfaces a tier_caveat explicitly (previously silently returned None for SE/t-stat). (5) New `--debug-factor` flag dumps full per-rebalance coverage + IC raw distribution + NW SE inputs per horizon. (6) **Bonus: added Size factor** (`-log(market_cap)` point-in-time) — script previously had 4 factors (Momentum, Low-Vol, Value, Quality); spec listed 5; subagent added Size with the same fallback semantics. Renderer rewritten from hardcoded 3+1 layout to groups-of-3 loop so any factor count (including after drops) renders cleanly. Methodology unchanged: Newey-West SE, point-in-time mcap, per-rebalance quality from wave 3 are untouched |
+
 ## Wave 13 — 2026-06-27 (event-study no-events diagnosis)
 
 Real-world ALLO test returned "No events matched the input criteria." with no indication which step failed. Three causes collapsed into one silent error.
