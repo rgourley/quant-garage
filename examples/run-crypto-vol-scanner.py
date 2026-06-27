@@ -72,6 +72,13 @@ BASIS_BPS_THRESHOLD = 20.0
 QUIET_VOL_PCT = 0.25
 QUIET_VOLUME_RATIO = 0.7
 
+# Realized-vol window: fixed N completed hourly bars ending at the last fully
+# closed hour. Excludes the current partial hour to avoid run-time drift.
+# Need at least MIN_BARS_24H complete bars before emitting a realized-vol stat;
+# anything less is flagged with reason=insufficient_bars rather than published.
+RV_WINDOW_BARS = 24
+MIN_BARS_24H = 20
+
 EXCHANGE_NAMES = {1: "Coinbase", 2: "Bitfinex", 6: "Bitstamp", 10: "Binance", 23: "Kraken"}
 
 
@@ -237,8 +244,14 @@ def per_exchange_basis(trades):
 
 # -------- Realized vol --------
 
-def realized_vol_from_closes(closes, periods_per_year):
-    if len(closes) < 3:
+def realized_vol_from_closes(closes, periods_per_year, min_bars=3):
+    """Annualized realized vol from a list of close prices.
+
+    Requires at least `min_bars` close observations (which yields min_bars-1
+    log returns). Returns None if undersized or if no valid log returns
+    can be computed.
+    """
+    if len(closes) < min_bars:
         return None
     rets = [math.log(closes[i] / closes[i - 1]) for i in range(1, len(closes)) if closes[i - 1] > 0]
     if not rets:
@@ -247,9 +260,31 @@ def realized_vol_from_closes(closes, periods_per_year):
     return sigma * math.sqrt(periods_per_year) * 100
 
 
-def rolling_realized_vol_distribution(hourly_aggs, window=24):
-    """Compute rolling-24h annualized realized vol every hour."""
-    closes = [b.get("c") for b in hourly_aggs if b.get("c")]
+def completed_hourly_closes(hourly_aggs, now_utc):
+    """Closes from hourly bars whose hour has fully elapsed.
+
+    Massive emits the in-progress hour as a partial bar; including it makes
+    realized vol drift with run time. We filter to bars whose start
+    timestamp (`t`, ms epoch) is strictly before the current hour bucket.
+    Bars without a usable timestamp are dropped to stay conservative.
+    """
+    current_hour_start_ms = int(
+        now_utc.replace(minute=0, second=0, microsecond=0).timestamp() * 1000
+    )
+    closes = []
+    for b in hourly_aggs:
+        t = b.get("t")
+        c = b.get("c")
+        if t is None or c is None:
+            continue
+        if t >= current_hour_start_ms:
+            continue
+        closes.append(c)
+    return closes
+
+
+def rolling_realized_vol_distribution(closes, window=RV_WINDOW_BARS):
+    """Compute rolling annualized realized vol over `window`-bar windows."""
     if len(closes) < window + 1:
         return []
     vols = []
@@ -352,13 +387,27 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
     volume_24h_usd = (prev_v * prev_vw) if (prev_v and prev_vw) else None
     volume_vs_avg_ratio = (volume_24h_usd / volume_30d_avg) if (volume_24h_usd and volume_30d_avg) else 1.0
 
-    # 3. Hourly aggs for realized vol
+    # 3. Hourly aggs for realized vol.
+    # Fixed 24-bar window over the most recent COMPLETED hourly bars only.
+    # Excluding the in-progress bar keeps the metric run-time-invariant.
+    # If fewer than MIN_BARS_24H bars are available (low-liquidity coin or
+    # endpoint hiccup), we emit None + reason=insufficient_bars rather than
+    # publish a garbage stat over 3-5 bars.
     hourly, hourly_fetched_at = fetch_hourly_aggs(ticker, days_back=32)
     if hourly_fetched_at:
         last_hourly_fetched_at = hourly_fetched_at
-    hourly_closes = [b.get("c") for b in hourly if b.get("c")]
-    rv_24h = realized_vol_from_closes(hourly_closes[-25:], 24 * 365) if len(hourly_closes) >= 25 else None
-    rv_distribution_30d = rolling_realized_vol_distribution(hourly, window=24)
+    hourly_closes_completed = completed_hourly_closes(hourly, NOW_UTC)
+    rv_window_closes = hourly_closes_completed[-(RV_WINDOW_BARS + 1):]
+    # n_bars = number of completed close observations feeding the calc
+    # (returns = n_bars - 1). Capped at RV_WINDOW_BARS + 1 = 25.
+    rv_n_bars = len(rv_window_closes)
+    if rv_n_bars >= MIN_BARS_24H:
+        rv_24h = realized_vol_from_closes(rv_window_closes, 24 * 365, min_bars=MIN_BARS_24H)
+        rv_reason = None if rv_24h is not None else "insufficient_bars"
+    else:
+        rv_24h = None
+        rv_reason = "insufficient_bars"
+    rv_distribution_30d = rolling_realized_vol_distribution(hourly_closes_completed, window=RV_WINDOW_BARS)
     vol_percentile = percentile(rv_24h, rv_distribution_30d) if (rv_24h is not None and rv_distribution_30d) else 0.5
     rv_avg_30d = sum(rv_distribution_30d) / len(rv_distribution_30d) if rv_distribution_30d else None
     vol_vs_avg_ratio = (rv_24h / rv_avg_30d) if (rv_24h and rv_avg_30d) else 1.0
@@ -436,6 +485,8 @@ for base, ticker in zip(UNIVERSE, TICKERS_RESOLVED):
         "move_24h_pct": round(move_24h_pct, 6),
         "move_zscore": round(move_zscore, 3),
         "realized_vol_24h_pct": round(rv_24h, 2) if rv_24h is not None else None,
+        "realized_vol_n_bars": rv_n_bars,
+        "realized_vol_reason": rv_reason,
         "vol_percentile_30d": round(vol_percentile, 3),
         "vol_vs_avg_ratio": round(vol_vs_avg_ratio, 3) if vol_vs_avg_ratio else None,
         "volume_24h_usd": round(volume_24h_usd, 2) if volume_24h_usd else None,
@@ -458,6 +509,12 @@ for e in top_events:
     signal_counts[e["signal_type"]] += 1
 rvs = [e["realized_vol_24h_pct"] for e in events if e["realized_vol_24h_pct"] is not None]
 median_rv = sorted(rvs)[len(rvs) // 2] if rvs else None
+# Count across the FULL universe, not just top_events — a coin that failed the
+# min-sample guard usually has a low composite score and won't surface in the
+# top list, but the operator still needs to know how many were dropped.
+insufficient_bars_count = sum(
+    1 for e in events if e.get("realized_vol_reason") == "insufficient_bars"
+)
 
 # Take: 1-2 sentence crypto desk read
 strong_signals = [e for e in top_events if e["composite_score"] >= 0.4]
@@ -502,12 +559,15 @@ payload = {
         "volume_anomaly_threshold": VOLUME_ANOMALY_THRESHOLD,
         "move_zscore_threshold": MOVE_ZSCORE_THRESHOLD,
         "basis_bps_threshold": BASIS_BPS_THRESHOLD,
+        "rv_window_bars": RV_WINDOW_BARS,
+        "rv_min_bars": MIN_BARS_24H,
     },
     "events": top_events,
     "summary": {
         "count": len(top_events),
         "by_signal": dict(signal_counts),
         "median_realized_vol_pct": round(median_rv, 2) if median_rv is not None else None,
+        "insufficient_bars_count": insufficient_bars_count,
     },
     "take": take,
     "skipped_tickers": skipped,
