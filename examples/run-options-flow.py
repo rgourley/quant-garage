@@ -68,6 +68,12 @@ MIN_PREMIUM_USD = 100_000
 EXPIRY_WINDOW_DAYS = 60
 STRIKE_BAND_PCT = 0.10
 
+# When NBBO comes back empty (entitlement gap, sparse-quote contract, OCC
+# format mismatch), fall back to a trade-price percentile heuristic against
+# the contract's own day distribution. Less precise than NBBO but a real
+# signal. Set False to revert to silent "unknown" tagging.
+NBBO_FALLBACK_ENABLED = True
+
 # Per-ticker block thresholds (see references/sweep-vs-block.md)
 BLOCK_THRESHOLDS = {
     "SPY": 500, "QQQ": 500,
@@ -366,44 +372,120 @@ def classify_kind(trades, ticker, contract_volume):
     return "other", [], None
 
 
-def classify_trades_against_nbbo(occ_ticker, contract_type, contrib):
+def _percentile(sorted_values, p):
+    """Linear-interpolation percentile on a pre-sorted list. p in [0, 1]."""
+    if not sorted_values:
+        return None
+    if len(sorted_values) == 1:
+        return sorted_values[0]
+    idx = p * (len(sorted_values) - 1)
+    lo = int(idx)
+    hi = min(lo + 1, len(sorted_values) - 1)
+    frac = idx - lo
+    return sorted_values[lo] * (1 - frac) + sorted_values[hi] * frac
+
+
+def _heuristic_tag(price, p25, p50, p75):
+    """Trade-price percentile against the contract's own day distribution.
+
+    Above p75: trader paid up vs day's range → above_ask analog.
+    Below p25: trader hit near bottom → below_bid analog.
+    Otherwise: at_mid.
+    """
+    if price is None or p25 is None or p75 is None:
+        return "unknown"
+    if price >= p75:
+        return "above_ask"
+    if price <= p25:
+        return "below_bid"
+    return "at_mid"
+
+
+def classify_trades_against_nbbo(occ_ticker, contract_type, contrib, all_contract_trades=None):
     """For each contributing trade, fetch NBBO at trade time and tag it.
+
+    `all_contract_trades` is the full session-window pull for this contract,
+    used to compute the trade-price percentile distribution for the
+    fallback heuristic when NBBO is unavailable. Pass None to disable the
+    fallback for this call (e.g. tests).
 
     Returns a dict:
       {
         "nbbo_tag": dominant_tag,          # volume-weighted majority
         "direction": dominant_direction,
+        "direction_confidence": "high"|"medium"|"low"|"unknown",
+        "direction_method_mix": {"nbbo_inside": N, "trade_price_heuristic": N, "unknown": N},
         "nbbo_bid": representative_bid,    # from the largest trade
         "nbbo_ask": representative_ask,
-        "per_trade": [{ ... }, ...],       # one entry per contrib trade
+        "n_total_trades": int,
+        "n_with_nbbo": int,
+        "n_missing_nbbo": int,
+        "per_trade": [{ ..., "direction_method": ... }, ...],
       }
 
     Replaces the old day-VWAP vs single most-recent quote comparison.
     Each trade is judged against the inside quote that was active at
-    that trade's sip_timestamp.
+    that trade's sip_timestamp; when no inside quote is available, falls
+    back to a trade-price-percentile heuristic against the contract's
+    own day's trade-price distribution.
     """
+    empty = {
+        "nbbo_tag": "unknown",
+        "direction": "unknown",
+        "direction_confidence": "unknown",
+        "direction_method_mix": {"nbbo_inside": 0, "trade_price_heuristic": 0, "unknown": 0},
+        "nbbo_bid": None,
+        "nbbo_ask": None,
+        "n_total_trades": 0,
+        "n_with_nbbo": 0,
+        "n_missing_nbbo": 0,
+        "per_trade": [],
+    }
     if not contrib:
-        return {
-            "nbbo_tag": "unknown",
-            "direction": "unknown",
-            "nbbo_bid": None,
-            "nbbo_ask": None,
-            "per_trade": [],
-        }
+        return empty
+
+    # Per-contract day's trade-price distribution for the heuristic
+    # fallback. Computed against ALL trades on this contract today (the
+    # session window pull), not run-wide and not just the contributing
+    # sample, so the percentile bands reflect this contract's own range.
+    price_p25 = price_p50 = price_p75 = None
+    if NBBO_FALLBACK_ENABLED and all_contract_trades:
+        day_prices = sorted(
+            t.get("price") for t in all_contract_trades
+            if t.get("price") is not None and t.get("price") > 0
+        )
+        if day_prices:
+            price_p25 = _percentile(day_prices, 0.25)
+            price_p50 = _percentile(day_prices, 0.50)
+            price_p75 = _percentile(day_prices, 0.75)
 
     per_trade = []
-    # Volume-weighted tag tallies and a parallel direction tally
+    n_total = 0
+    n_with_nbbo = 0
+    # Volume-weighted tag tallies and a parallel direction tally. Method
+    # is tracked alongside so dominant() can half-weight heuristic calls.
     tag_weight = {}
-    dir_weight = {}
+    dir_weight_by_method = {"nbbo_inside": {}, "trade_price_heuristic": {}, "unknown": {}}
+    method_counts = {"nbbo_inside": 0, "trade_price_heuristic": 0, "unknown": 0}
+
     for t in contrib:
+        n_total += 1
         ts_ns = t.get("sip_timestamp") or t.get("participant_timestamp")
         bid, ask, _qts = fetch_nbbo_at(occ_ticker, ts_ns)
         price = t.get("price")
         size = t.get("size") or 0
-        if bid is None or ask is None or price is None:
-            tag = "unknown"
-        else:
+
+        if bid is not None and ask is not None and price is not None:
+            n_with_nbbo += 1
             tag = price_vs_nbbo(price, bid, ask)
+            method = "nbbo_inside"
+        elif NBBO_FALLBACK_ENABLED and price is not None and price_p25 is not None:
+            tag = _heuristic_tag(price, price_p25, price_p50, price_p75)
+            method = "trade_price_heuristic" if tag != "unknown" else "unknown"
+        else:
+            tag = "unknown"
+            method = "unknown"
+
         direction = inferred_direction(contract_type, tag)
         per_trade.append({
             "sip_timestamp": ts_ns,
@@ -413,19 +495,48 @@ def classify_trades_against_nbbo(occ_ticker, contract_type, contrib):
             "ask": ask,
             "tag": tag,
             "direction": direction,
+            "direction_method": method,
         })
         tag_weight[tag] = tag_weight.get(tag, 0) + size
-        dir_weight[direction] = dir_weight.get(direction, 0) + size
+        dir_weight_by_method[method][direction] = (
+            dir_weight_by_method[method].get(direction, 0) + size
+        )
+        method_counts[method] += 1
 
-    # Dominant by volume, ignoring "unknown" if any concrete tag won size
-    def dominant(weights):
+    n_missing_nbbo = n_total - n_with_nbbo
+
+    # Dominant by volume, ignoring "unknown" if any concrete tag won size.
+    # For direction, NBBO-method gets full weight; heuristic-method gets
+    # half weight so NBBO calls dominate when both are present.
+    def dominant_tag(weights):
         concrete = {k: v for k, v in weights.items() if k != "unknown" and v > 0}
         if concrete:
             return max(concrete.items(), key=lambda kv: kv[1])[0]
         return "unknown"
 
-    nbbo_tag = dominant(tag_weight)
-    direction = dominant(dir_weight)
+    combined_dir = {}
+    for d, w in dir_weight_by_method["nbbo_inside"].items():
+        combined_dir[d] = combined_dir.get(d, 0) + w
+    for d, w in dir_weight_by_method["trade_price_heuristic"].items():
+        combined_dir[d] = combined_dir.get(d, 0) + w * 0.5
+
+    nbbo_tag = dominant_tag(tag_weight)
+    direction = dominant_tag(combined_dir)
+
+    # Confidence reflects what method drove the dominant call.
+    if n_total == 0:
+        confidence = "unknown"
+    else:
+        nbbo_ratio = n_with_nbbo / n_total
+        if nbbo_ratio >= 0.8:
+            confidence = "high"
+        elif nbbo_ratio >= 0.5:
+            confidence = "medium"
+        elif nbbo_ratio > 0:
+            confidence = "low"
+        else:
+            # Pure heuristic
+            confidence = "low" if method_counts["trade_price_heuristic"] > 0 else "unknown"
 
     # Representative bid/ask from the largest contributing trade with a
     # real quote, so the rendered output still shows a single NBBO band.
@@ -440,8 +551,13 @@ def classify_trades_against_nbbo(occ_ticker, contract_type, contrib):
     return {
         "nbbo_tag": nbbo_tag,
         "direction": direction,
+        "direction_confidence": confidence,
+        "direction_method_mix": method_counts,
         "nbbo_bid": rep_bid,
         "nbbo_ask": rep_ask,
+        "n_total_trades": n_total,
+        "n_with_nbbo": n_with_nbbo,
+        "n_missing_nbbo": n_missing_nbbo,
         "per_trade": per_trade,
     }
 
@@ -594,8 +710,12 @@ def scan_ticker(ticker):
         premium_render = c["premium_usd"]
 
         # NBBO at trade time, per contributing trade. Replaces the old
-        # day-VWAP vs single most-recent quote comparison.
-        nbbo = classify_trades_against_nbbo(c["occ"], c["type"], contrib)
+        # day-VWAP vs single most-recent quote comparison. The full
+        # session-window trade list is passed so the heuristic fallback
+        # can compute the contract's own day-price percentiles.
+        nbbo = classify_trades_against_nbbo(
+            c["occ"], c["type"], contrib, all_contract_trades=trades,
+        )
         nbbo_tag = nbbo["nbbo_tag"]
         direction = nbbo["direction"]
         bid = nbbo["nbbo_bid"]
@@ -642,6 +762,13 @@ def scan_ticker(ticker):
             "nbbo_bid": bid,
             "nbbo_ask": ask,
             "inferred_direction": direction,
+            "direction_confidence": nbbo["direction_confidence"],
+            "direction_method_mix": nbbo["direction_method_mix"],
+            "nbbo_availability": {
+                "n_total_trades": nbbo["n_total_trades"],
+                "n_with_nbbo": nbbo["n_with_nbbo"],
+                "n_missing_nbbo": nbbo["n_missing_nbbo"],
+            },
             "spot_at_print": c["spot"],
             "iv_at_print": c["iv"],
             "oi_pre_trade": c["oi"],
@@ -691,14 +818,37 @@ for _p in all_prints:
 
 zero_oi_count = sum(1 for p in all_prints if p.get("zero_oi"))
 
+# NBBO availability across all surfaced prints. Drives tier_caveats so a
+# run on an under-entitled key (or a sparse-quote watchlist) makes the
+# fallback explicit instead of silently rendering direction = OTHER.
+nbbo_total = sum((p.get("nbbo_availability") or {}).get("n_total_trades", 0) for p in all_prints)
+nbbo_have = sum((p.get("nbbo_availability") or {}).get("n_with_nbbo", 0) for p in all_prints)
+nbbo_missing = nbbo_total - nbbo_have
+
+tier_caveats = [
+    "15-min delayed tape (Options Developer plan).",
+    "NBBO is the inside quote at each contributing trade's sip_timestamp, fetched via /v3/quotes?timestamp.lte={ns} (30s lookback window). Tag and direction are volume-weighted across contributing trades.",
+    "Volume/avg ratio computed against the 30-day daily aggregate; new weeklies use chain-median fallback.",
+]
+if nbbo_total > 0:
+    miss_ratio = nbbo_missing / nbbo_total
+    if miss_ratio > 0.5:
+        tier_caveats.append(
+            f"NBBO unavailable on {nbbo_missing} of {nbbo_total} contributing trades "
+            f"(likely entitlement: options quotes need Options Developer ($79/m) or higher). "
+            f"Direction tagged via trade-price heuristic for those trades; "
+            f"see per_trade.direction_method for which path was used."
+        )
+    elif miss_ratio > 0:
+        tier_caveats.append(
+            f"NBBO unavailable on {nbbo_missing} of {nbbo_total} contributing trades; "
+            f"remaining sparse-quote trades tagged via trade-price heuristic."
+        )
+
 # Build payload
 payload = {
     "tier": "B",
-    "tier_caveats": [
-        "15-min delayed tape (Options Developer plan).",
-        "NBBO is the inside quote at each contributing trade's sip_timestamp, fetched via /v3/quotes?timestamp.lte={ns} (30s lookback window). Tag and direction are volume-weighted across contributing trades.",
-        "Volume/avg ratio computed against the 30-day daily aggregate; new weeklies use chain-median fallback.",
-    ],
+    "tier_caveats": tier_caveats,
     "mode": "stream",
     "run_at": NOW_UTC.isoformat(),
     "scan_params": {
@@ -775,12 +925,17 @@ def render_block(p):
         ratio_str = f"{ratio:.1f}x avg"
     nbbo_str = fmt_nbbo(p["price_vs_nbbo"])
     direction = p["inferred_direction"]
+    confidence = p.get("direction_confidence") or "unknown"
 
     line2_parts = [f"{vol_str} vol", f"{prem_str} prem", ratio_str]
     if nbbo_str:
         line2_parts.append(nbbo_str)
     if direction != "unknown":
-        line2_parts.append(direction.upper())
+        dir_label = direction.upper()
+        # Suffix when the dominant direction came from heuristic only.
+        if confidence == "low":
+            dir_label = f"{dir_label} (heuristic)"
+        line2_parts.append(dir_label)
     # M9: rank suffix anchors the score against the run-wide distribution.
     pr = p.get("percentile_rank")
     universe_n = p.get("score_universe_n") or 0
@@ -796,7 +951,24 @@ def render_block(p):
     iv_str = f"IV {round((p['iv_at_print'] or 0) * 100)}%" if p["iv_at_print"] else "IV n/a"
     line3 = f"{spot_str} · {oi_str} · {iv_str}"
 
-    return "\n".join([line1, line2, line3])
+    out_lines = [line1, line2, line3]
+
+    # Surface method mix + confidence only when NBBO wasn't the clean
+    # happy path (confidence != "high"). Quiet on entitled runs.
+    if confidence != "high" and confidence != "unknown":
+        mix = p.get("direction_method_mix") or {}
+        avail = p.get("nbbo_availability") or {}
+        total = avail.get("n_total_trades") or 0
+        n_nbbo = mix.get("nbbo_inside") or 0
+        n_heur = mix.get("trade_price_heuristic") or 0
+        method_line = (
+            f"  NBBO method: {n_nbbo}/{total} trades · "
+            f"Heuristic method: {n_heur}/{total} trades · "
+            f"Confidence: {confidence}"
+        )
+        out_lines.append(method_line)
+
+    return "\n".join(out_lines)
 
 
 lines = []
