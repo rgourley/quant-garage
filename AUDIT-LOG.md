@@ -9,6 +9,18 @@ by ID.
 
 ---
 
+## Wave 12 — 2026-06-27 (peer selection + news window + options direction)
+
+Three real-world bugs surfaced by user testing on ALLO (CAR-T biotech). All three were silent failures that produced output looking correct.
+
+Commits: `253c5f7` (news-scanner), `ed0f4c2` (peer selection), `ab1284c` (options-flow direction).
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| H8.b | news-scanner | The fetch window was hardcoded to `NOW - 7 days` regardless of `--hours`. Any window > 7 days silently shrank to 7. ALLO 90-day scan returned 0 events despite a verified 2026-04-15 article in Massive's news endpoint (73 days back). Renamed misleading `NOVELTY_BUCKET_START_UTC` to `NEWS_FETCH_START_UTC = NOW - max(--hours, 7d)`. Novelty scoring is corpus-based (not timestamp-cutoff-based), so longer windows actually IMPROVE re-run detection. Follow-up flagged but not fixed: pagination cap (`max_pages=4 × limit=50 = 200`) silently truncates high-news megacaps over long windows; recommend scaling `max_pages` to `ceil(window_hours/24/5)` or emitting a `pagination_capped` warning |
+| PEER | pitch-comps, valuation-sanity-check | `/v3/reference/tickers?sic_code={sic}` silently ignored the `sic_code` query parameter and returned the universe alphabetical. ALLO (SIC 2836, Biological Products) came back with `['A','AA','AACB','AACI','AACO','AACP','AADX','AAL']` — American Airlines and SPAC shells as "biotech peers". Affected ~11,900 tickers not in the curated override map. New `lib/quant_garage/peers.py` with `select_peers(client, ticker, n, validate_sic)` using `/v1/related-companies/{ticker}` as primary path (included in all Stocks plans, hybrid news-co-occurrence + behavioral matching). Optional SIC cross-validation via per-candidate `/v3/reference/tickers/{T}` drops mismatched candidates. Empty result → raises `ValueError` with `--peers` override hint; NO alphabetical fallback. `peer_result.method` audit field tracks `related_companies` vs `related_companies_sic_validated`. tier_caveats surfaces `subject_sic`, `n_candidates_pre_filter`, `n_dropped_sic_mismatch`. Both scripts adopt the lib helper |
+| C8.b | options-flow | Wave-1 C8 wired NBBO-at-trade-time correctly, but when options quotes are unavailable (entitlement gap on keys without Options Developer, sparse-quote contracts, OCC format mismatch), every trade silently degraded to tag=`unknown` → direction=`unknown` → rendered as OTHER. `classify_trades_against_nbbo` now counts `n_total_trades`, `n_with_nbbo`, `n_missing_nbbo` and emits per-print `nbbo_availability`. Trade-price-percentile fallback heuristic per contract: trade ≥ p75 of the day's price distribution → `above_ask` (heuristic-tagged); ≤ p25 → `below_bid`; else `at_mid`. Per-trade `direction_method` field is `nbbo_inside`, `trade_price_heuristic`, or `unknown`. Dominant-direction tally half-weights heuristic-method votes so NBBO wins when both are present. Contract-level `direction_confidence` (`high` ≥80% NBBO, `medium` 50-80%, `low` <50%, `unknown`) + `direction_method_mix` for audit. Run-level tier_caveats fires with an Options Developer upgrade hint when >50% of trades fell back to heuristic |
+
 ## Wave 11 — 2026-06-27 (C11 follow-up: loosen EV strict-required)
 
 Commit: `40b5500`. Follow-up to the C11 closure in wave 2.
