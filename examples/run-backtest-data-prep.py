@@ -45,7 +45,14 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, FetchError, today, utcnow_iso
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    resolve_output_format,
+    emit_to_stdout,
+)
 
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache", "backtest-data-prep")
@@ -1005,7 +1012,10 @@ def main():
                         "is not implemented in this release; the active=false fetch is "
                         "queued for a follow-up sprint.")
     p.add_argument("--interface", choices=["auto", "flat-files", "rest"], default="auto")
+    p.add_argument("--format", choices=["render", "json", "both"], default=None,
+                   help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
     args = p.parse_args()
+    fmt = resolve_output_format(args.format)
 
     ws, we = parse_window(args.window)
     if ws > we:
@@ -1247,22 +1257,10 @@ def main():
         for e in edge_cases:
             f.write(json.dumps(e) + "\n")
 
-    # Render summary and print
+    # Render summary
     rendered = render_summary(payload, os.path.basename(os.path.normpath(out_dir)) or out_dir)
 
-    # Print JSON + rendered to stdout in the dual-layer pattern
-    print()
-    print("## Layer 1: canonical JSON")
-    print()
-    print("```json")
-    print(json.dumps(payload, indent=2, default=str))
-    print("```")
-    print()
-    print("## Layer 2: rendered dataset summary")
-    print()
-    print("```")
-    print(rendered)
-    print("```")
+    emit_to_stdout(rendered, payload, fmt)
     print(f"\nDONE. Files in {out_dir}/", file=sys.stderr)
 
 

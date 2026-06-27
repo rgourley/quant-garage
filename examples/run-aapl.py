@@ -20,7 +20,14 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso, is_significant
+from lib.quant_garage import (
+    MassiveClient,
+    today,
+    utcnow_iso,
+    is_significant,
+    resolve_output_format,
+    emit_to_stdout,
+)
 from lib.quant_garage.timezones import utc_to_et
 
 TICKER = "AAPL"
@@ -679,4 +686,4 @@ with open(out_path, "w") as f:
     f.write("- No dedicated IV30 endpoint discovered; using ATM call+put average IV as proxy.\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, resolve_output_format())

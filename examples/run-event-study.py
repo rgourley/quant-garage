@@ -33,7 +33,14 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso, is_significant
+from lib.quant_garage import (
+    MassiveClient,
+    today,
+    utcnow_iso,
+    is_significant,
+    resolve_output_format,
+    emit_to_stdout,
+)
 from lib.quant_garage.timezones import utc_to_et
 
 # SEC EDGAR is NOT a Massive endpoint, so it stays on raw urllib with the
@@ -1389,7 +1396,10 @@ def main() -> None:
                         help="'most_recent' picks most recent event per ticker (cross-section)")
     parser.add_argument("--out", type=str, default=None,
                         help="Output markdown path (default: examples/event-study-<mode>-output.md)")
+    parser.add_argument("--format", choices=["render", "json", "both"], default=None,
+                        help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
     args = parser.parse_args()
+    fmt = resolve_output_format(args.format)
 
     if not args.ticker and not args.tickers:
         parser.error("Provide --ticker or --tickers")
@@ -1412,7 +1422,7 @@ def main() -> None:
         f.write("\n```\n")
 
     print(f"\nDONE. Output -> {out_path}", file=sys.stderr)
-    print(rendered)
+    emit_to_stdout(rendered, payload, fmt)
 
 
 if __name__ == "__main__":

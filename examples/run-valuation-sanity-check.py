@@ -44,6 +44,8 @@ from lib.quant_garage import (
     today,
     utcnow_iso,
     resolve_price,
+    resolve_output_format,
+    emit_to_stdout,
 )
 
 
@@ -685,7 +687,10 @@ ap.add_argument("--horizon", type=int, default=5,
                 help="Forecast horizon in years (default 5)")
 ap.add_argument("--peers", type=str, default=None,
                 help="Comma-separated peer override (skips curated map)")
+ap.add_argument("--format", choices=["render", "json", "both"], default=None,
+                help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
 args = ap.parse_args()
+fmt = resolve_output_format(args.format)
 
 subject_ticker = args.ticker.upper()
 
@@ -1174,4 +1179,4 @@ with open(out_path, "w") as fout:
     fout.write("\n```\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, fmt)

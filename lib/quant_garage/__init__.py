@@ -36,6 +36,7 @@ from .universe import (
     top_quartile_threshold,
     concentration_z_score,
 )
+from .output import OutputFormat, resolve_output_format, emit_to_stdout
 
 __all__ = [
     "MassiveClient",
@@ -59,4 +60,7 @@ __all__ = [
     "build_universe",
     "top_quartile_threshold",
     "concentration_z_score",
+    "OutputFormat",
+    "resolve_output_format",
+    "emit_to_stdout",
 ]

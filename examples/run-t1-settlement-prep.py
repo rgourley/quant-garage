@@ -28,7 +28,13 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, FetchError, utcnow_iso
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    utcnow_iso,
+    resolve_output_format,
+    emit_to_stdout,
+)
 from lib.quant_garage.timezones import utc_to_et
 
 # ----- Config -----
@@ -699,7 +705,7 @@ def main():
         f.write("\n```\n")
 
     print(f"\nOutput written to {OUTPUT_PATH}", file=sys.stderr)
-    print(rendered)
+    emit_to_stdout(rendered, payload, resolve_output_format())
 
 
 def dedupe_sources(sources):

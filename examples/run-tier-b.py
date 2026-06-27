@@ -30,7 +30,13 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, today, utcnow_iso
+from lib.quant_garage import (
+    MassiveClient,
+    today,
+    utcnow_iso,
+    resolve_output_format,
+    emit_to_stdout,
+)
 from lib.quant_garage.timezones import utc_to_et
 
 if len(sys.argv) < 2:
@@ -890,4 +896,4 @@ with open(out_path, "w") as f:
     f.write("- Implied vs realized block: identical methodology to Tier A (same options + aggs).\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, resolve_output_format())

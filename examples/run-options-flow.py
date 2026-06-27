@@ -46,6 +46,8 @@ from lib.quant_garage import (
     today,
     utcnow_iso,
     resolve_price,
+    resolve_output_format,
+    emit_to_stdout,
 )
 
 
@@ -788,4 +790,4 @@ with open(out_path, "w") as f:
     f.write("\n```\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, resolve_output_format())

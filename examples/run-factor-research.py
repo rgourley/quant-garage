@@ -54,7 +54,15 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, FetchError, today, utcnow_iso, newey_west_se
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    newey_west_se,
+    resolve_output_format,
+    emit_to_stdout,
+)
 
 
 TODAY = today()
@@ -979,7 +987,10 @@ def main():
                    help="End date YYYY-MM-DD (default today)")
     p.add_argument("--interface", choices=["auto", "flat-files", "rest"], default="auto",
                    help="Data source for daily aggregates (auto probes flat-files, falls back to REST)")
+    p.add_argument("--format", choices=["render", "json", "both"], default=None,
+                   help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
     args = p.parse_args()
+    fmt = resolve_output_format(args.format)
 
     end_d = date.fromisoformat(args.end_date) if args.end_date else TODAY
     start_d = end_d - timedelta(days=int(args.years * 365))
@@ -1167,7 +1178,7 @@ def main():
         fout.write("\n```\n")
 
     print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-    print(rendered)
+    emit_to_stdout(rendered, payload, fmt)
 
 
 def _definition_for(name):

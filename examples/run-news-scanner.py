@@ -32,7 +32,14 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, ET, utc_to_et, utcnow_iso
+from lib.quant_garage import (
+    MassiveClient,
+    ET,
+    utc_to_et,
+    utcnow_iso,
+    resolve_output_format,
+    emit_to_stdout,
+)
 
 
 # -------- Args --------
@@ -51,7 +58,10 @@ parser.add_argument(
     default="auto",
     help="auto = prefer Benzinga insights; keyword = force keyword scorer",
 )
+parser.add_argument("--format", choices=["render", "json", "both"], default=None,
+                    help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
 args = parser.parse_args()
+fmt = resolve_output_format(args.format)
 
 TICKERS = [t.upper().strip() for t in args.watchlist.split(",") if t.strip()]
 WINDOW_HOURS = args.hours
@@ -815,4 +825,4 @@ with open(out_path, "w") as f:
     f.write("\n```\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, fmt)

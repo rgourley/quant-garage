@@ -30,7 +30,13 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from lib.quant_garage import MassiveClient, FetchError, utcnow_iso
+from lib.quant_garage import (
+    MassiveClient,
+    FetchError,
+    utcnow_iso,
+    resolve_output_format,
+    emit_to_stdout,
+)
 
 
 # -------- Args --------
@@ -43,7 +49,10 @@ parser.add_argument(
 )
 parser.add_argument("--hours", type=int, default=24, help="Lookback window in hours")
 parser.add_argument("--top", type=int, default=15, help="Max events to emit")
+parser.add_argument("--format", choices=["render", "json", "both"], default=None,
+                    help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
 args = parser.parse_args()
+fmt = resolve_output_format(args.format)
 
 # Resolve universe. MATIC -> POL (Polygon chain rebrand).
 TICKER_REWRITES = {"MATIC": "POL"}
@@ -668,4 +677,4 @@ with open(out_path, "w") as f:
     f.write("\n```\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, fmt)

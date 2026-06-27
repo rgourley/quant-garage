@@ -44,6 +44,8 @@ from lib.quant_garage import (
     utcnow_iso,
     top_quartile_threshold,
     concentration_z_score,
+    resolve_output_format,
+    emit_to_stdout,
 )
 
 
@@ -319,7 +321,10 @@ p.add_argument("--output-name", type=str, default="universe-builder-output.md",
 p.add_argument("--rank-by", choices=["composite", "pullback"], default="composite",
                help="composite = mom_3m+ocf_yield+mcap_log z-score (default); "
                     "pullback = mom_3m * (-week_return), the dip-buy strength axis")
+p.add_argument("--format", choices=["render", "json", "both"], default=None,
+               help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
 args = p.parse_args()
+fmt = resolve_output_format(args.format)
 
 # --mom-3m-min is the deprecated alias for --min-mom-3m. Warn on use and
 # fold into the canonical flag. The canonical one always wins if both are set.
@@ -1185,4 +1190,4 @@ with open(out_path, "w") as fout:
     fout.write("\n```\n")
 
 print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-print(rendered)
+emit_to_stdout(rendered, payload, fmt)

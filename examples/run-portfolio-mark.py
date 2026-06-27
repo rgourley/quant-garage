@@ -52,6 +52,8 @@ from lib.quant_garage import (
     utc_to_et,
     utcnow_iso,
     resolve_price,
+    resolve_output_format,
+    emit_to_stdout,
 )
 
 
@@ -86,6 +88,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--mode", choices=["delayed", "live"], default="delayed")
     ap.add_argument("--listen", type=int, default=30, help="Live mode listen window (seconds)")
     ap.add_argument("--output", default=None, help="Output markdown path (default: examples/portfolio-mark-output.md)")
+    ap.add_argument("--format", choices=["render", "json", "both"], default=None,
+                    help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
     return ap.parse_args()
 
 
@@ -888,6 +892,7 @@ def render(payload: dict) -> str:
 
 def main() -> None:
     args = parse_args()
+    fmt = resolve_output_format(args.format)
     positions = load_positions(args.csv_path)
 
     if args.mode == "delayed":
@@ -913,7 +918,7 @@ def main() -> None:
         f.write("\n```\n")
 
     print(f"\nDONE. Output written to {out_path}", file=sys.stderr)
-    print(rendered)
+    emit_to_stdout(rendered, payload, fmt)
 
 
 if __name__ == "__main__":
