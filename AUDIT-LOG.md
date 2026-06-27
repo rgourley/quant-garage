@@ -9,6 +9,20 @@ by ID.
 
 ---
 
+## Wave 4 — 2026-06-26 (quick-win cluster)
+
+Commit: `cd5fc5e`.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| H6 | options-flow | Zero-OI candidates now carry `vol_oi_ratio=None` + `zero_oi=True`. `compute_score` drops the OI term and renormalizes the remaining weights to sum to 1.0. Rendered output shows `"OI: 0 (new)"`. Run-level summary surfaces `zero_oi_count` |
+| H10 | portfolio-mark | Added `fetch_adv_30d()` with module-level `_ADV_CACHE`. Window: `ref_date − 45d .. ref_date − 1d`, requires ≥5 sessions. `confidence_for` takes `adv_30d` and emits `unknown_adv` reason code when insufficient. Output emits both `day_volume` (provenance) and `adv_30d` (bucket source). Detail text now reads "30d ADV X (below 500k mid-ADV cutoff)" |
+| D1 | massive-flat-files | WebSearch confirmed S3 keys are distinct from the REST API key (generated separately in the Polygon dashboard). Access section rewritten; `${MASSIVE_API_KEY}` replaced with `${POLYGON_S3_ACCESS_KEY}`/`${POLYGON_S3_SECRET_KEY}` in both `aws configure` and boto3 examples |
+| D2 | massive-websockets | Verified against the official massive-com client-python WS mock server. Added `auth_failed` to the status enum (was missing); existing `success` / `error` / "not authorized" entries were correct. JS example gained an `auth_failed` branch |
+| N3 | lib client | `utcnow_iso()` now returns `Z`-suffixed UTC (`.replace("+00:00", "Z")`). Verified: `2026-06-27T03:58:39.843018Z` |
+| N4 | pitch-comps, valuation-sanity-check | No-op confirmed. The earlier `resolve_price()` migration already cleaned out the dead `ticker.fmv` waterfall step; only a docstring reference remains in `run-pitch-comps.py` |
+| N5 | lib client | Added `Warning:` paragraph to `paginate()` docstring noting that bare-array endpoints like `/v1/marketstatus/upcoming` need `get()` directly because `body.get("results")` returns `None` |
+
 ## Wave 3 — 2026-06-26 (factor-research overhaul)
 
 Commit: `7a7b33a` (code), `8b804dd` (scorecard).
