@@ -74,7 +74,12 @@ client = MassiveClient()
 
 NOW_UTC = datetime.now(timezone.utc)
 WINDOW_START_UTC = NOW_UTC - timedelta(hours=WINDOW_HOURS)
-NOVELTY_BUCKET_START_UTC = NOW_UTC - timedelta(days=7)
+# News fetch window. Tracks --hours but floors at 7 days so the novelty
+# corpus (IDF + nearest-prior cosine distance over fetched articles) always
+# has >=7 days of baseline to detect re-runs of recent coverage. Longer
+# --hours expand the fetch; shorter --hours still get the 7-day floor.
+EFFECTIVE_NEWS_WINDOW_HOURS = max(WINDOW_HOURS, 7 * 24)
+NEWS_FETCH_START_UTC = NOW_UTC - timedelta(hours=EFFECTIVE_NEWS_WINDOW_HOURS)
 
 REACTION_MINUTES_DEFAULT = 60
 MIN_REACTION_FOR_DIVERGENCE = 0.005
@@ -523,13 +528,16 @@ def divergence(sentiment, reaction_pct):
 
 print(f"Scanning {len(TICKERS)} tickers over last {WINDOW_HOURS}h...", file=sys.stderr)
 
-# Fetch all news per ticker (in window for candidates, in 7-day bucket for novelty)
+# Fetch all news per ticker. Fetch window = max(--hours, 7d) so the corpus
+# always contains >=7 days for novelty/IDF, and longer --hours windows fetch
+# what the user asked for. Candidate filtering further down constrains to the
+# user's actual WINDOW_HOURS.
 ticker_news_raw = {}
 benzinga_present = False
 for t in TICKERS:
     print(f"  fetching news: {t}", file=sys.stderr)
     try:
-        articles = fetch_news(t, NOVELTY_BUCKET_START_UTC.isoformat())
+        articles = fetch_news(t, NEWS_FETCH_START_UTC.isoformat())
     except Exception as e:
         print(f"  warn: {t}: {e}", file=sys.stderr)
         articles = []
@@ -539,7 +547,7 @@ for t in TICKERS:
 
 tier = "A" if (benzinga_present and SENT_MODE == "auto") else "B"
 
-# Build per-ticker IDF over the 7-day bucket
+# Build per-ticker IDF over the fetched corpus (>=7d, possibly larger)
 ticker_idf = {}
 ticker_token_lists = {}
 for t, articles in ticker_news_raw.items():
@@ -849,7 +857,7 @@ payload = {
         {
             "endpoint": "https://api.polygon.io/v2/reference/news",
             "fetched_at": news_last_fetched_at,
-            "context": "Benzinga News, per-ticker, last 7 days for novelty bucket",
+            "context": f"Benzinga News, per-ticker, last {EFFECTIVE_NEWS_WINDOW_HOURS}h fetch (>=7d for novelty corpus)",
         },
         {
             "endpoint": "https://api.polygon.io/v2/aggs/ticker/{ticker}/range/5/minute/{from}/{to}",
