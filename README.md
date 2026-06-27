@@ -68,7 +68,7 @@ workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
 alpha, you build on top of this; you don't deploy this.
 
-![14 skills, one framework](./assets/skills.png)
+![16 skills, one framework](./assets/skills.png)
 
 ## The 16 tools, with real use cases
 
@@ -107,7 +107,11 @@ growth and 60% margin. Does it survive a peer-distribution sanity
 check? The tool runs the reverse-DCF at the current price and tells
 you what CAGR is actually priced in. When I ran it, the $250 target
 came back understated against the semi peer set, which was the
-opposite of what I expected.
+opposite of what I expected. Pass `--mc` for the Monte Carlo
+fan-of-outcomes mode: 10,000 samples across the peer growth × margin
+× exit-multiple distribution, with the current price's percentile
+within the resulting fair-value distribution and a per-driver
+sensitivity ranking. More honest than a single point estimate.
 
 **[`position-sizer`](skills/position-sizer)**
 You like the names — NVDA, AMZN, GOOGL, META all going in. How much
