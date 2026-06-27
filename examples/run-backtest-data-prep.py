@@ -21,7 +21,12 @@ Usage:
 Universe options: top100, top500, top1000, sp500, custom:path/to/tickers.csv
 Window format: YYYY-MM-DD..YYYY-MM-DD (inclusive both ends)
 
-Reads MASSIVE_API_KEY from env, never from a file.
+Reads MASSIVE_API_KEY from env for REST calls. Flat-files S3 access
+needs distinct credentials: POLYGON_S3_ACCESS_KEY + POLYGON_S3_SECRET_KEY
+(generate in the Polygon dashboard under "Flat Files"). If those env
+vars are missing, the script falls back to using MASSIVE_API_KEY as both
+S3 halves with a warning — that pattern usually 403s and the script then
+falls back to the REST grouped-daily path.
 
 The output directory is gitignored (the parquet contains a key
 fingerprint via universe membership; the manifest is the published
@@ -60,9 +65,30 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 client = MassiveClient()
-# Used for the flat-files S3 probe (which uses MASSIVE_API_KEY as the S3 key+secret).
-# Read here only to pass into boto3; routine HTTP goes through `client`.
+# Routine HTTP goes through `client`. Flat-files S3 needs DISTINCT
+# credentials, generated separately in the Polygon dashboard under
+# "Flat Files" → not the same as MASSIVE_API_KEY. The legacy pattern of
+# passing the API key as both halves of S3 auth returns 403 on most
+# accounts (verified 2026-06-23 against a Stocks Business key). Read the
+# proper S3 credentials here; fall back to the legacy pattern with a
+# warning so the failure mode is loud, not silent.
 _KEY = client.api_key
+_S3_ACCESS_KEY = os.environ.get("POLYGON_S3_ACCESS_KEY")
+_S3_SECRET_KEY = os.environ.get("POLYGON_S3_SECRET_KEY")
+if _S3_ACCESS_KEY and _S3_SECRET_KEY:
+    _S3_AUTH = (_S3_ACCESS_KEY, _S3_SECRET_KEY)
+    _S3_AUTH_SOURCE = "polygon_s3_credentials"
+else:
+    _S3_AUTH = (_KEY, _KEY)
+    _S3_AUTH_SOURCE = "massive_api_key_legacy_fallback"
+    print(
+        "WARN: flat-files S3 auth is falling back to MASSIVE_API_KEY as both "
+        "access_key_id and secret_access_key. This pattern usually returns 403. "
+        "Generate distinct S3 credentials in your Polygon dashboard "
+        "(https://polygon.io/dashboard → Flat Files) and export "
+        "POLYGON_S3_ACCESS_KEY and POLYGON_S3_SECRET_KEY to silence this.",
+        file=sys.stderr,
+    )
 
 
 # ----- HTTP helpers -----
@@ -104,8 +130,8 @@ def probe_flat_files():
         s3 = boto3.client(
             "s3",
             endpoint_url="https://files.polygon.io",
-            aws_access_key_id=_KEY,
-            aws_secret_access_key=_KEY,
+            aws_access_key_id=_S3_AUTH[0],
+            aws_secret_access_key=_S3_AUTH[1],
             config=Config(signature_version="s3v4"),
         )
         # Pick a known-good recent weekday
@@ -118,6 +144,24 @@ def probe_flat_files():
     except Exception as e:
         msg = str(e)
         if "403" in msg or "Forbidden" in msg or "InvalidAccessKey" in msg:
+            if _S3_AUTH_SOURCE == "massive_api_key_legacy_fallback":
+                print(
+                    "INFO: flat-files returned 403 with the legacy "
+                    "MASSIVE_API_KEY-as-S3-auth pattern (expected). Generate "
+                    "distinct S3 credentials in the Polygon dashboard under "
+                    "'Flat Files' and export POLYGON_S3_ACCESS_KEY + "
+                    "POLYGON_S3_SECRET_KEY. Falling back to REST grouped-daily "
+                    "for this run.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "INFO: flat-files returned 403 with POLYGON_S3_ACCESS_KEY/"
+                    "POLYGON_S3_SECRET_KEY. Verify the credentials are correct "
+                    "and your account is entitled to flat-files. Falling back "
+                    "to REST grouped-daily for this run.",
+                    file=sys.stderr,
+                )
             return False, None
         print(f"WARN: flat-files probe failed: {msg[:200]}", file=sys.stderr)
         return False, None
