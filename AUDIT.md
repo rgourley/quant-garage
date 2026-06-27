@@ -12,7 +12,7 @@ bottom of this file; the table at the top is the running scorecard.
   script that hasn't been migrated.
 - `[x]` Closed. Fix landed in every affected script, verified.
 
-**Last updated:** 2026-06-26 (correctness sprint wave 2: C5, C6, C7, C11, C12 closed; N7 closed via lazy-init)
+**Last updated:** 2026-06-26 (correctness sprint wave 3: C2, C3, C4 closed via point-in-time financials + Newey-West SE; N6 closed via local-symbol renames)
 
 ---
 
@@ -31,9 +31,9 @@ bottom of this file; the table at the top is the running scorecard.
 | ID | Status | Affects | Resolution path |
 |---|---|---|---|
 | C1 | `[x]` | backtest-data-prep | Closed in commit `183bddf` via honest-labeling. `--survivorship` argparse now only accepts `biased`; `delisted_during_window_count: None` when no inactive pull happened (was misleading 0); render block unconditionally says "Active only (current snapshot)". Real `active=false` union deferred to a follow-up sprint |
-| C2 | `[ ]` | factor-research | Point-in-time mcap / share count at each rebalance (deferred — needs financials integration on top of universe.py) |
-| C3 | `[~]` | factor-research | `lib/quant_garage/stats.py::newey_west_se()` ready. Migration to factor-research pending |
-| C4 | `[ ]` | factor-research | Point-in-time fundamentals per rebalance, or drop quality from decay table (deferred — same financials integration as C2) |
+| C2 | `[x]` | factor-research | Closed in commit `7a7b33a`. Per-rebalance market cap is now built from historical weighted-diluted share count at the most-recent-pre-rebalance filing (`fetch_fundamentals` bumped from `timeframe=annual&limit=2` to `timeframe=quarterly&limit=80`; zero net additional API calls). Tickers with no filing before a given rebalance are dropped for that month only. Cache renamed `fundamentals_pit.json` so stale annual JSON doesn't poison runs |
+| C3 | `[x]` | factor-research | Closed in commit `7a7b33a`. Per-horizon IC t-stat now uses `newey_west_se(ic_series, lag=horizon-1)` from `lib.quant_garage.stats`. At h=1 lag=0 reduces to iid SE so behavior is unchanged where there's no overlap; at h=12 it covers all 11 months. `ic_se_1m/3m/6m/12m` and `n_months_1m/.../12m` now populate per factor (previously `ic_se_1m` was always `null`). Wraps the SE call so n<2 / non-positive variance reports `None` rather than crashing |
+| C4 | `[x]` | factor-research | Closed in commit `7a7b33a`. Quality factor (ROE = net_income / book_equity) is now computed per rebalance from the same filing-history cache used for C2. The `np.tile` block at the prior :451 / :456 is gone. Same +150% / −100% sanity bounds preserved. Marginal cost was tiny because the per-ticker filing cache was already in place for C2 |
 | C5 | `[x]` | event-study, earnings-drilldown | Closed in commit `80f7536`. Post-announcement drift (T+1→T+horizon) added as a separate field alongside the existing announcement-inclusive CAR (T0→T+horizon). Rendered output shows both "Event-window CAR" and "Post-announcement drift" blocks. JSON schema gains `post_announce_drift_*_pct` per horizon |
 | C6 | `[x]` | event-study | Closed in commit `80f7536`. All `abs(t) > 2.0` checks in event-study + earnings-drilldown replaced with `is_significant(t, n)` from lib.quant_garage.stats. At n=4 critical t is 3.18, not 2.0; the prior code over-asserted significance at small samples |
 | C7 | `[x]` | valuation-sanity-check | Closed in commit `b75a117`. Peers missing D&A are excluded from EBITDA comparison and from p25/median/p75 stats. Each excluded peer carries `excluded_from_ebitda_comp: true, reason: "missing_da"`. `tier_caveats` counts excluded peers |
@@ -97,7 +97,7 @@ These weren't in the original audit but surfaced during the foundation refactor:
 | N3 | Cosmetic | `utcnow_iso()` emits `+00:00`; some scripts normalized to `Z`. JSON consumers regex-matching `Z` would now miss |
 | N4 | Cosmetic | `run-pitch-comps.py` and `run-valuation-sanity-check.py` had a `ticker.fmv` step at the bottom of their snapshot fallback waterfalls that never executed (FMV is a separate stream-only event, not on v2 snapshot). Migration to `resolve_price()` silently drops this dead step. No behavioral change because it never returned non-None. Same family as D5 |
 | N5 | Doc | `/v1/marketstatus/upcoming` returns a bare JSON array, not a `{results: [...]}` envelope like the rest of the API. `client.paginate()` assumes the envelope and `body.get("results")` returns `None` on a bare array. Callers of this endpoint must use `client.get()` and `isinstance(body, list)`. Surfaced during the run-t1-settlement-prep migration. Should be noted in the lib's docstring for `paginate()` so future skill authors don't hand `marketstatus/upcoming` to it and silently get zero rows |
-| N6 | Future-blocker | `run-factor-research.py` defines local `build_universe()` and `winsorize()` functions that collide by name with `lib.quant_garage.build_universe` and `lib.quant_garage.winsorize`. Batch-3 migration only imported `MassiveClient/FetchError/today/utcnow_iso` to avoid the collision, leaving the local functions intact. When the C2/C3/C4 sprint adopts the lib helpers here, the local functions need to be renamed or removed first |
+| N6 | Closed | Closed in commit `7a7b33a`. Local `build_universe()` renamed to `_build_factor_universe()`; local `winsorize()` renamed to `_winsorize_series()`. Lib import expanded to pull in `newey_west_se`. The local `_winsorize_series` was kept (not replaced with `lib.quant_garage.winsorize`) because the panel code needs pandas-Series semantics (`.dropna()`, `.quantile()`, `.clip()` with preserved index) and the lib version returns a plain list |
 | N7 | Closed | Closed in commit `76413f5`. `MassiveClient.__init__` no longer raises on missing `MASSIVE_API_KEY`; the check moved to `_headers()` so instantiation is cheap and `--help` paths work. Verified via `python3 examples/run-event-study.py --help` with the env var unset |
 
 ---
