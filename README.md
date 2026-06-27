@@ -18,6 +18,10 @@ stream, or report for humans.
 Sixteen tools. One framework. Built in the garage, not the trading
 floor.
 
+**Needs a [Massive API key](https://massive.com/pricing).** Free Basic
+tier runs five of the tools end-to-end; $29/month Stocks Starter opens
+fifteen of the sixteen.
+
 ## What the collection does
 
 Each tool is useful on its own. The point of having sixteen that share
@@ -265,8 +269,8 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirteen of the sixteen tools run
-on this tier.
+that powers the universe screeners. Fifteen of the sixteen tools run
+on this tier (only crypto-vol-scanner needs a separate plan).
 
 Specific tools need specific add-ons:
 
