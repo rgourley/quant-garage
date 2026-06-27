@@ -22,6 +22,10 @@ floor.
 tier runs five of the tools end-to-end; $29/month Stocks Starter opens
 fifteen of the sixteen.
 
+**Feedback welcome.** Found a bug or have an idea? Open an
+[issue](https://github.com/rgourley/quant-garage/issues) or send a
+[pull request](https://github.com/rgourley/quant-garage/pulls).
+
 ## What the collection does
 
 Each tool is useful on its own. The point of having sixteen that share

@@ -9,6 +9,14 @@ by ID.
 
 ---
 
+## Wave 11 — 2026-06-27 (C11 follow-up: loosen EV strict-required)
+
+Commit: `40b5500`. Follow-up to the C11 closure in wave 2.
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| C11.b | pitch-comps, valuation-sanity-check | Wave 2's C11 close made cash + total_debt strictly required in `compute_ev_components` (raised `NotImplementedError` if absent). Real-world feedback showed Massive's `/vX/reference/financials` doesn't populate either field for most names (verified on AAPL — no `cash` field, only `long_term_debt`). Result: most peers got dropped silently, EV/EBITDA band collapsed to n=0-1, and `--mc` mode in valuation-sanity-check aborted with `exit_multiple n=0`. Loosened both to fallback chains: cash tries `cash → cash_and_cash_equivalents → cash_and_short_term_investments → cash_short_term_investments` then defaults 0; total_debt tries reported `total_debt → synthesized LTD+STD → LTD-only → STD-only` then defaults 0. Each peer carries `cash_source` and `debt_source` audit fields. `tier_caveats` fires when ≥30% of peers used any fallback path. Only `mcap` stays strictly required. MC mode regains functionality because exit_multiple distribution no longer collapses |
+
 ## Wave 10 — 2026-06-26 (skill-doc audit + lastQuote inline read)
 
 Commit: `0647af1`.
