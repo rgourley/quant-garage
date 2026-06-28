@@ -504,19 +504,30 @@ def status_for(value, p25, p75):
 # ----- Reverse-DCF -----
 
 def reverse_dcf_implied_cagr(current_ev, revenue_ttm, assumed_margin,
-                              exit_multiple, wacc, horizon):
-    """Solve for g s.t. PV(rev*(1+g)^h * margin * exit_mult @ wacc) = current_EV.
+                              exit_multiple, wacc, horizon,
+                              multiple_kind="ev_ebitda"):
+    """Solve for g such that PV of the horizon EV @ WACC matches current EV.
 
-    Closed-form: (1+g)^h = current_EV * (1+wacc)^h
-                            / (rev * margin * exit_mult)
+    `multiple_kind` selects the formula:
+      ev_ebitda: PV(rev*(1+g)^h * margin * exit_mult @ wacc) = current_EV
+        (1+g)^h = current_EV * (1+wacc)^h / (rev * margin * exit_mult)
+      ev_sales:  PV(rev*(1+g)^h * exit_mult @ wacc) = current_EV
+        (1+g)^h = current_EV * (1+wacc)^h / (rev * exit_mult)
+        (margin drops out — EV/Sales doesn't include profitability)
     """
-    if not (current_ev and revenue_ttm and assumed_margin and exit_multiple
-            and horizon):
+    if not (current_ev and revenue_ttm and exit_multiple and horizon):
         return None
-    numer = current_ev * ((1.0 + wacc) ** horizon)
-    denom = revenue_ttm * assumed_margin * exit_multiple
+    if multiple_kind == "ev_ebitda":
+        if not assumed_margin:
+            return None
+        denom = revenue_ttm * assumed_margin * exit_multiple
+    elif multiple_kind == "ev_sales":
+        denom = revenue_ttm * exit_multiple
+    else:
+        raise ValueError(f"unknown multiple_kind: {multiple_kind}")
     if denom <= 0:
         return None
+    numer = current_ev * ((1.0 + wacc) ** horizon)
     ratio = numer / denom
     if ratio <= 0:
         return None
@@ -525,23 +536,33 @@ def reverse_dcf_implied_cagr(current_ev, revenue_ttm, assumed_margin,
 
 def fair_value_at_peer_median(subject, peer_median_cagr, assumed_margin,
                                 exit_multiple, wacc, horizon, ev_net_non_mcap,
-                                shares):
-    """Back fair value per share from a peer-median EV/EBITDA exit multiple.
+                                shares, multiple_kind="ev_ebitda"):
+    """Back fair value per share from a peer-median exit multiple.
+
+    `multiple_kind` selects the formula:
+      ev_ebitda: fair_ev = rev*(1+g)^h * margin * exit_mult
+      ev_sales:  fair_ev = rev*(1+g)^h * exit_mult  (margin dropped)
 
     `ev_net_non_mcap` is the non-equity part of EV (total_debt - cash +
     operating_leases + minority_interest). We unwind the same components
     used in current_ev so fair_mcap = fair_ev - ev_net_non_mcap stays in
     parity with the corrected EV math (C11).
     """
-    if not (peer_median_cagr is not None and assumed_margin and exit_multiple
+    if not (peer_median_cagr is not None and exit_multiple
             and horizon and shares and shares > 0):
         return None
     rev = subject["metrics"].get("revenue_ttm")
     if not rev:
         return None
     fair_rev = rev * ((1.0 + peer_median_cagr) ** horizon)
-    fair_ebitda = fair_rev * assumed_margin
-    fair_ev_horizon = fair_ebitda * exit_multiple
+    if multiple_kind == "ev_ebitda":
+        if not assumed_margin:
+            return None
+        fair_ev_horizon = fair_rev * assumed_margin * exit_multiple
+    elif multiple_kind == "ev_sales":
+        fair_ev_horizon = fair_rev * exit_multiple
+    else:
+        raise ValueError(f"unknown multiple_kind: {multiple_kind}")
     fair_pv = fair_ev_horizon / ((1.0 + wacc) ** horizon)
     fair_mcap = fair_pv - (ev_net_non_mcap or 0.0)
     return fair_mcap / shares
@@ -564,32 +585,52 @@ def compute_mc_fair_value(
     seed,
     current_price,
     target_price,
+    multiple_kind="ev_ebitda",
 ):
-    """Sample a joint draw of (growth, margin, exit_multiple) and compute the
-    induced fair-value distribution.
+    """Sample a joint draw of drivers and compute fair-value distribution.
+
+    `multiple_kind`:
+      ev_ebitda: 3-driver model (growth, margin, exit_multiple) where
+                 the exit_multiple distribution is peer EV/EBITDA.
+      ev_sales:  2-driver model (growth, exit_multiple). Margin is
+                 dropped from the formula (EV/Sales doesn't include
+                 profitability) and from the sensitivity output. The
+                 exit_multiple distribution is peer EV/Sales. Callers
+                 pass margin_values=None in this mode.
 
     Returns a dict ready to drop into the `monte_carlo` JSON block, OR a
-    `{reason: 'insufficient_peers', ...}` dict if any driver has < 5 valid
-    values. Drivers are sampled INDEPENDENTLY; correlation caveat is
-    surfaced in the caller's tier_caveats.
+    `{reason: 'insufficient_peers', ...}` dict if any required driver
+    has < 5 valid values. Drivers are sampled INDEPENDENTLY.
 
     Factored out so it can be tested with synthetic inputs (no live API).
     """
     def _n_valid(vs):
+        if vs is None:
+            return 0
         return sum(1 for v in vs if v is not None and np.isfinite(float(v)))
 
     n_g = _n_valid(growth_values)
-    n_m = _n_valid(margin_values)
     n_x = _n_valid(exit_multiple_values)
+    n_m = _n_valid(margin_values) if multiple_kind == "ev_ebitda" else None
 
-    if n_g < 5 or n_m < 5 or n_x < 5:
-        return {
+    if multiple_kind == "ev_ebitda":
+        insufficient = n_g < 5 or n_m < 5 or n_x < 5
+    elif multiple_kind == "ev_sales":
+        insufficient = n_g < 5 or n_x < 5
+    else:
+        raise ValueError(f"unknown multiple_kind: {multiple_kind}")
+
+    if insufficient:
+        block = {
             "reason": "insufficient_peers",
             "n_peers_growth": n_g,
-            "n_peers_margin": n_m,
             "n_peers_exit_multiple": n_x,
             "samples": None,
+            "multiple_kind": multiple_kind,
         }
+        if multiple_kind == "ev_ebitda":
+            block["n_peers_margin"] = n_m
+        return block
 
     sampler = sample_empirical if distribution == "peer" else sample_normal
     # Use distinct seeds per driver so callers passing seed=42 don't get
@@ -599,13 +640,16 @@ def compute_mc_fair_value(
     seed_x = (seed + 2) if seed is not None else None
 
     g_samples = sampler(growth_values, n=n_samples, seed=seed_g)
-    m_samples = sampler(margin_values, n=n_samples, seed=seed_m)
     x_samples = sampler(exit_multiple_values, n=n_samples, seed=seed_x)
 
-    # Per-draw fair value. Uses the SAME formula as fair_value_at_peer_median.
     revenue_h = revenue_ttm * np.power(1.0 + g_samples, horizon)
-    ebitda_h = revenue_h * m_samples
-    ev_h = ebitda_h * x_samples
+    if multiple_kind == "ev_ebitda":
+        m_samples = sampler(margin_values, n=n_samples, seed=seed_m)
+        ebitda_h = revenue_h * m_samples
+        ev_h = ebitda_h * x_samples
+    else:  # ev_sales: drop margin from formula
+        m_samples = None
+        ev_h = revenue_h * x_samples
     ev_pv = ev_h / ((1.0 + wacc) ** horizon)
     fv_samples = (ev_pv - (ev_net_non_mcap or 0.0)) / shares
 
@@ -625,10 +669,12 @@ def compute_mc_fair_value(
     current_pct = _pct_of(current_price)
     target_pct = _pct_of(target_price)
 
-    sensitivity = spearman_sensitivity(
-        {"growth": g_samples, "margin": m_samples, "exit_multiple": x_samples},
-        fv_samples,
-    )
+    if multiple_kind == "ev_ebitda":
+        sens_inputs = {"growth": g_samples, "margin": m_samples,
+                       "exit_multiple": x_samples}
+    else:
+        sens_inputs = {"growth": g_samples, "exit_multiple": x_samples}
+    sensitivity = spearman_sensitivity(sens_inputs, fv_samples)
     sensitivity = [
         {"driver": s["driver"], "rho": round(s["rho"], 3),
          "abs_rho": round(s["abs_rho"], 3)}
@@ -650,26 +696,31 @@ def compute_mc_fair_value(
             "p75": round(float(np.percentile(cleaned, 75)), 4),
         }
 
+    drivers_used = {
+        "growth": _driver_block(growth_values, n_g),
+        "exit_multiple": _driver_block(exit_multiple_values, n_x),
+    }
+    if multiple_kind == "ev_ebitda":
+        drivers_used["margin"] = _driver_block(margin_values, n_m)
+
+    caveats = [
+        (f"Drivers sampled independently; true peer driver correlations "
+         f"(rho ~ 0.3-0.5 historically) may slightly understate tail percentiles"),
+        (f"WACC held constant at {wacc*100:.1f}%; consider sensitivity "
+         "analysis at +/- 100bps separately"),
+    ]
+
     return {
         "samples": n_samples,
         "seed": seed,
         "distribution": distribution,
+        "multiple_kind": multiple_kind,
         "fv_per_share": fv_summary,
         "current_price_percentile": round(current_pct, 1) if current_pct is not None else None,
         "target_price_percentile": round(target_pct, 1) if target_pct is not None else None,
         "sensitivity": sensitivity,
-        "drivers_used": {
-            "growth": _driver_block(growth_values, n_g),
-            "margin": _driver_block(margin_values, n_m),
-            "exit_multiple": _driver_block(exit_multiple_values, n_x),
-        },
-        "tier_caveats": [
-            ("Drivers sampled independently; true peer growth/margin show "
-             "rho ~ 0.3-0.5 historically, so tail percentiles may be slightly "
-             "understated"),
-            (f"WACC held constant at {wacc*100:.1f}%; consider sensitivity "
-             "analysis at +/- 100bps separately"),
-        ],
+        "drivers_used": drivers_used,
+        "tier_caveats": caveats,
     }
 
 
@@ -876,6 +927,12 @@ ap.add_argument("--mc-distribution", choices=["peer", "normal"], default="peer",
                 help="'peer' = empirical resample (default); 'normal' = N(mu,sigma) fit")
 ap.add_argument("--mc-seed", type=int, default=None,
                 help="Seed for reproducible MC runs")
+ap.add_argument("--multiple", choices=["ev_ebitda", "ev_sales", "auto"],
+                default="auto",
+                help="Which exit multiple to use. 'auto' picks ev_ebitda "
+                     "when subject EBITDA > 0, else ev_sales (industry "
+                     "standard for biotechs, early-stage SaaS, growth "
+                     "names without profitability).")
 args = ap.parse_args()
 fmt = resolve_output_format(args.format)
 
@@ -1085,7 +1142,28 @@ margin_sanity = {
 
 # ----- Reverse-DCF -----
 
-exit_multiple = p50_ev  # peer median EV/EBITDA
+# Multiple selection: EV/EBITDA when subject is profitable, else EV/Sales.
+# Industry standard for biotechs, early-stage SaaS, and any subject with
+# non-positive EBITDA. --multiple ev_ebitda|ev_sales forces a path.
+_subject_ebitda = subject["metrics"].get("ebitda_ttm")
+_subject_ebitda_positive = _subject_ebitda is not None and _subject_ebitda > 0
+if args.multiple == "auto":
+    selected_multiple = "ev_ebitda" if _subject_ebitda_positive else "ev_sales"
+    multiple_source = (
+        "auto_ebitda_positive" if _subject_ebitda_positive
+        else "auto_ebitda_nonpositive"
+    )
+else:
+    selected_multiple = args.multiple
+    multiple_source = "user_override"
+
+if selected_multiple == "ev_ebitda":
+    exit_multiple = p50_ev
+    exit_multiple_label = "EV/EBITDA"
+else:
+    exit_multiple = p50_es
+    exit_multiple_label = "EV/Sales"
+
 implied_cagr = reverse_dcf_implied_cagr(
     current_ev=current_ev,
     revenue_ttm=revenue_ttm,
@@ -1093,6 +1171,7 @@ implied_cagr = reverse_dcf_implied_cagr(
     exit_multiple=exit_multiple,
     wacc=WACC,
     horizon=args.horizon,
+    multiple_kind=selected_multiple,
 )
 peer_median_cagr = p50_g  # TTM-as-CAGR proxy (documented)
 air_pp = None
@@ -1108,11 +1187,15 @@ fv_at_median = fair_value_at_peer_median(
     horizon=args.horizon,
     ev_net_non_mcap=_ev_net_non_mcap,
     shares=shares,
+    multiple_kind=selected_multiple,
 )
 
 reverse_dcf = {
     "current_ev": current_ev,
     "wacc_assumption": WACC,
+    "exit_multiple_kind": selected_multiple,
+    "exit_multiple_source": multiple_source,
+    "exit_multiple_label": exit_multiple_label,
     "exit_multiple_assumption": round(exit_multiple, 2) if exit_multiple else None,
     "implied_cagr": round(implied_cagr, 4) if implied_cagr is not None else None,
     "peer_median_cagr": round(peer_median_cagr, 4) if peer_median_cagr is not None else None,
@@ -1126,10 +1209,15 @@ reverse_dcf = {
 monte_carlo_block = None
 if args.mc:
     # Reuse the SAME peer driver pools the point estimate consumes.
-    # `peer_ev_ebitda` already excludes peers without D&A (C7 fix).
+    # In ev_sales mode the margin driver is dropped from the formula and
+    # the exit_multiple distribution comes from peer EV/Sales.
     mc_growth_vals = [v for v in peer_growth_vals if v is not None]
-    mc_margin_vals = [v for v in peer_margin_vals if v is not None]
-    mc_exit_vals = [v for v in peer_ev_ebitda if v is not None]
+    if selected_multiple == "ev_ebitda":
+        mc_margin_vals = [v for v in peer_margin_vals if v is not None]
+        mc_exit_vals = [v for v in peer_ev_ebitda if v is not None]
+    else:
+        mc_margin_vals = None
+        mc_exit_vals = [v for v in peer_ev_sales if v is not None]
 
     if revenue_ttm is None or shares is None or shares <= 0:
         monte_carlo_block = {
@@ -1151,6 +1239,7 @@ if args.mc:
             seed=args.mc_seed,
             current_price=current_price,
             target_price=target_price,
+            multiple_kind=selected_multiple,
         )
 
 
@@ -1409,11 +1498,28 @@ def render(payload):
     rd = payload["reverse_dcf"]
     if rd.get("implied_cagr") is not None:
         lines.append(f"Reverse-DCF view (at current {fmt_price(subj['current_price'])})")
-        assumed_margin_pct = fmt_pct(an["assumed_margin"])
-        lines.append(
-            f"- Implied {an['horizon_years']}yr revenue CAGR "
-            f"({assumed_margin_pct} margin floor): {fmt_pct(rd['implied_cagr'])}"
-        )
+        # Multiple-selection callout
+        if rd.get("exit_multiple_kind") == "ev_sales":
+            source_note = (
+                "auto-selected: subject EBITDA non-positive"
+                if rd.get("exit_multiple_source", "").startswith("auto")
+                else "user override"
+            )
+            lines.append(f"- Exit multiple: {rd.get('exit_multiple_label', 'EV/Sales')} ({source_note}); margin term dropped from formula")
+        elif rd.get("exit_multiple_source") == "user_override":
+            lines.append(f"- Exit multiple: {rd.get('exit_multiple_label', 'EV/EBITDA')} (user override)")
+        # Margin label only matters for ev_ebitda path
+        if rd.get("exit_multiple_kind") == "ev_sales":
+            lines.append(
+                f"- Implied {an['horizon_years']}yr revenue CAGR: "
+                f"{fmt_pct(rd['implied_cagr'])}"
+            )
+        else:
+            assumed_margin_pct = fmt_pct(an["assumed_margin"])
+            lines.append(
+                f"- Implied {an['horizon_years']}yr revenue CAGR "
+                f"({assumed_margin_pct} margin floor): {fmt_pct(rd['implied_cagr'])}"
+            )
         if rd.get("peer_median_cagr") is not None:
             lines.append(
                 f"- vs peer median {an['horizon_years']}yr CAGR (TTM proxy):  "
