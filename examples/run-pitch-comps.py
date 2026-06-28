@@ -636,7 +636,7 @@ def fit_implied(peers, subject, multiple_key,
 
 
 def generate_read(subject_ticker, regression_results, peers, subject,
-                  low_n=False):
+                  low_n=False, valid_multiples=None, primary_multiple=None):
     """One-sentence banker take. References/rendering.md spells out the form.
 
     When low_n is True (regression fit on < 8 peers), prefer the raw
@@ -644,15 +644,18 @@ def generate_read(subject_ticker, regression_results, peers, subject,
     too noisy to drive the headline. The block is still shown in the
     table, just not in the read.
     """
+    # Only consider multiples with ≥4 valid peers (set by caller, defaults
+    # to the prior 3-of-3 list when not supplied).
+    consider = valid_multiples if valid_multiples else ("ev_sales", "ev_ebitda", "p_e")
     # When low_n, fall straight to the cohort-median framing
     if low_n:
-        # Compare subject's three multiples to peer medians and pick the
+        # Compare subject's eligible multiples to peer medians and pick the
         # one with the largest |gap|
         gaps = []
         label_map = {"ev_sales": "EV/Sales",
                       "ev_ebitda": "EV/EBITDA",
                       "p_e": "P/E"}
-        for key in ("ev_sales", "ev_ebitda", "p_e"):
+        for key in consider:
             subj = (subject.get("multiples") or {}).get(key)
             peer_vals = [(p["multiples"] or {}).get(key) for p in peers
                           if (p["multiples"] or {}).get(key) is not None
@@ -833,10 +836,62 @@ regression_adjusted = {
     "skipped": reg_skipped,
 }
 
+# ----- Multiple selection -----
+
+# Per-multiple valid peer count (positive, finite values). Multiples with
+# fewer than MIN_PEERS_PER_MULTIPLE valid peers are dropped from the
+# take's consideration so we don't claim "Median P/E 27.4x" from 2 peers.
+MIN_PEERS_PER_MULTIPLE = 4
+_per_multiple_counts = {}
+for key in ("ev_sales", "ev_ebitda", "p_e"):
+    n_valid = sum(
+        1 for p in peer_objs
+        if (p["multiples"] or {}).get(key) is not None
+        and (p["multiples"] or {}).get(key) > 0
+    )
+    _per_multiple_counts[key] = n_valid
+
+valid_multiples = tuple(
+    k for k in ("ev_sales", "ev_ebitda", "p_e")
+    if _per_multiple_counts[k] >= MIN_PEERS_PER_MULTIPLE
+)
+dropped_multiples = tuple(
+    k for k in ("ev_sales", "ev_ebitda", "p_e")
+    if _per_multiple_counts[k] < MIN_PEERS_PER_MULTIPLE
+)
+
+# Primary lens: EV/EBITDA if subject is profitable AND ev_ebitda has
+# enough valid peers, else EV/Sales if available, else whatever's left.
+_subject_ebitda = subject["metrics"].get("ebitda_ttm")
+_subject_ebitda_positive = _subject_ebitda is not None and _subject_ebitda > 0
+if _subject_ebitda_positive and "ev_ebitda" in valid_multiples:
+    primary_multiple = "ev_ebitda"
+    primary_source = "auto_ebitda_positive"
+elif "ev_sales" in valid_multiples:
+    primary_multiple = "ev_sales"
+    primary_source = "auto_ebitda_nonpositive" if not _subject_ebitda_positive else "fallback_low_ebitda_peers"
+elif valid_multiples:
+    primary_multiple = valid_multiples[0]
+    primary_source = "fallback_first_available"
+else:
+    primary_multiple = None
+    primary_source = "no_valid_multiples"
+
+multiple_selection = {
+    "primary": primary_multiple,
+    "primary_source": primary_source,
+    "valid_multiples": list(valid_multiples),
+    "dropped_multiples": list(dropped_multiples),
+    "peer_counts": _per_multiple_counts,
+    "min_peers_per_multiple": MIN_PEERS_PER_MULTIPLE,
+}
+
 # ----- Read -----
 
 read_line = generate_read(subject_ticker, reg_results, peer_objs, subject,
-                            low_n=regression_adjusted["low_n_warning"])
+                            low_n=regression_adjusted["low_n_warning"],
+                            valid_multiples=valid_multiples,
+                            primary_multiple=primary_multiple)
 
 # ----- Tier detection -----
 
@@ -866,6 +921,29 @@ if _ev_total > 0 and (_ev_fallback / _ev_total) >= 0.30:
         f"(Massive financials don't reliably populate cash + total_debt). "
         f"EV-based multiples may be slightly overstated for those names; "
         f"see ev_components.* for the source tag per peer."
+    )
+
+# Multiple-selection caveats: name dropped multiples + reasoning
+if dropped_multiples:
+    _label_map = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}
+    dropped_str = ", ".join(
+        f"{_label_map[k]} (n={_per_multiple_counts[k]})" for k in dropped_multiples
+    )
+    tier_caveats.append(
+        f"Dropped from peer-band comparison (<{MIN_PEERS_PER_MULTIPLE} valid peers): "
+        f"{dropped_str}. Common for biotech-heavy comps where most peers have "
+        f"negative earnings or EBITDA."
+    )
+if primary_multiple is None:
+    tier_caveats.append(
+        "No valid multiple has enough peers for a meaningful peer-band view. "
+        "Consider passing --peers TICKER1,TICKER2,... with hand-picked operators."
+    )
+elif primary_source == "auto_ebitda_nonpositive":
+    tier_caveats.append(
+        f"Subject EBITDA non-positive (EBITDA TTM = {_subject_ebitda}); "
+        f"primary lens auto-switched to EV/Sales (industry standard for "
+        f"unprofitable subjects)."
     )
 
 # Peer-selection method caveats. Curated overrides need no caveat;
@@ -909,6 +987,7 @@ payload = {
         "n_peers_with_full_multiples": n_full,
     },
     "summary": summary,
+    "multiple_selection": multiple_selection,
     "regression_adjusted": regression_adjusted,
     "read": read_line,
     "sources": sources,
@@ -968,6 +1047,29 @@ def render(payload):
         f"MCap {fmt_mcap_ev(subj['market_cap'])}  "
         f"EV {fmt_mcap_ev(subj['enterprise_value'])}"
     )
+    # Primary multiple lens callout
+    ms = payload.get("multiple_selection") or {}
+    if ms.get("primary"):
+        _label = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}.get(
+            ms["primary"], ms["primary"])
+        _src = ms.get("primary_source", "")
+        if _src == "auto_ebitda_nonpositive":
+            _why = "subject EBITDA non-positive; auto-selected"
+        elif _src == "auto_ebitda_positive":
+            _why = "subject profitable; standard pick"
+        elif _src == "fallback_low_ebitda_peers":
+            _why = "EV/EBITDA had too few valid peers; fell back"
+        elif _src == "fallback_first_available":
+            _why = "fallback — most multiples had too few peers"
+        else:
+            _why = _src
+        lines.append(f"Primary valuation lens: {_label} ({_why})")
+        if ms.get("dropped_multiples"):
+            _dropped = ", ".join(
+                {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}[k]
+                for k in ms["dropped_multiples"]
+            )
+            lines.append(f"Dropped from comparison (<{ms.get('min_peers_per_multiple', 4)} valid peers): {_dropped}")
     lines.append("")
 
     # Build the table body
