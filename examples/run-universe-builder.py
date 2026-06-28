@@ -150,14 +150,25 @@ def sic_to_sector(sic_code, sic_desc):
     return "Other"
 
 
-def fetch_all(path, hard_cap=5000):
+def fetch_all(path, hard_cap=15000):
+    """Paginate `path` and return (rows, truncated).
+
+    `truncated` is True when the loop exited because `len(rows) >= hard_cap`
+    rather than because next_url ran out. The real US common-stock universe
+    is ~5000-8000 names and /v3/reference/tickers returns them
+    alphabetically, so a cap that fires silently slices the universe at
+    a letter boundary. Default 15000 sits safely above the real universe
+    size; callers should surface a tier_caveat when truncated=True.
+    """
     out = []
+    truncated = False
     for results, _ in client.paginate(path):
         out.extend(results)
         if len(out) >= hard_cap:
             out = out[:hard_cap]
+            truncated = True
             break
-    return out
+    return out, truncated
 
 
 def get_ticker_details(ticker):
@@ -268,9 +279,13 @@ p = argparse.ArgumentParser(description="universe-builder reference implementati
 p.add_argument("--candidate-source", choices=["curated", "reference", "grouped"], default="curated",
                help="curated = the free-tier seed; reference = /v3/reference/tickers pool; "
                     "grouped = full US stocks for a recent trading day via /v2/aggs/grouped (best for broad screens)")
-p.add_argument("--candidate-cap", type=int, default=100,
-               help="Cap on candidate pool size (default 100). Applied to curated/reference sources only; "
-                    "grouped uses the full pool returned by the endpoint (~8-10k names).")
+p.add_argument("--candidate-cap", type=int, default=15000,
+               help="Hard ceiling on candidate pulls (default 15000). This is a SAFETY CEILING "
+                    "(safely above the real US common-stock universe of ~5000-8000 names), not a target. "
+                    "Applied to curated/reference sources only; grouped uses the full pool "
+                    "returned by the endpoint (~8-10k names). When the pull hits this cap, "
+                    "a tier_caveat fires because /v3/reference/tickers returns rows "
+                    "alphabetically and a silent cap biases every downstream factor.")
 p.add_argument("--min-mcap", type=float, default=10e9,
                help="Minimum market cap in USD (default 10e9)")
 p.add_argument("--max-mcap", type=float, default=None,
@@ -383,7 +398,12 @@ if args.candidate_source == "curated":
 elif args.candidate_source == "reference":
     print("WARN: reference pool requires a paid plan to complete in reasonable time", file=sys.stderr)
     path = f"/v3/reference/tickers?market=stocks&active=true&type=CS&limit=1000"
-    rows = fetch_all(path, hard_cap=args.candidate_cap)
+    rows, candidate_truncated = fetch_all(path, hard_cap=args.candidate_cap)
+    print(
+        f"  Universe candidates pulled: {len(rows)}"
+        f"{' (TRUNCATED at hard cap)' if candidate_truncated else ''}",
+        file=sys.stderr,
+    )
     sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers",
                     "fetched_at": utcnow_iso(),
                     "context": "candidate pool"})
@@ -393,6 +413,15 @@ elif args.candidate_source == "reference":
     candidate_pool_size = len(raw_pool)
     tier = "A"
     tier_caveats = []
+    if candidate_truncated:
+        tier_caveats.append(
+            f"Universe candidate pull truncated at --candidate-cap={args.candidate_cap} "
+            "tickers. The real US common-stock universe may be larger; downstream "
+            "screening reflects only the captured slice (/v3/reference/tickers "
+            "returns rows alphabetically by symbol, so the cap maps to a "
+            "ticker-letter boundary). Re-run with a higher --candidate-cap or "
+            "investigate the truncation."
+        )
 else:
     # Grouped source: pull /v2/aggs/grouped for ~25 trading days going back
     # ~95 calendar days. One ~10k-row response per day. This gives us close

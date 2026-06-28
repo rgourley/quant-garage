@@ -93,16 +93,27 @@ def fetch_rest(path, params=None):
     return body
 
 
-def fetch_all_rest(path, params=None, hard_cap=2000):
+def fetch_all_rest(path, params=None, hard_cap=15000):
+    """Paginate `path` and return (rows, truncated).
+
+    `truncated` is True when the loop exited because `len(rows) >= hard_cap`
+    rather than because next_url ran out. The real US common-stock universe
+    is ~5000-8000 names and /v3/reference/tickers returns them
+    alphabetically, so a cap that fires silently slices the universe at
+    a letter boundary and silently biases every downstream factor.
+    Default 15000 sits safely above the real universe size.
+    """
     out = []
+    truncated = False
     try:
         for page, _ in client.paginate(path, params):
             out.extend(page)
             if len(out) >= hard_cap:
+                truncated = True
                 break
     except FetchError as e:
         raise RuntimeError(f"{e.status_code} on {path}: {e}")
-    return out
+    return out, truncated
 
 
 def probe_flat_files():
@@ -196,7 +207,13 @@ def trading_days(start, end):
 
 
 def _build_factor_universe(target_size):
-    """Pull top-N by current market cap. Returns list of {ticker, name, market_cap}.
+    """Pull top-N by current market cap. Returns (rows, candidates_count, truncated).
+
+    rows is list of {ticker, name, market_cap}.
+    candidates_count is the raw pre-filter universe-pull size.
+    truncated is True when the candidate pull hit the hard_cap; downstream
+    surfaces a tier_caveat naming the cap so consumers know IC numbers
+    were computed on an alphabetical slice rather than the full universe.
 
     Renamed from `build_universe` (N6) to avoid shadowing
     `lib.quant_garage.build_universe`, which builds a point-in-time
@@ -207,12 +224,21 @@ def _build_factor_universe(target_size):
     cache_path = os.path.join(CACHE_DIR, f"universe_top_{target_size}.json")
     if os.path.exists(cache_path):
         with open(cache_path) as f:
-            return json.load(f)
+            # Cached path: truncation flag is not persisted (the cache predates
+            # this signal). Treat as not-truncated; a fresh run is the way to
+            # re-detect a cap hit.
+            return json.load(f), None, False
     # Paginate /v3/reference/tickers and enrich with ticker details for market_cap
     # The reference endpoint doesn't expose market_cap directly; we pull a wide
     # candidate set and fetch details to rank.
     path = "/v3/reference/tickers?market=stocks&active=true&type=CS&limit=1000"
-    candidates = fetch_all_rest(path, hard_cap=2000)
+    candidates, truncated = fetch_all_rest(path, hard_cap=15000)
+    candidates_pulled = len(candidates)
+    print(
+        f"  Universe candidates pulled: {candidates_pulled}"
+        f"{' (TRUNCATED at hard cap)' if truncated else ''}",
+        file=sys.stderr,
+    )
     # Restrict to major exchanges and reasonable tickers
     major = {"XNAS", "XNYS", "ARCX", "BATS"}
     candidates = [r for r in candidates if r.get("primary_exchange") in major]
@@ -244,7 +270,7 @@ def _build_factor_universe(target_size):
            for tk, mc, name in rows[:target_size]]
     with open(cache_path, "w") as f:
         json.dump(top, f)
-    return top
+    return top, candidates_pulled, truncated
 
 
 # ----- Daily price panel -----
@@ -1206,7 +1232,7 @@ def main():
                 sys.exit(2)
 
     # Universe
-    universe = _build_factor_universe(args.universe_size)
+    universe, universe_candidates_pulled, universe_truncated = _build_factor_universe(args.universe_size)
     print(f"Universe: {len(universe)} names", file=sys.stderr)
 
     # Price panel
@@ -1398,6 +1424,14 @@ def main():
             + ". Publishing IC on the surviving slice would misrepresent "
             "the full universe."
         )
+    if universe_truncated and universe_candidates_pulled is not None:
+        base_caveats.append(
+            f"Universe candidate pull truncated at {universe_candidates_pulled} tickers. "
+            "The real US common-stock universe may be larger; factor IC numbers "
+            "reflect only the captured slice (/v3/reference/tickers returns rows "
+            "alphabetically by symbol, so the cap maps to a ticker-letter boundary). "
+            "Re-run with a higher hard_cap or investigate the truncation."
+        )
 
     payload = {
         "tier": "A",
@@ -1407,6 +1441,8 @@ def main():
         "universe_definition": {
             "label": f"top {args.universe_size} by current market cap, US common stock",
             "size": len(universe),
+            "universe_size": universe_candidates_pulled,
+            "universe_truncated": bool(universe_truncated),
             "survivorship_mode": "biased",
             "survivorship_note": survivorship_note,
         },
