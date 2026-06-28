@@ -102,7 +102,7 @@ craft on.
 **Not for:** people looking for alpha. These tools encode analyst
 workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
-alpha, you build on top of this; you don't deploy this.
+alpha, you build on top of this.
 
 ![16 skills, one framework](./assets/skills.png)
 
