@@ -1,0 +1,138 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "earnings-blackout output",
+  "description": "Canonical structured output for the earnings-blackout skill. Layer 1 (the data); Layer 2 (rendered exception report) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill", "as_of", "fetched_at", "window_days_forward", "window_days_past",
+    "watchlist", "n_tickers", "tier", "tier_caveats", "results", "summary", "sources"
+  ],
+  "properties": {
+    "skill": {
+      "type": "string",
+      "const": "earnings-blackout"
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date",
+      "description": "Trading-day anchor for the scan (today)."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC ISO timestamp when the run started."
+    },
+    "window_days_forward": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Forward window in calendar days."
+    },
+    "window_days_past": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Past window in calendar days (recent prints surfaced)."
+    },
+    "watchlist": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Echo of the input tickers, uppercased."
+    },
+    "n_tickers": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "tier": {
+      "type": "string",
+      "enum": ["A", "B"],
+      "description": "A=Benzinga available (any ticker hit it); B=EDGAR-only fallback for everything."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats explaining what's missing at the current tier. Empty on pure Tier A."
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "status", "source"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": [
+              "blackout_imminent",
+              "blackout_soon",
+              "blackout_extended",
+              "just_printed",
+              "recent_print",
+              "clear",
+              "unresolved"
+            ]
+          },
+          "next_earnings_date": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Soonest forward earnings date within window_days_forward, or null."
+          },
+          "most_recent_earnings_date": {
+            "type": ["string", "null"],
+            "format": "date",
+            "description": "Most recent past earnings date within window_days_past, or null."
+          },
+          "days_until": {
+            "type": ["integer", "null"],
+            "description": "Signed days from as_of to the determining earnings date. Negative for past."
+          },
+          "expected_release_time": {
+            "type": ["string", "null"],
+            "enum": ["BMO", "AMC", "DMH", "unknown", null]
+          },
+          "consensus_eps": { "type": ["number", "null"] },
+          "consensus_revenue": { "type": ["number", "null"] },
+          "item_code": {
+            "type": ["string", "null"],
+            "description": "EDGAR 8-K item code when source=edgar_8k (2.02 / 7.01 / 8.01)."
+          },
+          "signal_strength": {
+            "type": ["string", "null"],
+            "enum": ["strong", "soft", null],
+            "description": "EDGAR-only: strong=2.02, soft=7.01/8.01."
+          },
+          "source": {
+            "type": "string",
+            "enum": ["benzinga", "edgar_8k"]
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "n_blackout_imminent", "n_blackout_soon", "n_blackout_extended",
+        "n_just_printed", "n_recent_print", "n_clear", "n_unresolved"
+      ],
+      "properties": {
+        "n_blackout_imminent": { "type": "integer", "minimum": 0 },
+        "n_blackout_soon": { "type": "integer", "minimum": 0 },
+        "n_blackout_extended": { "type": "integer", "minimum": 0 },
+        "n_just_printed": { "type": "integer", "minimum": 0 },
+        "n_recent_print": { "type": "integer", "minimum": 0 },
+        "n_clear": { "type": "integer", "minimum": 0 },
+        "n_unresolved": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at", "context"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

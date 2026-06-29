@@ -1,0 +1,43 @@
+name: earnings-blackout
+kind: skill
+interface: rest
+output_mode: exception_report
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Full fidelity (with Benzinga)"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_earnings
+        tier: addon
+    enables: [forward_calendar, consensus_eps, consensus_revenue, expected_release_time]
+  B:
+    label: "Degraded (SEC EDGAR only)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [past_print_dates, item_code, signal_strength]
+    loses: [forward_calendar, consensus_eps, consensus_revenue]
+endpoints:
+  - GET /benzinga/v1/earnings (Tier A only)
+  - GET /v3/reference/tickers/{ticker} (CIK lookup, Tier B)
+  - GET https://data.sec.gov/submissions/CIK{cik}.json (SEC EDGAR, free, Tier B)
+  - GET https://www.sec.gov/files/company_tickers.json (SEC ticker map, fallback for CIK)
+notes: |
+  Works on free Stocks Basic because the EDGAR fallback is free and
+  un-rate-limited (subject to SEC's fair-use User-Agent rule). Benzinga
+  is the only paid add-on, and it's optional — without it the skill
+  loses forward earnings dates entirely (EDGAR is past-only) and
+  surfaces upcoming prints as "unresolved" until they file.
+
+  Resolver chain is intentionally identical to event-study's wave-13
+  pattern. If event-study changes its resolver, mirror here.
+fallbacks:
+  - earnings-drilldown
