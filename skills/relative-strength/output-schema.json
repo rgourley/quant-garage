@@ -1,0 +1,137 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "relative-strength output",
+  "description": "Canonical structured output for the relative-strength skill. Layer 1 (the data); Layer 2 (rendered table) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "watchlist",
+    "benchmark",
+    "windows_days",
+    "include_sectors",
+    "n_tickers",
+    "results",
+    "ranking",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "relative-strength" },
+    "as_of": {
+      "type": "string",
+      "format": "date",
+      "description": "Local 'as-of' date the run was anchored to."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp when the script ran."
+    },
+    "watchlist": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tickers the caller passed via --watchlist (uppercased, dedup'd)."
+    },
+    "benchmark": {
+      "type": "string",
+      "description": "Benchmark ticker the watchlist is compared against. Default SPY."
+    },
+    "windows_days": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "description": "Lookback windows in trading days, sorted ascending."
+    },
+    "include_sectors": {
+      "type": "boolean",
+      "description": "Whether the 11 SPDR sector ETFs were included in the ranking."
+    },
+    "n_tickers": {
+      "type": "integer",
+      "description": "Total number of tickers ranked (watchlist + sectors if include_sectors)."
+    },
+    "results": {
+      "type": "array",
+      "description": "One entry per ranked ticker. Sorted by composite_rs_percentile descending; nulls last.",
+      "items": {
+        "type": "object",
+        "required": [
+          "ticker",
+          "rs_by_window",
+          "return_by_window",
+          "composite_rs_percentile",
+          "trend_label",
+          "n_obs_per_window"
+        ],
+        "properties": {
+          "ticker": { "type": "string" },
+          "rs_by_window": {
+            "type": "object",
+            "description": "Relative strength in basis points per window. Keys are '{window}d_bps' (e.g. '5d_bps'). Null when the ticker or benchmark lacks history for that window.",
+            "additionalProperties": { "type": ["integer", "null"] }
+          },
+          "return_by_window": {
+            "type": "object",
+            "description": "Total return in decimal per window. Keys are '{window}d_pct' (e.g. '5d_pct'). Null when history is insufficient.",
+            "additionalProperties": { "type": ["number", "null"] }
+          },
+          "composite_rs_percentile": {
+            "type": ["number", "null"],
+            "description": "Mean of within-watchlist percentile ranks across the windows that produced a non-null RS. Range 0-100. Null when no window had enough history. Rewards consistency: a name in the top quartile every window scores higher than a name that's #1 once and last otherwise."
+          },
+          "trend_label": {
+            "type": "string",
+            "enum": [
+              "improving",
+              "deteriorating",
+              "stable_leader",
+              "stable_laggard",
+              "mixed"
+            ],
+            "description": "improving: short-window RS strictly greater than long-window RS (recent acceleration). deteriorating: short < long (recent decay). stable_leader: every window positive. stable_laggard: every window negative. mixed: anything else."
+          },
+          "n_obs_per_window": {
+            "type": "object",
+            "description": "Number of trading-day observations available per window. Keys are '{window}d' (e.g. '5d').",
+            "additionalProperties": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "ranking": {
+      "type": "object",
+      "required": ["leaders_top_3", "laggards_bottom_3"],
+      "properties": {
+        "leaders_top_3": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Top 3 tickers by composite RS percentile, descending."
+        },
+        "laggards_bottom_3": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Bottom 3 tickers by composite RS percentile, worst first."
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats: insufficient history, sector overlay note, and the always-on 'not predictive on its own' line."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit.",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

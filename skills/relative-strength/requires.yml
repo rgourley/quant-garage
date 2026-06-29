@@ -1,0 +1,64 @@
+name: relative-strength
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_watchlist_pull, sector_overlay]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_watchlist_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Table-mode skill that ranks a user-supplied watchlist by relative
+  strength versus a benchmark (default SPY) across configurable
+  lookback windows (default 5/20/60/120 trading days).
+
+  RS computation:
+    RS_bps = (ticker_return - benchmark_return) * 10_000
+  in basis points so magnitudes are comparable across windows.
+
+  Composite percentile per ticker is the mean of within-watchlist
+  percentile ranks across the windows. This rewards consistency:
+  a name in the top quartile every window beats a name that's #1 in
+  one window and last in three others.
+
+  Trend label per ticker maps to one of five buckets:
+    - improving       (short window stronger than long)
+    - deteriorating   (short window weaker than long)
+    - stable_leader   (every window RS > 0)
+    - stable_laggard  (every window RS < 0)
+    - mixed           (no clear pattern)
+
+  Optional --include-sectors adds the 11 SPDR sector ETFs (XLK, XLF,
+  XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC) to the ranking. Useful
+  for asking "is NVDA's leadership the name or just XLK leadership?"
+
+  Caveats surfaced in every run:
+    - RS is past-return relative to benchmark; not predictive on its
+      own. Pair with regime read.
+    - Tickers with insufficient history for the longest window get a
+      null RS for that window and a tier_caveats note.
+
+  This is the lightweight watchlist ranker. For universe-wide
+  momentum work with IC, t-stats, and decile spreads, use
+  factor-research.
+fallbacks:
+  - factor-research
