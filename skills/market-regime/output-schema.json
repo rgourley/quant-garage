@@ -1,0 +1,169 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "market-regime output",
+  "description": "Canonical output of the market-regime skill. Layer 1 (structured) consumed by UIs, dashboards, and downstream agents (other skills can read composite_regime.label to qualify their own reads). Claude Code rendering described in references/rendering.md.",
+  "type": "object",
+  "required": ["skill", "as_of", "lookback_days", "benchmark", "spy_trend", "breadth", "composite_regime", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "market-regime" },
+    "as_of": {
+      "type": "string",
+      "format": "date",
+      "description": "Date of the regime read (latest available trading day)."
+    },
+    "fetched_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC wall-clock timestamp when the run executed."
+    },
+    "lookback_days": {
+      "type": "integer",
+      "description": "Trading-day lookback used for VIX percentile rank and RS windows. Default 252."
+    },
+    "benchmark": {
+      "type": "string",
+      "description": "Benchmark ticker used for trend + RS denominator. Default SPY."
+    },
+    "spy_trend": {
+      "type": ["object", "null"],
+      "description": "SPY price, SMAs, trend bucket, and rolling returns. Null if insufficient history (need >= 200 trading days).",
+      "required": ["current_price", "sma_20", "sma_50", "sma_200", "trend"],
+      "properties": {
+        "current_price": { "type": "number" },
+        "sma_20": { "type": "number" },
+        "sma_50": { "type": "number" },
+        "sma_200": { "type": "number" },
+        "trend": {
+          "type": "string",
+          "enum": ["uptrend_strong", "uptrend_weak", "range", "downtrend_weak", "downtrend_strong"],
+          "description": "uptrend_strong: price > 20 > 50 > 200. uptrend_weak: price above 50 and 200 but not stacked. range: mixed. downtrend_weak: price below 50 and 200 but not stacked. downtrend_strong: price < 20 < 50 < 200."
+        },
+        "above_sma_20": { "type": "boolean" },
+        "above_sma_50": { "type": "boolean" },
+        "above_sma_200": { "type": "boolean" },
+        "return_1d_pct": { "type": ["number", "null"] },
+        "return_5d_pct": { "type": ["number", "null"] },
+        "return_20d_pct": { "type": ["number", "null"] }
+      }
+    },
+    "vix_state": {
+      "type": ["object", "null"],
+      "description": "VIX block. Null when VIX serves under neither `VIX` nor `I:VIX` on the caller's key (regime then computed without volatility component; tier_caveat surfaces it).",
+      "required": ["current", "state", "source"],
+      "properties": {
+        "current": { "type": "number" },
+        "percentile_rank": {
+          "type": ["number", "null"],
+          "description": "0-100 percentile rank of `current` vs the trailing lookback_days. Null if distribution is below percentile module's MIN_DISTRIBUTION_N."
+        },
+        "rank_label": {
+          "type": "string",
+          "description": "Human label for the rank: 'top 5%', 'top quartile', 'median', etc."
+        },
+        "state": {
+          "type": "string",
+          "enum": ["quiet", "normal", "elevated", "stressed"],
+          "description": "Absolute-level bucket: quiet<15, normal 15-22, elevated 22-30, stressed>=30."
+        },
+        "avg_20d": { "type": "number" },
+        "source": {
+          "type": "string",
+          "description": "Which ticker actually served the data: `VIX` or `I:VIX`."
+        }
+      }
+    },
+    "breadth": {
+      "type": "object",
+      "required": ["method", "n_sector_etfs"],
+      "properties": {
+        "method": { "type": "string", "const": "sector_etf_proxy" },
+        "n_sector_etfs": { "type": "integer" },
+        "n_above_sma_50": { "type": "integer" },
+        "n_above_sma_200": { "type": "integer" },
+        "pct_above_sma_50": { "type": ["number", "null"] },
+        "pct_above_sma_200": { "type": ["number", "null"] },
+        "read": {
+          "type": "string",
+          "description": "Human label: 'broad participation' (>=70%), 'mixed participation' (>=50%), 'narrow participation' (>=30%), 'thin participation' (<30%), or 'insufficient data'."
+        }
+      }
+    },
+    "sector_leadership": {
+      "type": ["object", "null"],
+      "description": "Per-sector returns + 20-day RS vs SPY. Null when SPY 20-day return or sector data is unavailable.",
+      "properties": {
+        "top_3_leaders": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "name", "rs_20d_bps"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "name": { "type": "string" },
+              "rs_20d_bps": { "type": "number" }
+            }
+          }
+        },
+        "bottom_3_laggards": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "name", "rs_20d_bps"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "name": { "type": "string" },
+              "rs_20d_bps": { "type": "number" }
+            }
+          }
+        },
+        "all_sectors": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["ticker", "name", "return_20d_pct", "rs_20d_bps"],
+            "properties": {
+              "ticker": { "type": "string" },
+              "name": { "type": "string" },
+              "return_1d_pct": { "type": ["number", "null"] },
+              "return_5d_pct": { "type": ["number", "null"] },
+              "return_20d_pct": { "type": ["number", "null"] },
+              "rs_20d_bps": { "type": "number" }
+            }
+          }
+        }
+      }
+    },
+    "composite_regime": {
+      "type": "object",
+      "required": ["label", "reasons"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": ["risk_on", "risk_off", "mixed_risk_on", "mixed_risk_off", "neutral"]
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Explicit evidence list. Each entry is a short clause describing the supporting (or offsetting) pillar reading."
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Always includes the sector-ETF breadth proxy caveat. Adds the VIX-unavailable caveat when both `VIX` and `I:VIX` return empty."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
