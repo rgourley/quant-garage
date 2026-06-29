@@ -74,6 +74,7 @@ from .risk import (
     worst_n_days,
 )
 from .peers import select_peers
+from .technicals import sma, ema, rsi, macd, bollinger, atr
 
 __all__ = [
     "MassiveClient",
@@ -131,4 +132,10 @@ __all__ = [
     "concentration_stats",
     "worst_n_days",
     "select_peers",
+    "sma",
+    "ema",
+    "rsi",
+    "macd",
+    "bollinger",
+    "atr",
 ]
