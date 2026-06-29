@@ -1,0 +1,59 @@
+name: technical-briefing
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, snapshot_spread_read]
+  B:
+    label: "Free Basic (rate-limited, snapshot may rate-cap)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [snapshot_spread_read]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+auth: bearer
+notes: |
+  Single-ticker analyst-grade technical read. Emits a sell-side morning-
+  note block: composite trend regime + reasons, RSI 14 latest + 5-day
+  average + bucket read, MACD 12/26/9 line + signal + histogram + cross
+  status, SMAs 20/50/200 + EMAs 20/50 + price-vs-MA percents, Bollinger
+  20/2σ upper/mid/lower + position label + band-width percentile, ATR 14
+  + ATR/price percent, 30-day ADV-bucketed liquidity context + spread bps
+  when snapshot provides bid/ask.
+
+  All indicator math comes from `lib.quant_garage.technicals` (sma, ema,
+  rsi, macd, bollinger, atr). No reimplementation; methodology updates
+  propagate to every skill that reads from there.
+
+  Trend regime is a 5-bucket composite (bullish_strong, bullish_weak,
+  bearish_strong, bearish_weak, neutral) computed from stacked-MA
+  structure + MACD sign + RSI bucket. The Take is computed adaptively
+  from the actual readings via a small (regime, momentum) -> closing-
+  sentence map. No hardcoded ticker narrative.
+
+  Caveats surfaced in every run:
+    - Single-name snapshot; pair with universe/factor for market context
+    - ATR-based vol does not anticipate event-driven jumps
+    - SMA(200) unavailable when lookback < 200 bars; long-term label approximate
+    - Spread unavailable when snapshot does not return bid/ask
+
+  Does NOT predict direction. Does NOT do pattern recognition. Does NOT
+  do multi-timeframe alignment. These are explicit non-goals; the skill
+  is the indicator read, not the model.
+fallbacks:
+  - massive-api-patterns

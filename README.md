@@ -15,12 +15,12 @@ Both ways work because every skill ships the same compute as two
 layers: the JSON contract for developers and a rendered note, table,
 stream, or report for humans.
 
-Sixteen tools. One framework. Built in the garage, not the trading
+Twenty tools. One framework. Built in the garage, not the trading
 floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
 tier runs five of the tools end-to-end; $29/month Stocks Starter opens
-fifteen of the sixteen.
+nineteen of the twenty.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
 [issue](https://github.com/rgourley/quant-garage/issues) or send a
@@ -28,7 +28,7 @@ fifteen of the sixteen.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having sixteen that share
+Each tool is useful on its own. The point of having twenty that share
 data, methodology, and audit trail is that they chain.
 
 Tuesday morning, you're long NVDA into Thursday's print.
@@ -104,9 +104,9 @@ workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
 alpha, you build on top of this.
 
-![16 skills, one framework](./assets/skills.png)
+![20 skills, one framework](./assets/skills.png)
 
-## The 16 tools, with real use cases
+## The 20 tools, with real use cases
 
 ### Earnings work
 
@@ -160,6 +160,16 @@ equalizes each name's contribution to portfolio variance. Pick the
 column whose worldview matches your conviction.
 
 ### Quant research and screening
+
+**[`technical-briefing`](skills/technical-briefing)**
+You're staring at a single name and want the technical read before
+you do anything else. Run the tool on NVDA. You get the composite
+trend regime (bullish / bearish / neutral, strong or weak, with the
+reasons that drove the label), RSI 14 with bucketed momentum read,
+MACD line vs signal with cross status, SMAs 20 / 50 / 200, Bollinger
+position, ATR as a percent of price, and the ADV-bucketed liquidity
+context. Output is a sell-side morning-note block; the Take is
+computed from the actual readings, not a hardcoded narrative.
 
 **[`universe-builder`](skills/universe-builder)**
 You want every US common stock above $20 with quarterly +10% momentum
@@ -273,7 +283,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Fifteen of the sixteen tools run
+that powers the universe screeners. Nineteen of the twenty tools run
 on this tier (only crypto-vol-scanner needs a separate plan).
 
 Specific tools need specific add-ons:

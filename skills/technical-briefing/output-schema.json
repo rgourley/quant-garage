@@ -1,0 +1,152 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "technical-briefing output",
+  "description": "Canonical structured output for the technical-briefing skill. Layer 1 (the data); Layer 2 (rendered briefing block) is described in SKILL.md and references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "ticker",
+    "as_of",
+    "fetched_at",
+    "lookback_days",
+    "n_bars",
+    "current_price",
+    "trend",
+    "momentum",
+    "moving_averages",
+    "macd",
+    "bollinger",
+    "volatility",
+    "liquidity",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "technical-briefing" },
+    "ticker": { "type": "string", "description": "Uppercase US ticker." },
+    "as_of": { "type": "string", "format": "date", "description": "Trading session the last bar belongs to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "lookback_days": { "type": "integer", "description": "Trading days the run was anchored to." },
+    "n_bars": { "type": "integer", "description": "Actual bars after the daily-aggs pull and lookback trim." },
+    "current_price": { "type": "number", "description": "Last close of the trimmed series." },
+    "trend": {
+      "type": "object",
+      "required": ["regime", "reasons"],
+      "properties": {
+        "regime": {
+          "type": "string",
+          "enum": ["bullish_strong", "bullish_weak", "bearish_strong", "bearish_weak", "neutral"],
+          "description": "Composite trend label from stacked-MA + MACD + RSI."
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Plain-English signals that drove the regime label."
+        }
+      }
+    },
+    "momentum": {
+      "type": "object",
+      "required": ["rsi_14", "read"],
+      "properties": {
+        "rsi_14": { "type": ["number", "null"], "description": "Wilder RSI(14) latest value, [0, 100]." },
+        "rsi_5d_avg": { "type": ["number", "null"], "description": "Mean of the last 5 RSI(14) values." },
+        "read": {
+          "type": "string",
+          "enum": ["oversold", "weak", "neutral", "firm", "overbought"],
+          "description": "RSI bucket. <30 oversold, 30-45 weak, 45-55 neutral, 55-70 firm, >70 overbought."
+        }
+      }
+    },
+    "moving_averages": {
+      "type": "object",
+      "required": ["sma_20", "ema_20"],
+      "properties": {
+        "sma_20": { "type": ["number", "null"] },
+        "sma_50": { "type": ["number", "null"] },
+        "sma_200": { "type": ["number", "null"], "description": "Null when n_bars < 200." },
+        "ema_20": { "type": ["number", "null"] },
+        "ema_50": { "type": ["number", "null"] },
+        "price_vs_sma_20_pct": { "type": ["number", "null"], "description": "(price / sma_20) - 1." },
+        "price_vs_sma_50_pct": { "type": ["number", "null"] },
+        "price_vs_sma_200_pct": { "type": ["number", "null"] }
+      }
+    },
+    "macd": {
+      "type": "object",
+      "required": ["line", "signal", "histogram", "cross_status"],
+      "properties": {
+        "line": { "type": ["number", "null"], "description": "MACD line = EMA(12) - EMA(26)." },
+        "signal": { "type": ["number", "null"], "description": "EMA(9) of the MACD line." },
+        "histogram": { "type": ["number", "null"], "description": "MACD line - signal." },
+        "cross_status": {
+          "type": "string",
+          "enum": ["bullish_cross", "bearish_cross", "holding_above", "holding_below"],
+          "description": "bullish_cross/bearish_cross when the line crossed the signal in the last bar; holding_above/holding_below otherwise."
+        }
+      }
+    },
+    "bollinger": {
+      "type": "object",
+      "required": ["upper", "mid", "lower", "position", "pct_of_band_width"],
+      "properties": {
+        "upper": { "type": ["number", "null"] },
+        "mid": { "type": ["number", "null"], "description": "SMA(20)." },
+        "lower": { "type": ["number", "null"] },
+        "position": {
+          "type": "string",
+          "enum": ["above_upper", "near_upper", "mid_range", "near_lower", "below_lower"]
+        },
+        "pct_of_band_width": {
+          "type": ["number", "null"],
+          "description": "(price - lower) / (upper - lower). 0 = at lower, 1 = at upper. Can fall outside [0,1] when price breaks the band."
+        }
+      }
+    },
+    "volatility": {
+      "type": "object",
+      "required": ["atr_14", "atr_pct_of_price"],
+      "properties": {
+        "atr_14": { "type": ["number", "null"], "description": "Wilder ATR(14)." },
+        "atr_pct_of_price": { "type": ["number", "null"], "description": "atr_14 / current_price." }
+      }
+    },
+    "liquidity": {
+      "type": "object",
+      "required": ["adv_30d_dollars", "adv_bucket"],
+      "properties": {
+        "adv_30d_dollars": { "type": "integer", "description": "Mean of (close * volume) over the last min(30, n_bars) bars." },
+        "adv_bucket": {
+          "type": "string",
+          "enum": ["thin", "medium", "liquid", "mega"],
+          "description": "thin <$1M, medium <$50M, liquid <$500M, mega >=$500M."
+        },
+        "current_spread_bps": { "type": ["number", "null"], "description": "(ask - bid) / mid * 10000, when snapshot provides both." },
+        "spread_source": { "type": ["string", "null"], "description": "Where the spread came from, e.g., 'snapshot.lastQuote'." }
+      }
+    },
+    "take": {
+      "type": "string",
+      "description": "Sell-side-voice single-paragraph read built adaptively from the actual readings (regime label + RSI + MA structure + ATR bucket + closing sentence from a (regime, momentum) map)."
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Always-on caveats plus any data-shape caveats triggered by this run."
+    },
+    "sources": {
+      "type": "array",
+      "description": "All Massive endpoints called during the run, with fetched-at timestamps for audit.",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
