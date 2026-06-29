@@ -19,7 +19,7 @@ Twenty tools. One framework. Built in the garage, not the trading
 floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs five of the tools end-to-end; $29/month Stocks Starter opens
+tier runs six of the tools end-to-end; $29/month Stocks Starter opens
 nineteen of the twenty.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
@@ -127,6 +127,16 @@ with t-stats). Last month's run on mega-cap tech Q1 prints surfaced
 that the cross-section average is negative despite all five beating
 on EPS. Guidance is dominating headlines this regime.
 
+**[`earnings-blackout`](skills/earnings-blackout)**
+You're running a watchlist and want a 30-second pre-trade hygiene
+check: which names print this week, which printed yesterday, which
+are clear. Run the tool. It returns each ticker bucketed into
+blackout-imminent (0-3 days forward), blackout-soon (4-7),
+just-printed (0-3 past), or clear, with the date, consensus EPS
+where Benzinga is wired, and the 8-K item code where it falls back
+to SEC EDGAR. Exception-report style: imminent blackouts on top,
+clear names at the bottom.
+
 ### Equity research and valuation
 
 **[`pitch-comps`](skills/pitch-comps)**
@@ -187,6 +197,28 @@ rates, and the cross-factor correlation matrix. Quality at +3.1
 t-stat is the only single factor with statistical significance right
 now. Low-vol is negative across every horizon (recent regime rewards
 risk-taking).
+
+**[`relative-strength`](skills/relative-strength)**
+You have a basket of names and want to know which are leading and
+which are bleeding vs SPY (or any benchmark) across 5 / 20 / 60 /
+120-day windows. Run the tool. Each name gets RS in basis points per
+window, a composite percentile rank within the basket, and a trend
+label (stable_leader, improving, deteriorating, stable_laggard,
+mixed). Pass --include-sectors to add the 11 SPDR sector ETFs into
+the ranking and see whether NVDA's strength is the name or just XLK.
+
+### Market context
+
+**[`market-regime`](skills/market-regime)**
+Daily macro briefing before you do anything else. SPY trend (above
+or below 20/50/200-day MAs, 5 buckets from uptrend_strong to
+downtrend_strong), VIX state with percentile rank vs trailing year,
+breadth proxy from the 11 sector ETFs (how many above 50-day MA),
+and 20-day RS leaders/laggards across sectors. Composite regime
+label (risk_on, risk_off, mixed_risk_on, mixed_risk_off, neutral)
+ships with explicit reasons so you see the evidence, not just the
+label. Run it at the open; it's the right anchor for everything
+else.
 
 ### Trading and execution
 
@@ -277,7 +309,7 @@ built against and the one we recommend you run the tools on. Get a key
 at [massive.com/pricing](https://massive.com/pricing).
 
 The free **Basic** tier (5 calls per minute, end-of-day data) runs
-five of the tools end to end, including earnings previews on any US
+six of the tools end to end, including earnings previews on any US
 name via the SEC EDGAR fallback. Good place to try the framework.
 
 Most people end up wanting **Stocks Starter at $29 per month**. That
@@ -314,7 +346,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). The free Basic
-tier runs five of the tools end to end. Most users want Stocks Starter
+tier runs six of the tools end to end. Most users want Stocks Starter
 at $29/month.
 
 Clone into your Claude Code skills directory:

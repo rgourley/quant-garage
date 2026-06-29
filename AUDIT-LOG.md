@@ -9,6 +9,23 @@ by ID.
 
 ---
 
+## Wave 16 — 2026-06-29 (4-skill expansion: daily-use trader workflows)
+
+Closing the gap vs Jow-Dones-class data-MCP products. Four new skills built in parallel + new technicals lib + cross-cutting brand updates. Skill count 16 → 20.
+
+Commits: `933a8f3` (technicals lib), `74b7997` (earnings-blackout), `570c0c9` (relative-strength), `f831eaf` (market-regime), `ce7efc0` (technical-briefing).
+
+| ID | Affects | Closure notes |
+|---|---|---|
+| TECH-LIB | lib | New `lib/quant_garage/technicals.py` with SMA, EMA, RSI (Wilder), MACD (12/26/9), Bollinger (20/2σ), ATR (Wilder 14). All standard textbook math, numpy arrays aligned to input length with leading NaNs. Smoke-tested on 20-bar synthetic close series. Wired through `__init__.py`. Reusable for any future technicals-aware skill |
+| TECH-BRIEFING | technical-briefing (new) | Single-name technical briefing. Pulls 252 daily bars + snapshot, computes all 6 indicators via lib helpers, derives 5-bucket composite trend regime with explicit reasons, RSI-bucketed momentum read, Bollinger position label, ATR as % of price, ADV-bucketed liquidity (thin/medium/liquid/mega). 18-key adaptive take map keyed on (regime, momentum) with neutral fallback. Trend gate refined from spec: bullish_strong / bearish_strong allow RSI ≥ 50 (or ≤ 50) rather than strict 50-70 range, because monotone uptrend produces RSI > 70 which is trend *confirmation* not contradiction |
+| MARKET-REGIME | market-regime (new) | Daily macro briefing. Pulls SPY + VIX + 11 SPDR sector ETFs. SPY trend (5 buckets via SMA stack), VIX state with percentile rank vs trailing year (graceful fallback if VIX → I:VIX → caveat), breadth proxy from sector ETF % above 50-day / 200-day, 20-day RS leadership ranking. Composite regime label (risk_on, risk_off, mixed_risk_on, mixed_risk_off, neutral) with explicit reasons[]. Leadership rule refined from spec: "at least 2 of {XLK, XLY, XLC} in top-3" rather than "#1 must be growth" — avoids flipping composite on 1-bp differences. Breadth caveat explicit (sector-ETF proxy, not full A/D line) |
+| EARNINGS-BLACKOUT | earnings-blackout (new) | Lightweight watchlist scanner. Resolver helpers inline-copied from event-study's wave-13 pattern (Benzinga Tier A → SEC EDGAR 8-K item 2.02/7.01/8.01 fallback, CIK via Massive primary + SEC ticker.txt fallback). 7 status buckets (blackout_imminent / blackout_soon / blackout_extended / just_printed / recent_print / clear / unresolved). Exception-report rendering groups by status with imminent first. Unresolved tickers surfaced explicitly to avoid silent omission. Runs on Stocks Basic (EDGAR fallback is free) |
+| RELATIVE-STRENGTH | relative-strength (new) | Watchlist RS ranker. Pulls daily aggs per ticker + benchmark, computes RS in basis points per window (default 5/20/60/120 days). Composite percentile rank within-watchlist (not against universe baseline — that's factor-research's job). 5 trend labels (stable_leader, improving, deteriorating, stable_laggard, mixed) based on head-of-series (5/20/60d) gradient. Optional `--include-sectors` adds the 11 SPDR ETFs to the ranking for sector-relative context |
+| CROSS-CUT | top-level README, PLAN-MATRIX, assets | README gains entries for all 4 new skills in appropriate sections (Earnings work / Quant research / new Market context section). PLAN-MATRIX adds 4 new rows + earnings-blackout to the free-Basic-tier runnable list (bumped to 6). assets/skills.html + og.html + closing.html bumped to 20 SKILLS and the 4 new names interleaved into the list. PNGs re-rendered |
+
+**Em-dash note:** Five commit subjects in this wave carry em-dashes (carried over from my spec templates to subagents). My fault — the no-em-dash rule applies to prose output and I should've stripped them in the specs. Local-only history rewrite was blocked by the auto-classifier; leaving as-is since the cost (em-dashes in 5 git log subjects) is lower than the friction of authorizing a history rewrite. Going forward, specs will use colons instead.
+
 ## Wave 15 — 2026-06-27/28 (silent caps + EV/Sales + brand pass)
 
 Commits: `d444cc0` (news-scanner pagination), `95e145a` (D1 script-level S3), `e0c4082` (Massive rebrand), `38f32f3` (valuation EV/Sales), `319669d` (multiple-selection reference), `2032cd7` (pitch-comps EV/Sales), `07de56c`/`2d30581` (OG copy + PNG), `a8c8bd5` (universe truncation).

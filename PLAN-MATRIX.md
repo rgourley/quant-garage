@@ -52,6 +52,9 @@ A few things to know up front:
 | `valuation-sanity-check` | REST | Stocks Starter | Current price + financials |
 | `position-sizer` | REST | Stocks Starter | Daily aggs per name; runs on free Basic too, slower |
 | `technical-briefing` | REST | Stocks Starter | Daily aggs + snapshot for one name; runs on free Basic too, slower |
+| `market-regime` | REST | Stocks Starter | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower |
+| `relative-strength` | REST | Stocks Starter | Daily aggs per ticker + benchmark; runs on free Basic too, slower |
+| `earnings-blackout` | REST | Stocks Basic | Watchlist scanner; Benzinga earnings if entitled, SEC EDGAR fallback otherwise |
 | `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |
 | `earnings-drilldown` (lite, Tier A) | REST | Stocks Starter + Benzinga Earnings | Adds consensus EPS, surprise %, beat/miss bucketing |
 | `earnings-drilldown` (full, Tier A) | REST | Stocks Starter + Options Developer + Benzinga Earnings | Full fidelity: implied vs realized + beat/miss |
@@ -70,13 +73,14 @@ A few things to know up front:
 
 ## What you get at each step
 
-**Free Basic key.** Five skills run end to end:
+**Free Basic key.** Six skills run end to end:
 
 - `universe-builder`
 - `corp-actions-reconciler`
 - `news-scanner`
 - `t+1-settlement-prep`
 - `factor-research` (lite mode)
+- `earnings-blackout`
 
 The 5/min rate cap will throttle fan-out workflows. Single-name lookups
 and small screens are fine. Enough to demo the suite and decide whether
