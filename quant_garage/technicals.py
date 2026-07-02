@@ -11,8 +11,8 @@ Math is standard textbook (Wilder's RSI, MACD = EMA(12)-EMA(26) with
 9-day EMA signal, Bollinger = SMA(20) ± 2σ, ATR = Wilder smoothing of
 true range over 14 periods). No exotic variants, no smoothing tweaks.
 
-Used together with `lib.quant_garage.stats` (df-aware significance) and
-`lib.quant_garage.percentile` (rank vs distribution) so technical
+Used together with `quant_garage.stats` (df-aware significance) and
+`quant_garage.percentile` (rank vs distribution) so technical
 readings carry honest sample-size + base-rate context.
 """
 from __future__ import annotations

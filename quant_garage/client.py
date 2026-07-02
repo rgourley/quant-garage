@@ -33,7 +33,7 @@ Design choices:
 
 Importing the client:
 
-    from lib.quant_garage import MassiveClient
+    from quant_garage import MassiveClient
     client = MassiveClient()  # reads MASSIVE_API_KEY from env
 
     data, fetched_at = client.get("/v3/reference/tickers/AAPL")

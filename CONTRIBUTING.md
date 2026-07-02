@@ -127,6 +127,50 @@ output:
 - Take + supporting evidence, not "here are some facts you may
   find useful."
 
+## Dependency policy
+
+Own the core. Import the rest only when a specific skill needs it.
+
+**Core (always installed):** `requests`, `numpy`. That's it. Everything
+in `quant_garage/technicals.py` (SMA, EMA, RSI, MACD, Bollinger, ATR)
+and `quant_garage/stats.py` (percentile, significance, Newey-West) is
+implemented against `numpy` directly. No wrappers over pandas-ta or
+TA-Lib. We control the math because a "sell-side quality" claim needs
+correctness we can defend.
+
+**Optional extras** live in `pyproject.toml`:
+
+- `research`: `pandas`, `scipy`, `pyarrow` — for `factor-research` and
+  `backtest-data-prep` (universe-wide DataFrames, parquet output)
+- `flatfiles`: `boto3`, `s3fs` — for skills that pull from the Massive
+  flat-files S3 bucket
+- `live`: `websocket-client` — for `portfolio-mark`'s live mode
+
+If a skill needs an optional dep, it does a lazy `try: import ... except
+ImportError: raise RuntimeError(...)` at call time with a message that
+tells the user which extra to install. It does NOT `import` at module
+top level. That keeps `pip install quant-garage` slim.
+
+**What NOT to add:**
+
+- Wholesale indicator libraries (`pandas-ta`, `TA-Lib`). Our audience is
+  Massive customers building workflows, not building signal libraries.
+  For raw indicator coverage, users can layer pandas-ta on top of
+  quant-garage. We sit above signals, not next to them.
+- `OpenBB`, `pyfolio`. Too big, wrong architecture, and would rebrand
+  the framework as a wrapper over someone else's.
+- Anything that requires C compilation to install (TA-Lib being the
+  classic pain point). We want `pip install quant-garage` to succeed
+  the first time on every platform.
+
+**When you add an optional extra:**
+
+1. Add it to `[project.optional-dependencies]` in `pyproject.toml`.
+2. Lazy-import inside the skill function, not at module top.
+3. If installation fails, raise `RuntimeError("install with pip install
+   quant-garage[<extra>]")` so the error surfaces the fix.
+4. Document it in the skill's `SKILL.md` under "Requires:".
+
 ## Commit messages
 
 Conventional commits: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`.

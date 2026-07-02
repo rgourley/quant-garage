@@ -3,7 +3,7 @@ Risk metrics for a portfolio: VaR, Expected Shortfall, max drawdown,
 beta, tracking error, position variance contributions, concentration.
 
 Pairs with the position-sizer skill — same daily-aggs pull pattern,
-same covariance machinery via lib/quant_garage/sizing.py. Where
+same covariance machinery via quant_garage/sizing.py. Where
 sizing.py answers "how much should I put on?", risk.py answers "what
 could happen to what I've already got?"
 

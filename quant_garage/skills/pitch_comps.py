@@ -1,0 +1,1242 @@
+"""
+pitch-comps as an importable library function.
+
+Takes a subject ticker, identifies peers via the curated override map (with
+correlation and SIC fallbacks), pulls current multiples for the subject and
+peers, computes summary stats, and runs a regression-adjusted multiples view.
+
+    from quant_garage.skills.pitch_comps import run, render
+    payload = run("CRM")
+    payload = run("ALLO", peers="BEAM,NTLA,CRSP,EDIT")
+"""
+from __future__ import annotations
+
+import sys
+import time
+from datetime import datetime, timezone
+from typing import Iterable
+
+import numpy as np
+
+from .. import (
+    MassiveClient,
+    FetchError,
+    today,
+    utcnow_iso,
+    resolve_price,
+    critical_t,
+    is_significant,
+    da_annualized,
+    operating_income_annualized,
+    select_peers,
+)
+
+
+# Minimum peer count for OLS regression. Below this we skip the
+# regression block entirely and emit per-peer numbers + summary stats
+# only. With < 5 peers (k=3 with intercept) df is 2 or fewer; CI widths
+# explode and the implied multiple is dominated by noise. Documented in
+# references/regression-adjustment.md.
+MIN_PEERS_FOR_OLS = 5
+
+
+client = MassiveClient()
+NOW_UTC = datetime.now(timezone.utc)
+TODAY = today()
+
+
+# Curated peer-override map. Mirrors the methodology in
+# skills/earnings-drilldown/references/peer-reaction.md; updates should land
+# in both maps. See skills/pitch-comps/references/peer-selection.md for the
+# rationale on why hand-curation beats SIC for the top names.
+PEER_OVERRIDES = {
+    # Software majors (the test case for this skill)
+    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
+    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
+    "ADBE": ["CRM", "ORCL", "INTU", "NOW", "WDAY", "SAP"],
+    "NOW":  ["CRM", "WDAY", "ADBE", "ORCL", "INTU", "PANW"],
+    "WDAY": ["CRM", "NOW", "ADBE", "INTU", "ORCL"],
+    "INTU": ["CRM", "ADBE", "ORCL", "NOW", "WDAY"],
+    "PANW": ["CRWD", "FTNT", "ZS", "S", "CHKP", "OKTA"],
+    "CRWD": ["PANW", "FTNT", "ZS", "S", "OKTA"],
+    # Mega-cap tech
+    "AAPL":  ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
+    "NVDA":  ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
+    "MSFT":  ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
+    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
+    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
+    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
+    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
+    # Banks
+    "JPM": ["BAC", "WFC", "C", "GS", "MS"],
+    "GS":  ["MS", "JPM", "BAC", "C"],
+    # Payments
+    "V":  ["MA", "PYPL", "AXP"],
+    "MA": ["V", "PYPL", "AXP"],
+    # Pharma
+    "LLY":  ["NVO", "PFE", "MRK", "ABBV", "BMY", "AMGN"],
+    "MRK":  ["LLY", "PFE", "ABBV", "BMY", "AMGN", "JNJ"],
+    "NVO":  ["LLY", "PFE", "MRK", "ABBV"],
+    # Energy
+    "XOM": ["CVX", "COP", "EOG", "OXY"],
+    "CVX": ["XOM", "COP", "EOG", "OXY"],
+}
+
+
+def get_ticker_details(ticker):
+    try:
+        doc, _ = client.get(f"/v3/reference/tickers/{ticker}")
+    except FetchError as exc:
+        print(f"  WARN: ticker details for {ticker}: {exc}", file=sys.stderr)
+        return None
+    return doc.get("results")
+
+
+def get_snapshot_price(ticker):
+    """Walk the lastTrade -> min.c -> day.c -> prevDay.c chain via lib.
+
+    Uses resolve_price() (D4/D5). The legacy waterfall mentioned a
+    top-level `fmv` field that the snapshot response shape doesn't
+    surface there, so it always returned None in practice.
+    """
+    try:
+        doc, _ = client.get(f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}")
+    except FetchError as exc:
+        print(f"  WARN: snapshot for {ticker}: {exc}", file=sys.stderr)
+        return None
+    return resolve_price(doc).price
+
+
+def get_financials(ticker, limit=8):
+    """Returns the raw list of up to `limit` quarterly rows, reverse chrono.
+
+    Iterating consumers should drop rows where the income statement is empty
+    (10-K fiscal-year-end rows often have only the balance sheet). See
+    skills/pitch-comps/references/growth-and-profitability.md.
+    """
+    path = (f"/vX/reference/financials?ticker={ticker}"
+            f"&timeframe=quarterly&limit={limit}&order=desc")
+    try:
+        doc, _ = client.get(path)
+    except FetchError as exc:
+        print(f"  WARN: financials for {ticker}: {exc}", file=sys.stderr)
+        return []
+    return doc.get("results") or []
+
+
+def _val(node, key):
+    """Pull `.value` from a Massive financials field, safe against null."""
+    sub = (node or {}).get(key)
+    if not sub:
+        return None
+    return sub.get("value")
+
+
+def _first_non_null(rows, section, keys):
+    """Walk quarterly rows (most-recent first) and pull the first non-null
+    value for any of `keys` in `financials.<section>`. Returns (value, key).
+    """
+    for r in rows:
+        fin = r.get("financials") or {}
+        node = fin.get(section) or {}
+        for k in keys:
+            v = _val(node, k)
+            if v is not None:
+                return float(v), k
+    return None, None
+
+
+def compute_metrics_from_financials(rows):
+    """Walk a list of quarterly rows and compute the TTM metrics we need.
+
+    Returns a dict matching the schema's `metrics` object. Nulls where
+    inputs are missing (don't impute zeros). See references for the rules.
+    """
+    out = {
+        "revenue_ttm": None,
+        "revenue_prior_ttm": None,
+        "revenue_growth_ttm": None,
+        "operating_income_ttm": None,
+        "op_income_source": "unavailable",
+        "depreciation_amortization_ttm": None,
+        "da_source": "unavailable",
+        "ebitda_ttm": None,
+        "ebitda_margin": None,
+        "diluted_eps_ttm": None,
+        # EV component pieces (C11). long_term_debt kept for back-compat.
+        "long_term_debt": None,
+        "total_debt": None,
+        # debt_source: 'reported_total' | 'synthesized_ltd_plus_std' |
+        # 'long_term_only' | 'unavailable_defaulted_to_zero'
+        "debt_source": None,
+        "cash_and_equivalents": None,
+        # cash_source: a real field name (e.g. 'cash_and_cash_equivalents') or
+        # 'unavailable_defaulted_to_zero'
+        "cash_source": None,
+        "operating_lease_liability": None,
+        "minority_interest": None,
+    }
+
+    # Walk rows; collect quarters that have a revenue value (drops 10-K rows)
+    rev_quarters = []
+    for r in rows:
+        fin = r.get("financials") or {}
+        inc = fin.get("income_statement") or {}
+        bs = fin.get("balance_sheet") or {}
+        rev = _val(inc, "revenues")
+        op = _val(inc, "operating_income_loss")
+        da = _val(inc, "depreciation_and_amortization")
+        eps = _val(inc, "diluted_earnings_per_share")
+        ltd = _val(bs, "long_term_debt")
+        rev_quarters.append({
+            "end_date": r.get("end_date"),
+            "rev": rev,
+            "op": op,
+            "da": da,
+            "eps": eps,
+            "ltd": ltd,
+        })
+
+    # The most recent LTD that's not null (balance sheet is mostly available)
+    for q in rev_quarters:
+        if q["ltd"] is not None:
+            out["long_term_debt"] = float(q["ltd"])
+            break
+
+    # Filter to revenue-bearing quarters only
+    with_rev = [q for q in rev_quarters if q["rev"] is not None]
+
+    if len(with_rev) >= 4:
+        ttm = with_rev[:4]
+        out["revenue_ttm"] = float(sum(q["rev"] for q in ttm))
+        # H5: route operating income + D&A through the shared lib helper
+        # so pitch-comps and valuation-sanity-check produce identical
+        # numbers for the same input financials. Source tags ('LTM' vs
+        # 'Q4' vs 'unavailable') land in the per-ticker JSON output.
+        op_ttm, op_source = operating_income_annualized(rows)
+        out["operating_income_ttm"] = op_ttm
+        out["op_income_source"] = op_source
+        da_ttm, da_source = da_annualized(rows)
+        out["depreciation_amortization_ttm"] = da_ttm
+        out["da_source"] = da_source
+        if out["operating_income_ttm"] is not None:
+            out["ebitda_ttm"] = (out["operating_income_ttm"]
+                                  + (out["depreciation_amortization_ttm"] or 0.0))
+            if out["revenue_ttm"] and out["revenue_ttm"] > 0:
+                out["ebitda_margin"] = out["ebitda_ttm"] / out["revenue_ttm"]
+        eps_vals = [q["eps"] for q in ttm if q["eps"] is not None]
+        if len(eps_vals) == 4:
+            out["diluted_eps_ttm"] = float(sum(eps_vals))
+
+    if len(with_rev) >= 8:
+        prior = with_rev[4:8]
+        out["revenue_prior_ttm"] = float(sum(q["rev"] for q in prior))
+        if (out["revenue_ttm"] is not None
+                and out["revenue_prior_ttm"]
+                and out["revenue_prior_ttm"] > 0):
+            out["revenue_growth_ttm"] = (
+                out["revenue_ttm"] / out["revenue_prior_ttm"]) - 1.0
+
+    # ----- C11 EV component sourcing -----
+    # Debt fallback chain (spec 2026-06-26 EV fallback fix):
+    #   reported total_debt → synthesized (LTD + STD) → long_term_only → 0.
+    # Source tag emitted in metrics["debt_source"] so consumers know which
+    # path was used (and tier_caveats can fire when too many peers fell back).
+    reported_total, _ = _first_non_null(rows, "balance_sheet", ("total_debt",))
+    lt_debt = out["long_term_debt"]
+    st_debt, _ = _first_non_null(rows, "balance_sheet",
+                                  ("short_term_debt", "current_debt",
+                                   "debt_current",
+                                   "short_term_borrowings",
+                                   "current_portion_of_long_term_debt"))
+    if reported_total is not None:
+        out["total_debt"] = float(reported_total)
+        out["debt_source"] = "reported_total"
+    elif lt_debt is not None and st_debt is not None:
+        out["total_debt"] = float(lt_debt) + float(st_debt)
+        out["debt_source"] = "synthesized_ltd_plus_std"
+    elif lt_debt is not None:
+        out["total_debt"] = float(lt_debt)
+        out["debt_source"] = "long_term_only"
+    elif st_debt is not None:
+        out["total_debt"] = float(st_debt)
+        out["debt_source"] = "short_term_only"
+    # else: leave out["total_debt"] = None and out["debt_source"] = None;
+    # compute_ev_components handles the final defaulting and tags the source
+    # as 'unavailable_defaulted_to_zero'.
+
+    # Cash fallback chain (spec 2026-06-26 EV fallback fix):
+    #   cash → cash_and_cash_equivalents → cash_and_short_term_investments → 0
+    # AAPL surfaces this: their balance_sheet has no bare 'cash' field; the
+    # value lives under 'cash_and_cash_equivalents' or
+    # 'cash_and_short_term_investments'. Keep 'cash_short_term_investments'
+    # (no leading 'and_') for any rows that emit the older name.
+    cash, cash_field = _first_non_null(rows, "balance_sheet",
+                                        ("cash",
+                                         "cash_and_cash_equivalents",
+                                         "cash_and_short_term_investments",
+                                         "cash_short_term_investments"))
+    if cash is not None:
+        out["cash_and_equivalents"] = float(cash)
+        out["cash_source"] = cash_field
+
+    lease_nc, _ = _first_non_null(rows, "balance_sheet",
+                                   ("operating_lease_liabilities_noncurrent",
+                                    "operating_lease_liability_noncurrent"))
+    lease_c, _ = _first_non_null(rows, "balance_sheet",
+                                  ("operating_lease_liabilities_current",
+                                   "operating_lease_liability_current"))
+    if lease_nc is not None or lease_c is not None:
+        out["operating_lease_liability"] = float(lease_nc or 0.0) + float(lease_c or 0.0)
+
+    minority, _ = _first_non_null(rows, "balance_sheet",
+                                   ("minority_interest",
+                                    "noncontrolling_interest",
+                                    "redeemable_noncontrolling_interest"))
+    if minority is not None:
+        out["minority_interest"] = float(minority)
+
+    return out
+
+
+def compute_ev_components(market_cap, metrics, ticker):
+    """EV = mcap + total_debt - cash + operating_leases + minority_interest.
+
+    Required: market_cap. If it's missing we still raise — there's no
+    sensible default for equity value.
+
+    Fallback fix (2026-06-26): cash and total_debt no longer raise. Massive's
+    /vX/reference/financials does not reliably populate either field
+    (AAPL has no 'cash' or 'total_debt' at all; only 'long_term_debt'),
+    so strictly requiring them silently dropped most peers from EV/EBITDA
+    comparison. They now default to 0 with an explicit source tag so the
+    audit trail records which path was used. Tier caveats fire upstream
+    when too many peers in a run fell back.
+    """
+    if market_cap is None:
+        raise NotImplementedError(
+            f"{ticker}: market_cap required for EV but missing")
+
+    missing = []
+
+    # Cash: trust whatever compute_metrics_from_financials sourced, default
+    # to 0 with a tag if all three field-name variants were absent.
+    cash = metrics.get("cash_and_equivalents")
+    cash_source = metrics.get("cash_source")
+    if cash is None:
+        cash = 0.0
+        cash_source = "unavailable_defaulted_to_zero"
+        missing.append("cash")
+
+    # Total debt: same — extraction picked the best available path
+    # (reported total > synthesized > long_term_only). Default to 0 with a
+    # tag if every variant was absent.
+    total_debt = metrics.get("total_debt")
+    debt_source = metrics.get("debt_source")
+    if total_debt is None:
+        total_debt = 0.0
+        debt_source = "unavailable_defaulted_to_zero"
+        missing.append("total_debt")
+    elif debt_source == "long_term_only":
+        # Long-term-only is a real source but the short-term half was
+        # genuinely absent; record it in missing_fields so tier_caveats can
+        # count this peer as 'fell back'.
+        missing.append("short_term_debt")
+
+    leases = metrics.get("operating_lease_liability")
+    if leases is None:
+        missing.append("operating_lease_liability")
+        leases = 0.0
+    minority = metrics.get("minority_interest")
+    if minority is None:
+        missing.append("minority_interest")
+        minority = 0.0
+
+    ev = (float(market_cap) + float(total_debt) - float(cash)
+           + float(leases) + float(minority))
+    return {
+        "mcap": float(market_cap),
+        "total_debt": float(total_debt),
+        "debt_source": debt_source,
+        "cash": float(cash),
+        "cash_source": cash_source,
+        "operating_leases": float(leases),
+        "minority": float(minority),
+        "ev": ev,
+        "missing_fields": missing,
+    }
+
+
+def compute_multiples(market_cap, price, metrics, ticker):
+    """Apply the multiples per references/multiples-methodology.md.
+
+    Returns (multiples, ev, ev_components). When EV cannot be computed
+    (required component missing), ev_components is None and EV-based
+    multiples are None.
+    """
+    out = {"ev_sales": None, "ev_ebitda": None, "p_e": None}
+    ev_components = None
+    ev = None
+    try:
+        ev_components = compute_ev_components(market_cap, metrics, ticker)
+        ev = ev_components["ev"]
+    except NotImplementedError as exc:
+        print(f"  WARN: EV skipped for {ticker}: {exc}", file=sys.stderr)
+    if ev is not None and metrics.get("revenue_ttm") and metrics["revenue_ttm"] > 0:
+        out["ev_sales"] = ev / metrics["revenue_ttm"]
+    if ev is not None and metrics.get("ebitda_ttm") and metrics["ebitda_ttm"] > 0:
+        out["ev_ebitda"] = ev / metrics["ebitda_ttm"]
+    if (price is not None
+            and metrics.get("diluted_eps_ttm")
+            and metrics["diluted_eps_ttm"] > 0):
+        out["p_e"] = price / metrics["diluted_eps_ttm"]
+    return out, ev, ev_components
+
+
+def assemble_name(ticker, sources):
+    """Pull all data for one name. Returns the schema's per-name dict shape."""
+    det = get_ticker_details(ticker)
+    sources.append({"endpoint": "https://api.polygon.io/v3/reference/tickers/{ticker}",
+                    "fetched_at": utcnow_iso(),
+                    "context": f"ticker details for {ticker}"})
+    if not det:
+        return {
+            "ticker": ticker,
+            "name": ticker,
+            "market_cap": None,
+            "enterprise_value": None,
+            "ev_components": None,
+            "price": None,
+            "sector": None,
+            "multiples": {"ev_sales": None, "ev_ebitda": None, "p_e": None},
+            "metrics": {},
+            "data_status": "empty",
+        }
+
+    price = get_snapshot_price(ticker)
+    sources.append({"endpoint": "https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}",
+                    "fetched_at": utcnow_iso(),
+                    "context": f"current price for {ticker}"})
+
+    rows = get_financials(ticker, limit=12)
+    sources.append({"endpoint": "https://api.polygon.io/vX/reference/financials",
+                    "fetched_at": utcnow_iso(),
+                    "context": f"8q quarterly financials for {ticker}"})
+
+    metrics = compute_metrics_from_financials(rows)
+    mcap = det.get("market_cap")
+    multiples, ev, ev_components = compute_multiples(mcap, price, metrics, ticker)
+
+    if not rows or all(v is None for v in metrics.values()):
+        data_status = "empty"
+    elif any(v is None for v in multiples.values()):
+        data_status = "partial"
+    else:
+        data_status = "full"
+
+    return {
+        "ticker": ticker,
+        "name": det.get("name") or ticker,
+        "market_cap": mcap,
+        "enterprise_value": ev,
+        "ev_components": ev_components,
+        "price": price,
+        "sector": det.get("sic_description"),
+        "multiples": multiples,
+        "metrics": metrics,
+        "data_status": data_status,
+    }
+
+
+# ----- Summary stats -----
+
+def summarize(values):
+    """Median / mean / p25 / p75 / n. Drops Nones (never imputes zero)."""
+    vals = [v for v in values if v is not None]
+    n = len(vals)
+    if n == 0:
+        return {"median": None, "mean": None, "p25": None, "p75": None, "n": 0}
+    arr = np.array(vals, dtype=float)
+    return {
+        "median": float(np.median(arr)),
+        "mean": float(np.mean(arr)),
+        "p25": float(np.percentile(arr, 25)),
+        "p75": float(np.percentile(arr, 75)),
+        "n": n,
+    }
+
+
+# ----- Regression-adjusted multiples -----
+
+def _controls_for(multiple_key, controls):
+    """H4: drop the endogenous regressor for `ev_ebitda`.
+
+    `ev_ebitda` = EV / EBITDA and `ebitda_margin` = EBITDA / revenue
+    both contain EBITDA mechanically; regressing one on the other gives
+    a coefficient driven by the shared EBITDA term rather than by the
+    economic relationship between margin quality and multiple
+    expansion. We drop `ebitda_margin` from the control set for the
+    `ev_ebitda` regression and surface what was dropped in
+    `regressor_dropped` so the audit trail is explicit.
+
+    `ev_sales` and `p_e` are kept on the full control set: revenue
+    growth is a ratio of two revenue levels (no mechanical link to
+    EV/Sales) and EPS is post-tax, post-D&A so the EBITDA-margin
+    correlation is indirect.
+    """
+    if multiple_key == "ev_ebitda":
+        kept = tuple(c for c in controls if c != "ebitda_margin")
+        return kept, "ebitda_margin"
+    return tuple(controls), None
+
+
+def fit_implied(peers, subject, multiple_key,
+                controls=("revenue_growth_ttm", "ebitda_margin"),
+                outlier_cap=80.0,
+                min_peers=MIN_PEERS_FOR_OLS):
+    """OLS multiple ~ controls across peers; predict subject's implied multiple.
+
+    Peers with `multiple_key > outlier_cap` are excluded from the regression
+    (they remain in the displayed table). This handles PANW's 232x EV/EBITDA
+    and similar accounting-anomaly multiples that pull OLS to nonsense.
+    The cap is documented in references/regression-adjustment.md.
+
+    Closes H4: emits SE, t-stat, 95% CI, and is_significant per
+    coefficient using df-aware critical_t. Enforces a minimum peer
+    count and drops the endogenous regressor for `ev_ebitda`. When
+    n < min_peers, returns a result dict tagged `regression_skipped`
+    so the renderer can surface the reason without dropping the row.
+    """
+    effective_controls, dropped = _controls_for(multiple_key, controls)
+    rows = []
+    for p in peers:
+        m = (p.get("multiples") or {}).get(multiple_key)
+        if m is None or m <= 0 or m > outlier_cap:
+            continue
+        ctrl_vals = [(p.get("metrics") or {}).get(c) for c in effective_controls]
+        if any(v is None for v in ctrl_vals):
+            continue
+        rows.append((float(m), [float(v) for v in ctrl_vals]))
+    n = len(rows)
+    if n < min_peers:
+        return {
+            "regression_skipped": True,
+            "reason": "insufficient_peers",
+            "n": n,
+            "min_required": min_peers,
+            "controls_used": list(effective_controls),
+            "regressor_dropped": dropped,
+        }, n
+    y = np.array([r[0] for r in rows])
+    X_cols = [np.ones(n)]
+    for i in range(len(effective_controls)):
+        X_cols.append(np.array([r[1][i] for r in rows]))
+    X = np.column_stack(X_cols)
+    k = X.shape[1]  # number of params including intercept
+    coef, _, _, _ = np.linalg.lstsq(X, y, rcond=None)
+    subj_ctrl = [(subject.get("metrics") or {}).get(c) for c in effective_controls]
+    if any(v is None for v in subj_ctrl):
+        return {
+            "regression_skipped": True,
+            "reason": "subject_missing_controls",
+            "n": n,
+            "controls_used": list(effective_controls),
+            "regressor_dropped": dropped,
+        }, n
+    implied = float(coef[0] + sum(coef[i+1] * subj_ctrl[i]
+                                    for i in range(len(effective_controls))))
+    actual = (subject.get("multiples") or {}).get(multiple_key)
+    disc = ((actual / implied) - 1.0) if (actual and implied and implied > 0) else None
+    y_pred = X @ coef
+    residuals = y - y_pred
+    ss_res = float((residuals ** 2).sum())
+    ss_tot = float(((y - y.mean()) ** 2).sum())
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else None
+    # H4: proper SE / t-stat / CI per coefficient
+    df_resid = n - k
+    coef_block = {}
+    if df_resid > 0:
+        sigma2 = ss_res / df_resid
+        try:
+            xtx_inv = np.linalg.inv(X.T @ X)
+            se_vec = np.sqrt(np.maximum(np.diag(xtx_inv) * sigma2, 0.0))
+        except np.linalg.LinAlgError:
+            se_vec = np.full(k, float("nan"))
+        # critical_t expects n (df = n-1), we have df = df_resid; pass
+        # df_resid+1 so the df arg lines up. is_significant uses the
+        # same convention.
+        t_crit = critical_t(df_resid + 1, alpha=0.05, two_sided=True)
+        names = ["intercept"] + list(effective_controls)
+        for i, name in enumerate(names):
+            b = float(coef[i])
+            se = float(se_vec[i])
+            t_stat = (b / se) if se > 0 else float("nan")
+            ci_lo = b - t_crit * se
+            ci_hi = b + t_crit * se
+            coef_block[name] = {
+                "coef": round(b, 6),
+                "se": round(se, 6) if np.isfinite(se) else None,
+                "t_stat": round(t_stat, 4) if np.isfinite(t_stat) else None,
+                "ci_lower": round(ci_lo, 6) if np.isfinite(ci_lo) else None,
+                "ci_upper": round(ci_hi, 6) if np.isfinite(ci_hi) else None,
+                "is_significant": (
+                    is_significant(t_stat, df_resid + 1, alpha=0.05)
+                    if np.isfinite(t_stat) else False
+                ),
+            }
+    else:
+        # Degenerate: no residual df, can't compute SE. Emit coefs only.
+        names = ["intercept"] + list(effective_controls)
+        for i, name in enumerate(names):
+            coef_block[name] = {
+                "coef": round(float(coef[i]), 6),
+                "se": None,
+                "t_stat": None,
+                "ci_lower": None,
+                "ci_upper": None,
+                "is_significant": False,
+            }
+    return {
+        "regression_skipped": False,
+        "n": n,
+        "df_resid": df_resid,
+        "controls_used": list(effective_controls),
+        "regressor_dropped": dropped,
+        "implied": round(implied, 2),
+        "actual": round(float(actual), 2) if actual is not None else None,
+        "discount_or_premium": round(disc, 4) if disc is not None else None,
+        "coefficients": coef_block,
+        # Back-compat: also expose a flat coef dict so existing
+        # consumers that read .coefficients[name] (not the new block
+        # shape) keep working.
+        "coefficients_point": {
+            "intercept": round(float(coef[0]), 4),
+            **{c: round(float(coef[i+1]), 6)
+                for i, c in enumerate(effective_controls)},
+        },
+        "r_squared": round(r2, 4) if r2 is not None else None,
+    }, n
+
+
+def generate_read(subject_ticker, regression_results, peers, subject,
+                  low_n=False, valid_multiples=None, primary_multiple=None):
+    """One-sentence banker take. References/rendering.md spells out the form.
+
+    When low_n is True (regression fit on < 8 peers), prefer the raw
+    median-vs-actual framing because the regression coefficients are
+    too noisy to drive the headline. The block is still shown in the
+    table, just not in the read.
+    """
+    # Only consider multiples with ≥4 valid peers (set by caller, defaults
+    # to the prior 3-of-3 list when not supplied).
+    consider = valid_multiples if valid_multiples else ("ev_sales", "ev_ebitda", "p_e")
+    # When low_n, fall straight to the cohort-median framing
+    if low_n:
+        # Compare subject's eligible multiples to peer medians and pick the
+        # one with the largest |gap|
+        gaps = []
+        label_map = {"ev_sales": "EV/Sales",
+                      "ev_ebitda": "EV/EBITDA",
+                      "p_e": "P/E"}
+        for key in consider:
+            subj = (subject.get("multiples") or {}).get(key)
+            peer_vals = [(p["multiples"] or {}).get(key) for p in peers
+                          if (p["multiples"] or {}).get(key) is not None
+                          and (p["multiples"] or {}).get(key) > 0]
+            if subj and peer_vals and len(peer_vals) >= 3:
+                med = float(np.median(peer_vals))
+                gap = (subj / med) - 1.0
+                gaps.append((key, subj, med, gap))
+        if gaps:
+            # Median gap across the three multiples
+            med_gap = float(np.median([g[3] for g in gaps]))
+            if med_gap <= -0.10:
+                headline = f"{subject_ticker} screens cheap vs the peer cohort on raw multiples."
+            elif med_gap >= 0.10:
+                headline = f"{subject_ticker} screens rich vs the peer cohort on raw multiples."
+            else:
+                headline = f"{subject_ticker} trades roughly in line with peer cohort medians."
+            # Driver: largest |gap|
+            driver = max(gaps, key=lambda g: abs(g[3]))
+            disc_pct = round(driver[3] * 100)
+            tag = "discount" if disc_pct < 0 else "premium"
+            return (f"{headline} The biggest gap is on {label_map[driver[0]]} "
+                    f"({driver[1]:.1f}x vs peer median {driver[2]:.1f}x, a "
+                    f"{abs(disc_pct)}% {tag}); n=5-7 peers makes the regression-"
+                    f"adjusted view indicative, not definitive.")
+    # Cohort headline based on median discount/premium across multiples
+    discs = [r["discount_or_premium"] for r in regression_results.values()
+             if r and r.get("discount_or_premium") is not None]
+    if discs:
+        med_disc = float(np.median(discs))
+        if med_disc <= -0.10:
+            headline = f"{subject_ticker} screens cheap on growth-adjusted multiples."
+        elif med_disc >= 0.10:
+            headline = f"{subject_ticker} screens rich on growth-adjusted multiples."
+        else:
+            headline = f"{subject_ticker} trades roughly in line with peers on growth-adjusted multiples."
+        # Driver: multiple with largest |discount|
+        driver_key, driver = max(
+            ((k, r) for k, r in regression_results.items()
+              if r and r.get("discount_or_premium") is not None),
+            key=lambda kv: abs(kv[1]["discount_or_premium"]),
+            default=(None, None),
+        )
+        if driver_key and abs(driver["discount_or_premium"]) >= 0.05:
+            disc_pct = round(driver["discount_or_premium"] * 100)
+            tag = "discount" if disc_pct < 0 else "premium"
+            label_map = {"ev_sales": "EV/Sales",
+                          "ev_ebitda": "EV/EBITDA",
+                          "p_e": "P/E"}
+            driver_label = label_map.get(driver_key, driver_key)
+            # Tag the explanation off the underlying metric gap vs peers
+            subj_margin = (subject.get("metrics") or {}).get("ebitda_margin")
+            subj_growth = (subject.get("metrics") or {}).get("revenue_growth_ttm")
+            peer_margins = [p["metrics"].get("ebitda_margin") for p in peers
+                            if p["metrics"].get("ebitda_margin") is not None]
+            peer_growths = [p["metrics"].get("revenue_growth_ttm") for p in peers
+                            if p["metrics"].get("revenue_growth_ttm") is not None]
+            explanation = ""
+            if driver_key == "ev_ebitda" and peer_margins and subj_margin is not None:
+                med_pm = float(np.median(peer_margins))
+                if subj_margin < med_pm - 0.03:
+                    explanation = "margin gap vs peers"
+                elif subj_margin > med_pm + 0.03:
+                    explanation = "margin premium vs peers"
+            elif driver_key == "p_e" and peer_growths and subj_growth is not None:
+                med_pg = float(np.median(peer_growths))
+                if subj_growth < med_pg - 0.03:
+                    explanation = "growth gap vs peers"
+                elif subj_growth > med_pg + 0.03:
+                    explanation = "growth premium vs peers"
+            tail = (
+                f" The {tag} is concentrated on {driver_label}"
+                f" ({explanation})." if explanation else
+                f" The {tag} is concentrated on {driver_label}."
+            )
+            return headline + tail
+        return headline
+    # No regression results: fall back to median-vs-actual on EV/Sales
+    subj_ev_s = (subject.get("multiples") or {}).get("ev_sales")
+    peer_ev_s = [p["multiples"].get("ev_sales") for p in peers
+                  if p["multiples"].get("ev_sales") is not None]
+    if subj_ev_s and peer_ev_s:
+        med = float(np.median(peer_ev_s))
+        diff_pct = round((subj_ev_s / med - 1) * 100)
+        tag = "discount" if diff_pct < 0 else "premium"
+        return (f"{subject_ticker} trades at {subj_ev_s:.1f}x EV/Sales vs the peer "
+                f"median {med:.1f}x; the {tag} sits at {abs(diff_pct)}% before "
+                f"adjusting for growth and margin.")
+    return f"{subject_ticker} comp set built; insufficient peer data for a regression read."
+
+
+# ----- Public API -----
+
+def run(
+    ticker: str,
+    peers: Iterable[str] | str | None = None,
+    client_: MassiveClient | None = None,
+) -> dict:
+    """Build a peer-comp payload for `ticker`.
+
+    Args:
+        ticker: subject ticker.
+        peers: optional peer override (comma-separated string or iterable).
+               Skips the curated map and /v1/related-companies fallback.
+        client_: reuse an existing MassiveClient.
+    """
+    global client, NOW_UTC, TODAY
+    client = client_ or MassiveClient()
+    NOW_UTC = datetime.now(timezone.utc)
+    TODAY = today()
+
+    if isinstance(peers, str):
+        peers_arg: str | None = peers
+    elif peers is not None:
+        peers_arg = ",".join(peers)
+    else:
+        peers_arg = None
+
+    subject_ticker = ticker.strip().upper()
+    if not subject_ticker:
+        raise ValueError("ticker is required")
+
+    # ----- Peer selection -----
+
+    peer_result = None
+
+    if peers_arg:
+        peers_list = [p.strip().upper() for p in peers_arg.split(",") if p.strip()]
+        peer_selection_method = "curated_override"
+    elif subject_ticker in PEER_OVERRIDES:
+        peers_list = PEER_OVERRIDES[subject_ticker]
+        peer_selection_method = "curated_override"
+    else:
+        # Massive's /v3/reference/tickers silently ignores sic_code and
+        # returns alphabetical results, so the old SIC-filter path produced
+        # garbage peers (AACI, AACO, AAL for a biotech). Use
+        # /v1/related-companies via quant_garage.select_peers instead.
+        # See quant_garage/peers.py and references/peer-selection.md.
+        print(f"Peer fallback via /v1/related-companies (SIC-validated)...",
+              file=sys.stderr)
+        try:
+            peer_result = select_peers(client, subject_ticker, n=8, validate_sic=True)
+        except (ValueError, FetchError) as exc:
+            raise RuntimeError(
+                f"peer selection failed for {subject_ticker}: {exc}. "
+                f"Pass peers=... to override."
+            ) from exc
+        peers_list = peer_result["peers"]
+        peer_selection_method = peer_result["method"]
+
+    # ----- Pull data -----
+
+    print(f"Building comp set for {subject_ticker}: {len(peers_list)} peers",
+          file=sys.stderr)
+    sources = []
+    print(f"  Fetching subject {subject_ticker}...", file=sys.stderr)
+    subject = assemble_name(subject_ticker, sources)
+
+    peer_objs = []
+    for tk in peers_list:
+        print(f"  Fetching peer {tk}...", file=sys.stderr)
+        peer_objs.append(assemble_name(tk, sources))
+        time.sleep(0.15)  # polite throttle even on paid
+
+    # ----- Summary stats over peers (subject excluded) -----
+
+    summary = {}
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        summary[key] = summarize([(p["multiples"] or {}).get(key) for p in peer_objs])
+    summary["revenue_growth_ttm"] = summarize(
+        [(p["metrics"] or {}).get("revenue_growth_ttm") for p in peer_objs])
+    summary["ebitda_margin"] = summarize(
+        [(p["metrics"] or {}).get("ebitda_margin") for p in peer_objs])
+
+    # ----- Regression-adjusted multiples -----
+
+    reg_results = {}
+    reg_skipped = {}
+    n_used_max = 0
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        result, n_used = fit_implied(peer_objs, subject, key)
+        if result is not None and result.get("regression_skipped"):
+            reg_skipped[key] = result
+        elif result is not None:
+            reg_results[key] = result
+            n_used_max = max(n_used_max, n_used)
+
+    regression_adjusted = {
+        "controls": ["revenue_growth_ttm", "ebitda_margin"],
+        "min_peers_for_ols": MIN_PEERS_FOR_OLS,
+        "n_peers_used": n_used_max,
+        "low_n_warning": n_used_max < 8,
+        "results": reg_results,
+        "skipped": reg_skipped,
+    }
+
+    # ----- Multiple selection -----
+
+    # Per-multiple valid peer count (positive, finite values). Multiples with
+    # fewer than MIN_PEERS_PER_MULTIPLE valid peers are dropped from the
+    # take's consideration so we don't claim "Median P/E 27.4x" from 2 peers.
+    MIN_PEERS_PER_MULTIPLE = 4
+    _per_multiple_counts = {}
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        n_valid = sum(
+            1 for p in peer_objs
+            if (p["multiples"] or {}).get(key) is not None
+            and (p["multiples"] or {}).get(key) > 0
+        )
+        _per_multiple_counts[key] = n_valid
+
+    valid_multiples = tuple(
+        k for k in ("ev_sales", "ev_ebitda", "p_e")
+        if _per_multiple_counts[k] >= MIN_PEERS_PER_MULTIPLE
+    )
+    dropped_multiples = tuple(
+        k for k in ("ev_sales", "ev_ebitda", "p_e")
+        if _per_multiple_counts[k] < MIN_PEERS_PER_MULTIPLE
+    )
+
+    # Primary lens: EV/EBITDA if subject is profitable AND ev_ebitda has
+    # enough valid peers, else EV/Sales if available, else whatever's left.
+    _subject_ebitda = subject["metrics"].get("ebitda_ttm")
+    _subject_ebitda_positive = _subject_ebitda is not None and _subject_ebitda > 0
+    if _subject_ebitda_positive and "ev_ebitda" in valid_multiples:
+        primary_multiple = "ev_ebitda"
+        primary_source = "auto_ebitda_positive"
+    elif "ev_sales" in valid_multiples:
+        primary_multiple = "ev_sales"
+        primary_source = "auto_ebitda_nonpositive" if not _subject_ebitda_positive else "fallback_low_ebitda_peers"
+    elif valid_multiples:
+        primary_multiple = valid_multiples[0]
+        primary_source = "fallback_first_available"
+    else:
+        primary_multiple = None
+        primary_source = "no_valid_multiples"
+
+    multiple_selection = {
+        "primary": primary_multiple,
+        "primary_source": primary_source,
+        "valid_multiples": list(valid_multiples),
+        "dropped_multiples": list(dropped_multiples),
+        "peer_counts": _per_multiple_counts,
+        "min_peers_per_multiple": MIN_PEERS_PER_MULTIPLE,
+    }
+
+    # ----- Read -----
+
+    read_line = generate_read(subject_ticker, reg_results, peer_objs, subject,
+                                low_n=regression_adjusted["low_n_warning"],
+                                valid_multiples=valid_multiples,
+                                primary_multiple=primary_multiple)
+
+    # ----- Tier detection -----
+
+    tier = "A"
+    tier_caveats = []
+
+    # Count of peers with full multiples
+    n_full = sum(1 for p in peer_objs if p["data_status"] in ("full", "partial")
+                 and any((p["multiples"] or {}).get(k) is not None
+                         for k in ("ev_sales", "ev_ebitda", "p_e")))
+
+    # EV fallback tier_caveat: count peers whose EV math used a non-reported
+    # source for cash or debt. Fires at >= 30% share so the user sees the
+    # data-source constraint without being spammed for one stray peer.
+    _ev_peers = [p for p in peer_objs if p.get("ev_components")]
+    _ev_total = len(_ev_peers)
+    _ev_fallback = 0
+    for p in _ev_peers:
+        ev = p["ev_components"]
+        debt_src = ev.get("debt_source")
+        cash_src = ev.get("cash_source")
+        if debt_src != "reported_total" or cash_src in (None, "unavailable_defaulted_to_zero"):
+            _ev_fallback += 1
+    if _ev_total > 0 and (_ev_fallback / _ev_total) >= 0.30:
+        tier_caveats.append(
+            f"EV math uses fallback inputs on {_ev_fallback}/{_ev_total} peers "
+            f"(Massive financials don't reliably populate cash + total_debt). "
+            f"EV-based multiples may be slightly overstated for those names; "
+            f"see ev_components.* for the source tag per peer."
+        )
+
+    # Multiple-selection caveats: name dropped multiples + reasoning
+    if dropped_multiples:
+        _label_map = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}
+        dropped_str = ", ".join(
+            f"{_label_map[k]} (n={_per_multiple_counts[k]})" for k in dropped_multiples
+        )
+        tier_caveats.append(
+            f"Dropped from peer-band comparison (<{MIN_PEERS_PER_MULTIPLE} valid peers): "
+            f"{dropped_str}. Common for biotech-heavy comps where most peers have "
+            f"negative earnings or EBITDA."
+        )
+    if primary_multiple is None:
+        tier_caveats.append(
+            "No valid multiple has enough peers for a meaningful peer-band view. "
+            "Consider passing --peers TICKER1,TICKER2,... with hand-picked operators."
+        )
+    elif primary_source == "auto_ebitda_nonpositive":
+        tier_caveats.append(
+            f"Subject EBITDA non-positive (EBITDA TTM = {_subject_ebitda}); "
+            f"primary lens auto-switched to EV/Sales (industry standard for "
+            f"unprofitable subjects)."
+        )
+
+    # Peer-selection method caveats. Curated overrides need no caveat;
+    # related-companies (with or without SIC validation) gets a note so
+    # the reader knows the peer set wasn't human-curated.
+    if peer_result is not None:
+        if peer_result["method"] == "related_companies":
+            tier_caveats.append(
+                "Peers from Massive's /v1/related-companies endpoint; "
+                "not SIC-validated. Some peers may be co-movement matches "
+                "rather than business-model matches."
+            )
+        elif peer_result["method"] == "related_companies_sic_validated":
+            n_dropped = peer_result.get("n_dropped_sic_mismatch", 0)
+            n_pre = peer_result.get("n_candidates_pre_filter", 0)
+            sic = peer_result.get("subject_sic")
+            if n_dropped > 0:
+                tier_caveats.append(
+                    f"Peer set: kept {len(peers_list)} of {n_pre} "
+                    f"/v1/related-companies candidates with matching SIC "
+                    f"{sic}; dropped {n_dropped} with mismatched SIC."
+                )
+            else:
+                tier_caveats.append(
+                    f"Peers from /v1/related-companies, SIC-validated against "
+                    f"subject SIC {sic} ({len(peers_list)} of {n_pre} candidates)."
+                )
+
+    # ----- Payload -----
+
+    payload = {
+        "tier": tier,
+        "tier_caveats": tier_caveats,
+        "mode": "table",
+        "run_at": NOW_UTC.isoformat(),
+        "subject": subject,
+        "peers": peer_objs,
+        "peer_selection": {
+            "method": peer_selection_method,
+            "n_peers": len(peer_objs),
+            "n_peers_with_full_multiples": n_full,
+        },
+        "summary": summary,
+        "multiple_selection": multiple_selection,
+        "regression_adjusted": regression_adjusted,
+        "read": read_line,
+        "sources": sources,
+    }
+    return payload
+
+
+# ----- Renderer -----
+
+def fmt_mult(x):
+    if x is None or (isinstance(x, float) and x != x):  # NaN check
+        return "n/a"
+    return f"{x:.1f}x"
+
+
+def fmt_pct(x, signed=True, decimals=1):
+    if x is None:
+        return "n/a"
+    if signed:
+        return f"{x*100:+.{decimals}f}%"
+    return f"{x*100:.{decimals}f}%"
+
+
+def fmt_mcap_ev(x):
+    if x is None:
+        return "n/a"
+    b = x / 1e9
+    if abs(b) >= 100:
+        return f"${b:,.0f}B"
+    return f"${b:,.1f}B"
+
+
+def short_name(name, ticker):
+    if not name:
+        return ticker
+    # First word, strip "Inc.", "Corp", "Holdings" etc., title-case
+    cleaned = name.split(",")[0].split("Inc")[0].split("Corp")[0]
+    cleaned = cleaned.split("Holdings")[0].split("Group")[0]
+    cleaned = cleaned.strip()
+    # Cap at 14 chars
+    return cleaned[:14] if cleaned else ticker
+
+
+def render(payload):
+    lines = []
+    subj = payload["subject"]
+    sel = payload["peer_selection"]
+    lines.append(
+        f"{subj['ticker']}: comp set as of {TODAY.isoformat()} · "
+        f"{sel['n_peers']} peers selected via {sel['method']}"
+    )
+    if payload["tier"] == "B":
+        lines.append("Tier B run (free Basic, peer fanout rate-limited). "
+                     "Re-run on Stocks Starter for full fanout.")
+    lines.append("")
+    lines.append(
+        f"Subject: {subj['ticker']} ({subj['name']})  "
+        f"MCap {fmt_mcap_ev(subj['market_cap'])}  "
+        f"EV {fmt_mcap_ev(subj['enterprise_value'])}"
+    )
+    # Primary multiple lens callout
+    ms = payload.get("multiple_selection") or {}
+    if ms.get("primary"):
+        _label = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}.get(
+            ms["primary"], ms["primary"])
+        _src = ms.get("primary_source", "")
+        if _src == "auto_ebitda_nonpositive":
+            _why = "subject EBITDA non-positive; auto-selected"
+        elif _src == "auto_ebitda_positive":
+            _why = "subject profitable; standard pick"
+        elif _src == "fallback_low_ebitda_peers":
+            _why = "EV/EBITDA had too few valid peers; fell back"
+        elif _src == "fallback_first_available":
+            _why = "fallback — most multiples had too few peers"
+        else:
+            _why = _src
+        lines.append(f"Primary valuation lens: {_label} ({_why})")
+        if ms.get("dropped_multiples"):
+            _dropped = ", ".join(
+                {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}[k]
+                for k in ms["dropped_multiples"]
+            )
+            lines.append(f"Dropped from comparison (<{ms.get('min_peers_per_multiple', 4)} valid peers): {_dropped}")
+    lines.append("")
+
+    # Build the table body
+    headers = ["Ticker", "Name", "EV/Sales", "EV/EBITDA", "P/E", "Rev Growth", "EBITDA Mgn"]
+
+    def row_for(name_dict, is_subject=False):
+        mults = name_dict.get("multiples") or {}
+        mets = name_dict.get("metrics") or {}
+        label = name_dict["ticker"]
+        if is_subject:
+            label = f"{name_dict['ticker']} (subject)"
+        return [
+            label,
+            "" if is_subject else short_name(name_dict.get("name"), name_dict["ticker"]),
+            fmt_mult(mults.get("ev_sales")),
+            fmt_mult(mults.get("ev_ebitda")),
+            fmt_mult(mults.get("p_e")),
+            fmt_pct(mets.get("revenue_growth_ttm"), signed=True, decimals=0)
+                if mets.get("revenue_growth_ttm") is not None else "n/a",
+            fmt_pct(mets.get("ebitda_margin"), signed=False, decimals=0)
+                if mets.get("ebitda_margin") is not None else "n/a",
+        ]
+
+    body = [row_for(subj, is_subject=True)]
+    for p in payload["peers"]:
+        body.append(row_for(p, is_subject=False))
+
+    # Summary rows
+    summ = payload["summary"]
+
+    def summary_row(label, formatter, suffix_for=None):
+        cells = [label, ""]
+        for key in ("ev_sales", "ev_ebitda", "p_e"):
+            b = summ.get(key) or {}
+            cells.append(formatter(b.get("median") if suffix_for is None
+                                    else b.get(suffix_for)))
+        for key in ("revenue_growth_ttm", "ebitda_margin"):
+            b = summ.get(key) or {}
+            val = b.get("median") if suffix_for is None else b.get(suffix_for)
+            signed = (key == "revenue_growth_ttm")
+            cells.append(fmt_pct(val, signed=signed, decimals=0)
+                          if val is not None else "n/a")
+        return cells
+
+    # Median row
+    median_row = ["Median", ""]
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        median_row.append(fmt_mult((summ.get(key) or {}).get("median")))
+    median_row.append(fmt_pct((summ.get("revenue_growth_ttm") or {}).get("median"),
+                                signed=True, decimals=0)
+                       if (summ.get("revenue_growth_ttm") or {}).get("median") is not None
+                       else "n/a")
+    median_row.append(fmt_pct((summ.get("ebitda_margin") or {}).get("median"),
+                                signed=False, decimals=0)
+                       if (summ.get("ebitda_margin") or {}).get("median") is not None
+                       else "n/a")
+
+    mean_row = ["Mean", ""]
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        mean_row.append(fmt_mult((summ.get(key) or {}).get("mean")))
+    mean_row.append(fmt_pct((summ.get("revenue_growth_ttm") or {}).get("mean"),
+                              signed=True, decimals=0)
+                     if (summ.get("revenue_growth_ttm") or {}).get("mean") is not None
+                     else "n/a")
+    mean_row.append(fmt_pct((summ.get("ebitda_margin") or {}).get("mean"),
+                              signed=False, decimals=0)
+                     if (summ.get("ebitda_margin") or {}).get("mean") is not None
+                     else "n/a")
+
+    def range_cell(b, formatter):
+        lo, hi = b.get("p25"), b.get("p75")
+        if lo is None or hi is None:
+            return "n/a"
+        if formatter == "mult":
+            return f"{lo:.1f}-{hi:.1f}x"
+        if formatter == "pct_signed":
+            return f"{lo*100:+.0f}-{hi*100:+.0f}%"
+        if formatter == "pct":
+            return f"{lo*100:.0f}-{hi*100:.0f}%"
+        return "n/a"
+
+    pct_row = ["25/75 %ile", ""]
+    for key in ("ev_sales", "ev_ebitda", "p_e"):
+        pct_row.append(range_cell(summ.get(key) or {}, "mult"))
+    pct_row.append(range_cell(summ.get("revenue_growth_ttm") or {}, "pct_signed"))
+    pct_row.append(range_cell(summ.get("ebitda_margin") or {}, "pct"))
+
+    # Combine all rows and compute widths
+    table_rows = [headers] + body + [median_row, mean_row, pct_row]
+    widths = [max(len(r[i]) for r in table_rows) for i in range(len(headers))]
+
+    def fmt_row(cells):
+        parts = []
+        for i, c in enumerate(cells):
+            if i <= 1:
+                parts.append(c.ljust(widths[i]))
+            else:
+                parts.append(c.rjust(widths[i]))
+        return "  ".join(parts).rstrip()
+
+    # Render
+    lines.append(fmt_row(headers))
+    lines.append(fmt_row(body[0]))  # subject
+    # Divider
+    div = "-" * (sum(widths) + 2 * (len(widths) - 1))
+    lines.append(div)
+    for r in body[1:]:
+        lines.append(fmt_row(r))
+    lines.append(div)
+    lines.append(fmt_row(median_row))
+    lines.append(fmt_row(mean_row))
+    lines.append(fmt_row(pct_row))
+    lines.append("")
+
+    # Regression-adjusted block
+    reg = payload["regression_adjusted"]
+    skipped = reg.get("skipped") or {}
+    if skipped and not reg["results"]:
+        lines.append("Regression-adjusted (skipped)")
+        label_map = {"ev_sales": "EV/Sales",
+                      "ev_ebitda": "EV/EBITDA",
+                      "p_e": "P/E"}
+        for key, info in skipped.items():
+            reason = info.get("reason", "skipped")
+            n_peers = info.get("n", 0)
+            lines.append(
+                f"- {label_map.get(key, key)}: skipped ({reason}, "
+                f"n={n_peers} < min {reg.get('min_peers_for_ols', '?')})"
+            )
+        lines.append("")
+    if reg["results"]:
+        lines.append("Regression-adjusted (controls for growth + EBITDA margin)")
+        label_map = {"ev_sales": "EV/Sales", "ev_ebitda": "EV/EBITDA", "p_e": "P/E"}
+        any_rendered = False
+        for key in ("ev_sales", "ev_ebitda", "p_e"):
+            r = reg["results"].get(key)
+            if not r:
+                continue
+            implied = r.get("implied")
+            actual = r.get("actual")
+            disc = r.get("discount_or_premium")
+            r2 = r.get("r_squared")
+            if implied is None or actual is None or disc is None:
+                continue
+            # Skip non-meaningful implied values (negative, or absurdly large)
+            if implied <= 0 or abs(disc) > 5.0:
+                continue
+            tag = "discount" if disc < 0 else "premium"
+            arrow = "→"
+            label = label_map[key]
+            lines.append(
+                f"- Implied {label}: {implied:>5.1f}x  vs subject "
+                f"{actual:.1f}x  {arrow} subject trades at "
+                f"{abs(disc)*100:.0f}% {tag}"
+            )
+            any_rendered = True
+        if not any_rendered:
+            lines.append(
+                "- Regression produced no meaningful implied multiples"
+                " (low n and high coefficient variance)."
+            )
+        if reg.get("low_n_warning"):
+            lines.append(
+                f"Regression note: n={reg['n_peers_used']} peers, DoF tight; "
+                f"coefficients indicative."
+            )
+        lines.append("")
+
+    lines.append(f"Read: {payload['read']}")
+    return "\n".join(lines)

@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-CLI wrapper for the pitch-comps skill.
+CLI wrapper for the earnings-drilldown skill.
 
-Compute lives in quant_garage/skills/pitch_comps.py.
+Tier B implementation: SEC EDGAR 8-K item 2.02 for print dates + Massive
+financials for GAAP EPS actuals + options straddle for implied-vs-realized.
 
-    from quant_garage.skills.pitch_comps import run, render
-    payload = run("CRM")
+    from quant_garage.skills.earnings_drilldown import run, render
+    payload = run("AAPL")
     payload = run("ALLO", peers=["BEAM","NTLA","CRSP","EDIT"])
 
-CLI usage:
-    python3 examples/run-pitch-comps.py CRM
-    python3 examples/run-pitch-comps.py ALLO --peers BEAM,NTLA,CRSP,EDIT --format render
+CLI:
+    python3 examples/run-earnings-drilldown.py --ticker AAPL --format render
+    python3 examples/run-earnings-drilldown.py --ticker ALLO \\
+        --peers BEAM,NTLA,CRSP,EDIT --format render
 
 Reads MASSIVE_API_KEY from env.
 """
@@ -25,18 +27,17 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from quant_garage.skills.pitch_comps import run, render
+from quant_garage.skills.earnings_drilldown import run, render
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        prog="run-pitch-comps",
-        description="Bloomberg RV / CapIQ-style peer-comp table with regression-adjusted multiples.",
+        prog="run-earnings-drilldown",
+        description="Full-fidelity earnings drilldown: implied vs realized, print history, PEAD, peer reaction.",
     )
-    ap.add_argument("ticker", nargs="?", default="CRM",
-                    help="Subject ticker (default: CRM)")
+    ap.add_argument("--ticker", required=True, help="US ticker (e.g. AAPL)")
     ap.add_argument("--peers", default=None,
-                    help="Comma-separated peer override (skips curated map + related-companies fallback).")
+                    help="Comma-separated peer override. Falls back to curated map when absent.")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                     help="stdout format. Default: json.")
     ap.add_argument("--out", default=None,
@@ -66,7 +67,7 @@ def main() -> int:
 
     if args.out:
         with open(args.out, "w") as f:
-            f.write(f"# pitch-comps: {payload['subject']['ticker']}\n\n")
+            f.write(f"# earnings-drilldown: {payload['ticker']}\n\n")
             f.write(f"Generated: {payload['run_at']}\n\n")
             f.write("## Rendered\n\n```\n")
             f.write(rendered)

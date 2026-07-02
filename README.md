@@ -345,9 +345,111 @@ exact plan + add-ons it needs.
 
 ## Setup
 
-Get a [Massive API key](https://massive.com/pricing). The free Basic
-tier runs six of the tools end to end. Most users want Stocks Starter
-at $29/month.
+Get a [Massive API key](https://massive.com/pricing). Free Basic runs
+six tools end to end; Stocks Starter ($29/month) opens nineteen.
+
+```bash
+export MASSIVE_API_KEY=your_key_here
+```
+
+Three ways to use the tools. Same code, three surfaces.
+
+### 1. Python library (Jupyter, scripts, notebooks)
+
+The most direct way. Every skill is an importable function that returns
+JSON.
+
+```bash
+pip install quant-garage
+```
+
+Then in a notebook or a `.py` file:
+
+```python
+from quant_garage.skills import (
+    technical_briefing, earnings_drilldown, market_regime,
+    pitch_comps, valuation_sanity_check, news_scanner,
+)
+
+# One name, one call, one dict back
+brief = technical_briefing.run("NVDA")
+brief["trend"]["regime"]        # 'bearish_weak'
+brief["momentum"]["read"]       # 'weak'
+brief["take"]                   # 'NVDA looks soft. RSI 43 weak...'
+
+# Compose skills — pass the same client to reuse HTTP connection
+from quant_garage import MassiveClient
+client = MassiveClient()
+
+results = {}
+for ticker in ["NVDA", "AAPL", "MSFT", "GOOGL", "META"]:
+    results[ticker] = technical_briefing.run(ticker, client=client)
+
+# Everything is just dicts, so pandas is a one-liner
+import pandas as pd
+df = pd.DataFrame([
+    {
+        "ticker": t,
+        "regime": r["trend"]["regime"],
+        "rsi": r["momentum"]["rsi_14"],
+        "atr_pct": r["volatility"]["atr_pct_of_price"],
+        "take": r["take"],
+    }
+    for t, r in results.items()
+])
+df.sort_values("rsi", ascending=False)
+```
+
+When you want the rendered version instead of the JSON:
+
+```python
+print(technical_briefing.render(brief))
+```
+
+Every skill follows the same contract: `run(...) -> dict` and
+`render(payload) -> str`. Nothing writes to disk unless you ask.
+
+**Extras.** The core install is slim. Skills that need pandas/scipy or
+S3 declare their own extras:
+
+```bash
+pip install quant-garage[research]    # factor-research, backtest-data-prep
+pip install quant-garage[flatfiles]   # boto3 + s3fs for bulk daily aggs
+pip install quant-garage[live]        # websocket-client for live portfolio-mark
+pip install quant-garage[all]         # everything
+```
+
+### 2. CLI (shell pipelines, cron jobs)
+
+Every skill also ships as a thin CLI wrapper under `examples/`. Defaults
+to JSON on stdout, so you can pipe into `jq` or another tool.
+
+```bash
+# JSON out (default)
+python3 examples/run-technical-briefing.py --ticker NVDA | jq '.trend.regime'
+
+# Rendered analyst note
+python3 examples/run-technical-briefing.py --ticker NVDA --format render
+
+# Universe screen (price + 3M momentum + weekly pullback)
+python3 examples/run-universe-builder.py \
+  --min-price 20 --min-adv 400000 --min-mom-3m 0.10 --max-week-return 0.0 \
+  --format render
+
+# Earnings drilldown, free tier (SEC EDGAR fallback)
+python3 examples/run-earnings-drilldown.py --ticker AAPL --format render
+
+# Options flow stream on a watchlist
+python3 examples/run-options-flow.py NVDA TSLA AAPL --format render
+
+# Crypto vol scan
+python3 examples/run-crypto-vol-scanner.py --format render
+```
+
+Pass `--out FILE.md` on any runner to also write a markdown file with
+both layers (rendered + JSON).
+
+### 3. Claude Code skills
 
 Clone into your Claude Code skills directory:
 
@@ -356,40 +458,27 @@ git clone https://github.com/rgourley/quant-garage.git \
   ~/.claude/skills/quant-garage
 ```
 
-Set the key:
+Then invoke any tool with `/<skill-name>` (for example,
+`/earnings-drilldown NVDA`), or just describe what you want in plain
+English and Claude will pick.
 
-```bash
-export MASSIVE_API_KEY=your_key_here
-```
+### The typical workflow
 
-In Claude Code, invoke any tool with `/<skill-name>` (for example,
-`/earnings-drilldown NVDA`). Or describe what you want and Claude will
-pick.
+Massive customers we've talked to tend to move through this pattern:
 
-To run a tool directly from Python instead:
+1. **Ideate in Claude.** Describe what you're trying to figure out. Get
+   a rendered read from one of the skills. Iterate on the framing.
+2. **Test in Jupyter.** Import the same skill as a library. Feed it more
+   tickers, join to your own data, chart the result, decide whether it
+   holds up.
+3. **Push to prod.** The library is the production interface. Wire it
+   into a cron, a Slack bot, a research dashboard, whatever. The skill's
+   JSON is stable across all three surfaces.
 
-```bash
-cd quant-garage
-pip install -r requirements.txt
-export MASSIVE_API_KEY=your_key_here
-
-# Earnings preview, free tier (SEC EDGAR fallback)
-python3 examples/run-aapl-tier-b.py
-python3 examples/run-tier-b.py NVDA
-
-# Universe screen (price + 3M momentum + week pullback + ETFs out)
-python3 examples/run-universe-builder.py \
-  --min-price 20 --min-adv 400000 --min-mom-3m 0.10 --max-week-return 0.0
-
-# Options flow stream on a watchlist
-python3 examples/run-options-flow.py
-
-# Crypto vol scan
-python3 examples/run-crypto-vol-scanner.py
-```
-
-Sample outputs go to `examples/*-output.md` (gitignored). Each includes
-the canonical JSON payload alongside the rendered human-readable view.
+We built the framework this way on purpose. Nothing in the middle step
+requires you to shell out to a CLI or scrape a rendered note. The same
+`payload = run(...)` call that answered the ideation question is the
+one your production job runs.
 
 ## What this isn't
 

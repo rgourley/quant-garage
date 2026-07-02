@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-CLI wrapper for the pitch-comps skill.
+CLI wrapper for the stock-one-pager skill.
 
-Compute lives in quant_garage/skills/pitch_comps.py.
+Retail-tier composed skill: plain-language single-name snapshot. Combines
+technical_briefing + earnings_blackout + market_regime into one card.
 
-    from quant_garage.skills.pitch_comps import run, render
-    payload = run("CRM")
-    payload = run("ALLO", peers=["BEAM","NTLA","CRSP","EDIT"])
+Compute lives in quant_garage/skills/stock_one_pager.py.
+
+    from quant_garage.skills.stock_one_pager import run, render
+    payload = run("NVDA")
 
 CLI usage:
-    python3 examples/run-pitch-comps.py CRM
-    python3 examples/run-pitch-comps.py ALLO --peers BEAM,NTLA,CRSP,EDIT --format render
+    python3 examples/run-stock-one-pager.py --ticker NVDA --format render
+    python3 examples/run-stock-one-pager.py --ticker ALLO --skip-market-context
 
 Reads MASSIVE_API_KEY from env.
 """
@@ -25,21 +27,20 @@ _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-from quant_garage.skills.pitch_comps import run, render
+from quant_garage.skills.stock_one_pager import run, render
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(
-        prog="run-pitch-comps",
-        description="Bloomberg RV / CapIQ-style peer-comp table with regression-adjusted multiples.",
+        prog="run-stock-one-pager",
+        description="Beginner-friendly single-name snapshot (retail tier).",
     )
-    ap.add_argument("ticker", nargs="?", default="CRM",
-                    help="Subject ticker (default: CRM)")
-    ap.add_argument("--peers", default=None,
-                    help="Comma-separated peer override (skips curated map + related-companies fallback).")
+    ap.add_argument("--ticker", required=True, help="US ticker (e.g. NVDA)")
+    ap.add_argument("--skip-market-context", action="store_true",
+                    help="Skip the market_regime block (faster when scanning many tickers).")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                     help="stdout format. Default: json.")
-    ap.add_argument("--out", default=None,
+    ap.add_argument("--out", type=str, default=None,
                     help="Optional path to write a markdown file with JSON + rendered layers.")
     args = ap.parse_args()
 
@@ -49,7 +50,7 @@ def main() -> int:
         return 2
 
     try:
-        payload = run(args.ticker, peers=args.peers)
+        payload = run(args.ticker, include_market_context=not args.skip_market_context)
     except (ValueError, RuntimeError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
         return 1
@@ -66,8 +67,8 @@ def main() -> int:
 
     if args.out:
         with open(args.out, "w") as f:
-            f.write(f"# pitch-comps: {payload['subject']['ticker']}\n\n")
-            f.write(f"Generated: {payload['run_at']}\n\n")
+            f.write(f"# stock-one-pager: {payload['ticker']}\n\n")
+            f.write(f"Generated: {payload['fetched_at']}\n\n")
             f.write("## Rendered\n\n```\n")
             f.write(rendered)
             f.write("\n```\n\n## Canonical JSON\n\n```json\n")

@@ -9,6 +9,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+*.egg-info/
+.pytest_cache/
 examples/*-real-output*
 examples/*-tier-b-output*
 examples/*-output.md

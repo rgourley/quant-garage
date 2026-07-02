@@ -1,0 +1,896 @@
+"""
+earnings-drilldown as an importable library function.
+
+Tier B implementation (Stocks Starter + SEC EDGAR):
+- Print dates come from SEC EDGAR 8-K filings filtered to item 2.02.
+- EPS actuals from Massive /vX/reference/financials.
+- No consensus EPS → PEAD bucketed by reaction sign, not surprise sign.
+
+Full-fidelity Tier A path (Benzinga consensus + surprise buckets) is a
+follow-up. Tier B is analyst-quality by itself: implied vs realized, print
+history reactions, peer reaction cohort, and options straddle mispricing.
+
+    from quant_garage.skills.earnings_drilldown import run, render
+    payload = run("AAPL")
+    payload = run("ALLO", peers=["BEAM","NTLA","CRSP","EDIT"])
+"""
+from __future__ import annotations
+
+import json
+import math
+import sys
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
+from typing import Iterable
+
+from .. import (
+    MassiveClient,
+    today,
+    utcnow_iso,
+    is_significant,
+)
+from ..timezones import utc_to_et
+
+# SEC EDGAR is NOT a Massive endpoint. Personal User-Agent per SEC fair-use policy.
+SEC_HEADERS = {"User-Agent": "Rob Gourley rgourley@gmail.com"}
+TODAY = today()
+
+# Curated peer override map. Same shape as pitch_comps + valuation_sanity_check.
+PEER_OVERRIDES = {
+    "AAPL": ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
+    "NVDA": ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
+    "MSFT": ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
+    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
+    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
+    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
+    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
+    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
+    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
+    "ALLO": ["BEAM", "NTLA", "CRSP", "EDIT", "LYEL", "CABA", "RCKT"],
+}
+
+client = MassiveClient()
+
+
+def fetch_sec(url):
+    req = urllib.request.Request(url, headers=SEC_HEADERS)
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+def paginate_all(path, params=None):
+    """Collect every page from the Massive client and return (results, last_fetched_at)."""
+    out = []
+    last_fetched = utcnow_iso()
+    for page, fetched_at in client.paginate(path, params):
+        out.extend(page)
+        last_fetched = fetched_at
+    return out, last_fetched
+
+
+def median(xs):
+    s = sorted(xs)
+    n = len(s)
+    if n == 0:
+        return None
+    if n % 2:
+        return s[n // 2]
+    return (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def t_stat(xs):
+    n = len(xs)
+    if n < 2:
+        return None
+    mean = sum(xs) / n
+    var = sum((x - mean) ** 2 for x in xs) / (n - 1)
+    if var <= 0:
+        return None
+    se = math.sqrt(var / n)
+    return mean / se if se > 0 else None
+
+
+# ----- Public API -----
+
+def run(
+    ticker: str,
+    peers: Iterable[str] | str | None = None,
+    client_: MassiveClient | None = None,
+) -> dict:
+    """Full-fidelity earnings-drilldown payload for `ticker`.
+
+    Tier B implementation: SEC EDGAR 8-K item 2.02 for print dates,
+    Massive financials for GAAP EPS actuals, options snapshot for
+    implied-move vs realized comparison, curated peer cohort for
+    reaction bucketing.
+
+    Args:
+        ticker: subject ticker (US common stock).
+        peers: optional peer override (list or comma-separated string).
+               If not supplied, falls back to PEER_OVERRIDES map.
+        client_: reuse an existing MassiveClient.
+    """
+    global client, TODAY
+    client = client_ or MassiveClient()
+    TODAY = today()
+    TICKER = ticker.strip().upper()
+    if not TICKER:
+        raise ValueError("ticker is required")
+
+    # Resolve peers
+    if peers is None:
+        peer_tickers_override = PEER_OVERRIDES.get(TICKER, [])
+    elif isinstance(peers, str):
+        peer_tickers_override = [p.strip().upper() for p in peers.split(",") if p.strip()]
+    else:
+        peer_tickers_override = [p.strip().upper() for p in peers if p and p.strip()]
+
+    # 1. Ticker metadata (need CIK + sic for EDGAR + peer fallback)
+    print("Fetching ticker metadata...", file=sys.stderr)
+    ticker_meta_body, ticker_meta_fetched_at = client.get(f"/v3/reference/tickers/{TICKER}")
+    ticker_meta = ticker_meta_body["results"]
+    cik_raw = ticker_meta.get("cik")
+    if not cik_raw:
+        raise RuntimeError(f"no CIK in ticker metadata for {TICKER}; SEC EDGAR path needs a CIK")
+    cik_padded = str(cik_raw).zfill(10)
+    sic_code = ticker_meta.get("sic_code")
+    sic_desc = ticker_meta.get("sic_description")
+
+    # 2. SEC EDGAR submissions: pull recent 8-K filings filtered to item 2.02
+    print(f"Fetching SEC EDGAR submissions for CIK {cik_padded}...", file=sys.stderr)
+    sec_url = f"https://data.sec.gov/submissions/CIK{cik_padded}.json"
+    sec_doc = fetch_sec(sec_url)
+    sec_fetched_at = utcnow_iso()
+    recent = sec_doc["filings"]["recent"]
+
+
+    def is_earnings_8k(form, items):
+        if form != "8-K":
+            return False
+        items_list = [i.strip() for i in (items or "").split(",")]
+        return "2.02" in items_list
+
+
+    n_recent = len(recent["form"])
+    earnings_8ks = []
+    for i in range(n_recent):
+        if is_earnings_8k(recent["form"][i], recent.get("items", [""] * n_recent)[i]):
+            earnings_8ks.append({
+                "filing_date": recent["filingDate"][i],
+                "acceptance_dt": recent["acceptanceDateTime"][i],  # UTC ISO
+                "accession": recent["accessionNumber"][i],
+                "report_date": recent.get("reportDate", [""] * n_recent)[i],
+            })
+
+    # Sort ascending and keep last 8
+    earnings_8ks.sort(key=lambda x: x["acceptance_dt"])
+    earnings_8ks = earnings_8ks[-8:]
+
+    # 3. EPS actuals from Massive /vX/reference/financials
+    # Pull both quarterly and annual: Q4 is reported as the 10-K annual filing
+    # (no quarterly Q4 record exists). For annual records we back out Q4 EPS as
+    # annual_eps - sum(Q1+Q2+Q3) of the same fiscal year.
+    print("Fetching financials for EPS actuals...", file=sys.stderr)
+    fin_results, financials_fetched_at = paginate_all(
+        "/vX/reference/financials",
+        {"ticker": TICKER, "limit": 40, "order": "desc", "sort": "filing_date"},
+    )
+
+    # Normalize financials records. The financials `filing_date` is the 10-Q
+    # filing date, which is typically 1-2 calendar days AFTER the 8-K item 2.02
+    # release for the same quarter. Match each 8-K to the financials record whose
+    # filing_date is in [8K_filing_date, 8K_filing_date + 3 days].
+    fin_records = []
+    for f in fin_results:
+        fd = f.get("filing_date")
+        if not fd:
+            continue
+        fin = (f.get("financials") or {}).get("income_statement") or {}
+        eps_obj = fin.get("diluted_earnings_per_share") or fin.get("basic_earnings_per_share")
+        eps_val = eps_obj.get("value") if eps_obj else None
+        fin_records.append({
+            "filing_date": fd,
+            "fiscal_period": f.get("fiscal_period"),
+            "fiscal_year": f.get("fiscal_year"),
+            "end_date": f.get("end_date"),
+            "eps_actual": eps_val,
+            "timeframe": f.get("timeframe"),
+        })
+
+    # Index quarterly records by (fiscal_year, fiscal_period) for Q4 backout
+    quarterly_by_fy_period = {}
+    for fr in fin_records:
+        if fr["timeframe"] == "quarterly":
+            quarterly_by_fy_period[(fr["fiscal_year"], fr["fiscal_period"])] = fr
+
+
+    def match_financials(eight_k_filing_date):
+        """Pick the financials record filed within 0-3 days after the 8-K.
+        For annual records (Q4), back out Q4 EPS as FY - (Q1+Q2+Q3).
+        """
+        from datetime import date as _date
+        target = _date.fromisoformat(eight_k_filing_date)
+        best = None
+        best_gap = None
+        for fr in fin_records:
+            fr_d = _date.fromisoformat(fr["filing_date"])
+            gap = (fr_d - target).days
+            if 0 <= gap <= 3 and (best_gap is None or gap < best_gap):
+                best = fr
+                best_gap = gap
+        if not best:
+            return None
+        if best["timeframe"] == "annual":
+            # Back out Q4 EPS
+            fy = best["fiscal_year"]
+            try:
+                fy_int = int(str(fy))
+            except (TypeError, ValueError):
+                fy_int = fy
+            q1 = quarterly_by_fy_period.get((fy_int, "Q1")) or quarterly_by_fy_period.get((fy, "Q1"))
+            q2 = quarterly_by_fy_period.get((fy_int, "Q2")) or quarterly_by_fy_period.get((fy, "Q2"))
+            q3 = quarterly_by_fy_period.get((fy_int, "Q3")) or quarterly_by_fy_period.get((fy, "Q3"))
+            q4_eps = None
+            if (best["eps_actual"] is not None and q1 and q2 and q3
+                    and all(q["eps_actual"] is not None for q in (q1, q2, q3))):
+                q4_eps = best["eps_actual"] - (q1["eps_actual"] + q2["eps_actual"] + q3["eps_actual"])
+            return {
+                **best,
+                "fiscal_period": "Q4",
+                "eps_actual": q4_eps,
+                "eps_method": "Q4 = FY - (Q1+Q2+Q3)" if q4_eps is not None else None,
+            }
+        return best
+
+
+    # 4. Build prints from EDGAR 8-Ks, attach EPS from financials
+    prints = []
+    for f8k in earnings_8ks:
+        fd = f8k["filing_date"]
+        acc_dt_str = f8k["acceptance_dt"]
+        fin_match = match_financials(fd)
+        fiscal_period = (
+            f"{fin_match['fiscal_period']} {fin_match['fiscal_year']}"
+            if fin_match else f"Print {fd}"
+        )
+        prints.append({
+            "fiscal_period": fiscal_period,
+            "filing_dt": acc_dt_str if acc_dt_str.endswith("Z") else acc_dt_str + "Z",
+            "filing_date": fd,
+            "eps_actual": fin_match["eps_actual"] if fin_match else None,
+        })
+
+    # 5. Daily aggregates (3 years to cover 8 prints + buffer)
+    end_date = TODAY.isoformat()
+    start_date = (TODAY - timedelta(days=365 * 3)).isoformat()
+    print(f"Fetching AAPL daily aggregates {start_date} to {end_date}...", file=sys.stderr)
+    aggs, aapl_aggs_fetched_at = paginate_all(
+        f"/v2/aggs/ticker/{TICKER}/range/1/day/{start_date}/{end_date}",
+        {"adjusted": "true", "sort": "asc", "limit": 50000},
+    )
+    agg_by_date = {}
+    for a in aggs:
+        d = datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date()
+        agg_by_date[d.isoformat()] = a
+
+    trading_dates = sorted(agg_by_date.keys())
+
+
+    def next_trading_day(d_str, offset=1):
+        try:
+            idx = trading_dates.index(d_str)
+        except ValueError:
+            idx = next((i for i, td in enumerate(trading_dates) if td > d_str), None)
+            if idx is None:
+                return None
+            idx -= 1
+        target_idx = idx + offset
+        if 0 <= target_idx < len(trading_dates):
+            return trading_dates[target_idx]
+        return None
+
+
+    # 6. SPY aggregates for PEAD beta-adjustment
+    print("Fetching SPY aggregates for PEAD adjustment...", file=sys.stderr)
+    spy_aggs, spy_aggs_fetched_at = paginate_all(
+        f"/v2/aggs/ticker/SPY/range/1/day/{start_date}/{end_date}",
+        {"adjusted": "true", "sort": "asc", "limit": 50000},
+    )
+    spy_by_date = {
+        datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date().isoformat(): a
+        for a in spy_aggs
+    }
+
+
+    # 7. Reaction window helpers
+    def session_window(filing_dt_iso):
+        """
+        Use the UTC acceptance time to classify AMC/BMO/Intraday. ET hour is
+        computed via zoneinfo so DST is handled correctly year-round (the prior
+        hand-rolled UTC-4/UTC-5 fork shifted the AMC boundary by an hour in
+        Nov-Mar; H1 in the 2026-06-26 audit).
+        """
+        dt_utc = datetime.fromisoformat(filing_dt_iso.replace("Z", "+00:00"))
+        dt_et = utc_to_et(dt_utc)
+        filing_d_str = dt_et.date().isoformat()
+        hour_et = dt_et.hour
+
+        if hour_et < 9:
+            reaction_d = filing_d_str
+            ref_d = next_trading_day(reaction_d, -1)
+            session = "BMO"
+        elif hour_et >= 16:
+            ref_d = filing_d_str
+            reaction_d = next_trading_day(ref_d, 1)
+            session = "AMC"
+        else:
+            reaction_d = filing_d_str
+            ref_d = next_trading_day(reaction_d, -1)
+            session = "Intraday"
+
+        if ref_d and ref_d not in agg_by_date:
+            ref_d = next((td for td in reversed(trading_dates) if td < ref_d), None)
+        return ref_d, reaction_d, session
+
+
+    prints_with_reaction = []
+    for p in prints:
+        ref_d, next_d, session = session_window(p["filing_dt"])
+        if not (ref_d and next_d):
+            continue
+        if ref_d not in agg_by_date or next_d not in agg_by_date:
+            continue
+        ref_close = agg_by_date[ref_d]["c"]
+        next_close = agg_by_date[next_d]["c"]
+        reaction = (next_close - ref_close) / ref_close
+        t5 = next_trading_day(next_d, 4)
+        t5_return = None
+        spy_t5_return = None
+        if t5 and t5 in agg_by_date:
+            t5_return = (agg_by_date[t5]["c"] - ref_close) / ref_close
+            if ref_d in spy_by_date and t5 in spy_by_date:
+                spy_t5_return = (
+                    spy_by_date[t5]["c"] - spy_by_date[ref_d]["c"]
+                ) / spy_by_date[ref_d]["c"]
+        # Per C5: post-announcement drift = T+1 close → T+5 close, SPY-adjusted.
+        # The existing abnormal_t5_pct is anchored at the pre-event close (ref_d)
+        # and is therefore the event-inclusive CAR (T0 → T+5), not drift. The
+        # rendered label has been "T+1 to T+5" all along; the math now matches.
+        drift_t5 = None
+        if (
+            t5 and t5 in agg_by_date and next_d in spy_by_date and t5 in spy_by_date
+            and next_close
+        ):
+            spy_next_close = spy_by_date[next_d]["c"]
+            if spy_next_close:
+                drift_raw = (agg_by_date[t5]["c"] - next_close) / next_close
+                drift_spy = (spy_by_date[t5]["c"] - spy_next_close) / spy_next_close
+                drift_t5 = drift_raw - drift_spy
+        prints_with_reaction.append({
+            **p,
+            "ref_date": ref_d,
+            "reaction_date": next_d,
+            "session": session,
+            "reaction_pct": reaction,
+            "t5_return_pct": t5_return,
+            "spy_t5_return_pct": spy_t5_return,
+            "abnormal_t5_pct": (
+                (t5_return - spy_t5_return)
+                if t5_return is not None and spy_t5_return is not None
+                else None
+            ),
+            "post_announce_drift_t5_pct": drift_t5,
+        })
+
+    # 8. Print history aggregates (Tier B: reaction distribution only, no beat rate)
+    realized_moves = [
+        abs(p["reaction_pct"]) for p in prints_with_reaction if p["reaction_pct"] is not None
+    ]
+    n_q = len(prints_with_reaction)
+    realized_avg = sum(realized_moves) / len(realized_moves) if realized_moves else None
+    realized_med = median(realized_moves)
+
+    positive_reactions = [p for p in prints_with_reaction if p["reaction_pct"] > 0]
+    negative_reactions = [p for p in prints_with_reaction if p["reaction_pct"] <= 0]
+    best_reaction = max(prints_with_reaction, key=lambda p: p["reaction_pct"], default=None)
+    worst_reaction = min(prints_with_reaction, key=lambda p: p["reaction_pct"], default=None)
+
+    # 9. PEAD bucketed by reaction sign (Tier B substitute).
+    # `abnormal_*` is event-inclusive CAR (T0 → T+5); `drift_*` is the
+    # post-announcement drift (T+1 → T+5), reported as a separate field per C5.
+    abnormal_pos = [
+        p["abnormal_t5_pct"] for p in positive_reactions if p["abnormal_t5_pct"] is not None
+    ]
+    abnormal_neg = [
+        p["abnormal_t5_pct"] for p in negative_reactions if p["abnormal_t5_pct"] is not None
+    ]
+    drift_pos = [
+        p["post_announce_drift_t5_pct"] for p in positive_reactions
+        if p["post_announce_drift_t5_pct"] is not None
+    ]
+    drift_neg = [
+        p["post_announce_drift_t5_pct"] for p in negative_reactions
+        if p["post_announce_drift_t5_pct"] is not None
+    ]
+
+    pead = {
+        "on_positive_reactions": {
+            "n": len(abnormal_pos),
+            "avg_t5_return_pct": sum(abnormal_pos) / len(abnormal_pos) if abnormal_pos else None,
+            "t_stat": t_stat(abnormal_pos),
+            "significant": False,
+            "post_announce_drift_n": len(drift_pos),
+            "avg_post_announce_drift_t5_pct": (
+                sum(drift_pos) / len(drift_pos) if drift_pos else None
+            ),
+            "drift_t_stat": t_stat(drift_pos) if drift_pos else None,
+            "drift_significant": False,
+        } if abnormal_pos else None,
+        "on_negative_reactions": {
+            "n": len(abnormal_neg),
+            "avg_t5_return_pct": sum(abnormal_neg) / len(abnormal_neg) if abnormal_neg else None,
+            "t_stat": t_stat(abnormal_neg),
+            "significant": False,
+            "post_announce_drift_n": len(drift_neg),
+            "avg_post_announce_drift_t5_pct": (
+                sum(drift_neg) / len(drift_neg) if drift_neg else None
+            ),
+            "drift_t_stat": t_stat(drift_neg) if drift_neg else None,
+            "drift_significant": False,
+        } if abnormal_neg else None,
+    }
+    # Per C6: df-aware critical t via is_significant() (n=8 → 2.36, not 2.0).
+    for bucket_key in ("on_positive_reactions", "on_negative_reactions"):
+        bucket = pead[bucket_key]
+        if bucket and bucket["t_stat"] is not None:
+            bucket["significant"] = is_significant(bucket["t_stat"], bucket["n"])
+        if bucket and bucket["drift_t_stat"] is not None:
+            bucket["drift_significant"] = is_significant(
+                bucket["drift_t_stat"], bucket["post_announce_drift_n"]
+            )
+
+    # 10. Options snapshot for implied move + IV30 proxy
+    print("Fetching options snapshot...", file=sys.stderr)
+    spot_snap_body, spot_snap_fetched_at = client.get(
+        f"/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}"
+    )
+    spot_snap = spot_snap_body["ticker"]
+    # N2: this script intentionally bypasses quant_garage.snapshot.resolve_price
+    # and reads lastQuote.p inline. lastQuote.p is a quote-mid (a synthetic estimate
+    # derived from the current bid/ask), structurally different from a trade print.
+    # Tier B keys often run on quiet names with no recent trade, so the quote-mid
+    # is the only fresh estimate available before the snapshot falls back to a
+    # stale day close. resolve_price() is a trade-only chain by design, and folding
+    # lastQuote.p into it would mix trades and quotes for every other consumer.
+    # Do not extend resolve_price() to include this field.
+    spot = spot_snap["lastQuote"]["p"] if spot_snap.get("lastQuote") else spot_snap["day"]["c"]
+
+    # Next print date: project from the latest acceptance (~91 days). EDGAR doesn't
+    # expose future dates, so this is a heuristic only used to bound the options query.
+    if prints_with_reaction:
+        last_dt = datetime.fromisoformat(
+            prints_with_reaction[-1]["filing_dt"].replace("Z", "+00:00")
+        ).date()
+        next_earnings_date = last_dt + timedelta(days=91)
+    else:
+        next_earnings_date = TODAY + timedelta(days=37)
+    next_print_date_str = next_earnings_date.isoformat()
+
+    opt_to_date = (next_earnings_date + timedelta(days=14)).isoformat()
+    opt_from_date = TODAY.isoformat()
+    strike_band_lo = int(spot * 0.95)
+    strike_band_hi = int(spot * 1.05)
+    opts, options_fetched_at = paginate_all(
+        f"/v3/snapshot/options/{TICKER}",
+        {
+            "expiration_date.gte": opt_from_date,
+            "expiration_date.lte": opt_to_date,
+            "strike_price.gte": strike_band_lo,
+            "strike_price.lte": strike_band_hi,
+            "limit": 250,
+        },
+    )
+
+    opts_by_exp = defaultdict(list)
+    for o in opts:
+        exp = o.get("details", {}).get("expiration_date")
+        if exp:
+            opts_by_exp[exp].append(o)
+
+    expiries = sorted(opts_by_exp.keys())
+    earnings_capturing = [e for e in expiries if e >= next_print_date_str]
+    chosen_expiry = earnings_capturing[0] if earnings_capturing else (expiries[0] if expiries else None)
+
+
+    def atm_straddle(chain, spot_price):
+        calls = [o for o in chain if o["details"]["contract_type"] == "call"]
+        puts = [o for o in chain if o["details"]["contract_type"] == "put"]
+        if not calls or not puts:
+            return None
+        call = min(calls, key=lambda o: abs(o["details"]["strike_price"] - spot_price))
+        put_at_strike = next(
+            (o for o in puts if o["details"]["strike_price"] == call["details"]["strike_price"]),
+            None,
+        )
+        if not put_at_strike:
+            put_at_strike = min(puts, key=lambda o: abs(o["details"]["strike_price"] - spot_price))
+
+        def mid(o):
+            q = o.get("last_quote", {})
+            bid = q.get("bid")
+            ask = q.get("ask")
+            if bid is not None and ask is not None and bid > 0 and ask > 0:
+                return (bid + ask) / 2
+            return o.get("day", {}).get("close") or o.get("last_trade", {}).get("price")
+
+        return {
+            "call_mid": mid(call),
+            "put_mid": mid(put_at_strike),
+            "strike": call["details"]["strike_price"],
+            "expiration": call["details"]["expiration_date"],
+            "iv_call": call.get("implied_volatility"),
+            "iv_put": put_at_strike.get("implied_volatility"),
+        }
+
+
+    straddle_info = atm_straddle(opts_by_exp.get(chosen_expiry, []), spot) if chosen_expiry else None
+
+    iv30_proxy = None
+    if straddle_info and straddle_info["iv_call"] and straddle_info["iv_put"]:
+        iv30_proxy = (straddle_info["iv_call"] + straddle_info["iv_put"]) / 2 * 100
+
+    straddle_pct = None
+    implied_move_pct = None
+    mispricing_pct = None
+    if straddle_info and straddle_info["call_mid"] and straddle_info["put_mid"] and spot:
+        straddle_pct = (straddle_info["call_mid"] + straddle_info["put_mid"]) / spot
+        implied_move_pct = straddle_pct * 0.85
+        if realized_avg:
+            mispricing_pct = (implied_move_pct - realized_avg) / realized_avg
+
+    # 11. Peer reaction using explicit override or the curated map
+    peer_tickers = peer_tickers_override
+    peer_aggs = {}
+    peer_aggs_fetched_at = None
+    peer_reaction_block = None
+    if peer_tickers:
+        print(f"Fetching peer aggregates: {peer_tickers}...", file=sys.stderr)
+        for peer in peer_tickers:
+            peer_data, peer_aggs_fetched_at = paginate_all(
+                f"/v2/aggs/ticker/{peer}/range/1/day/{start_date}/{end_date}",
+                {"adjusted": "true", "sort": "asc", "limit": 50000},
+            )
+            peer_aggs[peer] = {
+                datetime.fromtimestamp(a["t"] / 1000, tz=timezone.utc).date().isoformat(): a
+                for a in peer_data
+            }
+
+        # Per-print peer returns, bucketed by reaction sign (Tier B substitute)
+        peer_returns_on_pos = defaultdict(list)
+        peer_returns_on_neg = defaultdict(list)
+        peer_print_day_returns = defaultdict(list)
+        name_print_day_returns = []
+
+        for p in prints_with_reaction:
+            ref_d = p["ref_date"]
+            next_d = p["reaction_date"]
+            name_ret = p["reaction_pct"]
+            name_print_day_returns.append(name_ret)
+            for peer in peer_tickers:
+                pa = peer_aggs[peer]
+                if ref_d in pa and next_d in pa:
+                    peer_ret = (pa[next_d]["c"] - pa[ref_d]["c"]) / pa[ref_d]["c"]
+                    peer_print_day_returns[peer].append(peer_ret)
+                    if name_ret > 0:
+                        peer_returns_on_pos[peer].append(peer_ret)
+                    else:
+                        peer_returns_on_neg[peer].append(peer_ret)
+                else:
+                    peer_print_day_returns[peer].append(None)
+
+        # Aggregate peer return on positive/negative reactions
+        all_pos = [v for peer in peer_tickers for v in peer_returns_on_pos[peer]]
+        all_neg = [v for peer in peer_tickers for v in peer_returns_on_neg[peer]]
+        avg_peer_pos = sum(all_pos) / len(all_pos) if all_pos else None
+        avg_peer_neg = sum(all_neg) / len(all_neg) if all_neg else None
+
+        # Per-peer print-day beta
+        def beta(peer_rets, name_rets):
+            pairs = [
+                (pr, nr)
+                for pr, nr in zip(peer_rets, name_rets)
+                if pr is not None and nr is not None
+            ]
+            if len(pairs) < 2:
+                return None
+            n = len(pairs)
+            mean_p = sum(p for p, _ in pairs) / n
+            mean_n = sum(nr for _, nr in pairs) / n
+            cov = sum((p - mean_p) * (nr - mean_n) for p, nr in pairs) / (n - 1)
+            var_n = sum((nr - mean_n) ** 2 for _, nr in pairs) / (n - 1)
+            return cov / var_n if var_n > 0 else None
+
+        peer_betas = []
+        for peer in peer_tickers:
+            b = beta(peer_print_day_returns[peer], name_print_day_returns)
+            if b is not None:
+                peer_betas.append({"ticker": peer, "beta": b})
+        peer_betas.sort(key=lambda x: -abs(x["beta"]))
+
+        peer_reaction_block = {
+            "peer_selection_method": "curated_override",
+            "peers_used": peer_tickers,
+            "n_peers": len(peer_tickers),
+            "n_cycles": n_q,
+            "bucketing": "reaction_sign",
+            "avg_peer_return_on_positive_reaction_pct": avg_peer_pos,
+            "avg_peer_return_on_negative_reaction_pct": avg_peer_neg,
+            "top_peers": peer_betas[:3],
+        }
+
+    # 12. Build JSON payload
+    tier_caveats = [
+        "No consensus EPS available; print history shows reaction distribution only.",
+        "PEAD bucketed by reaction sign, not surprise sign.",
+        "Peer reaction bucketed by reaction sign, not surprise sign.",
+        "Next print date is a heuristic projection (~91d from last 8-K); EDGAR only exposes filed events.",
+        "EPS actuals are GAAP (from 10-Q/10-K); Benzinga's Tier A actuals are non-GAAP adjusted, so Q4 2024 reads $0.97 (GAAP, after EU tax charge) vs Tier A's $1.64 (adjusted).",
+        "Q4 EPS is derived from the annual 10-K minus Q1+Q2+Q3 quarterlies (no standalone Q4 record).",
+    ]
+
+    payload = {
+        "ticker": TICKER,
+        "tier": "B",
+        "tier_caveats": tier_caveats,
+        "mode": "full",
+        "run_at": utcnow_iso(),
+        "print": {
+            "date": next_print_date_str,
+            "session": "AMC",
+            "consensus_eps": None,
+            "consensus_revenue": None,
+            "fiscal_period": None,
+            "source": "projected (~91d from last 8-K acceptance)",
+        },
+        "spot": spot,
+        "implied_vs_realized": {
+            "straddle_pct": straddle_pct,
+            "implied_move_pct": implied_move_pct,
+            "realized_avg_pct": realized_avg,
+            "realized_median_pct": realized_med,
+            "n_quarters": n_q,
+            "iv30_proxy": iv30_proxy,
+            "iv30_source": "Average IV of ATM call+put on earnings-capturing expiry",
+            "mispricing_pct": mispricing_pct,
+            "front_expiry_used": chosen_expiry,
+            "atm_strike_used": straddle_info["strike"] if straddle_info else None,
+        } if straddle_pct is not None else None,
+        "print_history": {
+            "n_quarters": n_q,
+            "n_positive_reactions": len(positive_reactions),
+            "n_negative_reactions": len(negative_reactions),
+            "best_reaction": {
+                "period": best_reaction["fiscal_period"] if best_reaction else None,
+                "print_date": best_reaction["filing_date"] if best_reaction else None,
+                "next_day_return_pct": best_reaction["reaction_pct"] if best_reaction else None,
+            } if best_reaction else None,
+            "worst_reaction": {
+                "period": worst_reaction["fiscal_period"] if worst_reaction else None,
+                "print_date": worst_reaction["filing_date"] if worst_reaction else None,
+                "next_day_return_pct": worst_reaction["reaction_pct"] if worst_reaction else None,
+            } if worst_reaction else None,
+            "all_prints": [
+                {
+                    "period": p["fiscal_period"],
+                    "print_date": p["filing_date"],
+                    "acceptance_dt_utc": p["filing_dt"],
+                    "session": p["session"],
+                    "eps_actual": p["eps_actual"],
+                    "reaction_pct": p["reaction_pct"],
+                    "t5_abnormal_pct": p["abnormal_t5_pct"],
+                    "post_announce_drift_t5_pct": p["post_announce_drift_t5_pct"],
+                }
+                for p in prints_with_reaction
+            ],
+        },
+        "post_earnings_drift": pead,
+        "peer_reaction": peer_reaction_block,
+        "sources": [
+            {
+                "endpoint": f"https://api.polygon.io/v3/reference/tickers/{TICKER}",
+                "context": "ticker metadata, CIK, SIC",
+                "fetched_at": ticker_meta_fetched_at,
+            },
+            {
+                "endpoint": sec_url,
+                "context": "8-K item 2.02 filings → print dates (free, public)",
+                "fetched_at": sec_fetched_at,
+            },
+            {
+                "endpoint": f"https://api.polygon.io/vX/reference/financials?ticker={TICKER}",
+                "context": "EPS actuals matched by filing_date",
+                "fetched_at": financials_fetched_at,
+            },
+            {
+                "endpoint": f"https://api.polygon.io/v2/aggs/ticker/{TICKER}/range/1/day/...",
+                "context": "daily closes for realized moves and PEAD",
+                "fetched_at": aapl_aggs_fetched_at,
+            },
+            {
+                "endpoint": "https://api.polygon.io/v2/aggs/ticker/SPY/range/1/day/...",
+                "context": "SPY for PEAD beta-adjustment",
+                "fetched_at": spy_aggs_fetched_at,
+            },
+            {
+                "endpoint": f"https://api.polygon.io/v2/snapshot/locale/us/markets/stocks/tickers/{TICKER}",
+                "context": "current spot",
+                "fetched_at": spot_snap_fetched_at,
+            },
+            {
+                "endpoint": f"https://api.polygon.io/v3/snapshot/options/{TICKER}?...",
+                "context": "ATM straddle and IV",
+                "fetched_at": options_fetched_at,
+            },
+            {
+                "endpoint": "https://api.polygon.io/v2/aggs/ticker/{PEER}/range/1/day/... (curated peers)",
+                "context": "peer reaction & beta",
+                "fetched_at": peer_aggs_fetched_at,
+            },
+        ],
+    }
+    return payload
+
+
+# ----- Renderer -----
+
+def _fmt_pct(x, decimals=1):
+    if x is None:
+        return "n/a"
+    return f"{x * 100:.{decimals}f}%"
+
+
+def _fmt_signed_pct(x, decimals=1):
+    if x is None:
+        return "n/a"
+    sign = "+" if x >= 0 else "−"
+    return f"{sign}{abs(x) * 100:.{decimals}f}%"
+
+
+def render(payload: dict) -> str:
+    """Sell-side-note format for the earnings-drilldown payload."""
+    ticker = payload["ticker"]
+    spot = payload["spot"]
+    tier_caveats = payload.get("tier_caveats", [])
+    ph = payload["print_history"]
+    n_q = ph["n_quarters"]
+    best_reaction = ph.get("best_reaction")
+    worst_reaction = ph.get("worst_reaction")
+    pead = payload.get("post_earnings_drift") or {}
+    peer_reaction_block = payload.get("peer_reaction")
+
+    lines: list[str] = []
+    lines.append(
+        f"{ticker}: Tier B Preview (run {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M')} UTC)"
+    )
+    header_extras = [
+        f"Next print (projected): {payload['print']['date']} AMC",
+        f"Spot: ${spot:.2f}",
+        "Tier B (SEC EDGAR + Stocks Starter, no Benzinga)",
+    ]
+    lines.append(" · ".join(header_extras))
+    lines.append("")
+
+    # Take generation
+    take_parts: list[str] = []
+    if payload.get("implied_vs_realized"):
+        iv_r = payload["implied_vs_realized"]
+        if iv_r["mispricing_pct"] is not None:
+            if iv_r["mispricing_pct"] > 0.15:
+                take_parts.append(
+                    f"Straddle is {iv_r['mispricing_pct'] * 100:.0f}% rich vs {iv_r['n_quarters']}q realized "
+                    f"(implied ±{iv_r['implied_move_pct'] * 100:.1f}%, realized ±{iv_r['realized_avg_pct'] * 100:.1f}%). "
+                    f"Premium sellers have a setup."
+                )
+            elif iv_r["mispricing_pct"] < -0.15:
+                take_parts.append(
+                    f"Straddle is {abs(iv_r['mispricing_pct']) * 100:.0f}% cheap vs {iv_r['n_quarters']}q realized "
+                    f"(implied ±{iv_r['implied_move_pct'] * 100:.1f}%, realized ±{iv_r['realized_avg_pct'] * 100:.1f}%). "
+                    f"Premium buyers have a setup."
+                )
+            else:
+                take_parts.append(
+                    f"Straddle is fair vs realized "
+                    f"(implied ±{iv_r['implied_move_pct'] * 100:.1f}%, realized ±{iv_r['realized_avg_pct'] * 100:.1f}%)."
+                )
+    if not take_parts:
+        take_parts.append("Setup mixed: insufficient data for a strong take.")
+    lines.append(f"**Take:** {' '.join(take_parts)}")
+    lines.append("")
+
+    if payload.get("implied_vs_realized"):
+        iv_r = payload["implied_vs_realized"]
+        lines.append("Implied vs realized")
+        lines.append(
+            f"- Implied move (front straddle, 0.85-adj): ±{iv_r['implied_move_pct'] * 100:.1f}% "
+            f"(raw straddle ±{iv_r['straddle_pct'] * 100:.1f}%)"
+        )
+        lines.append(f"- Realized {iv_r['n_quarters']}q avg: ±{iv_r['realized_avg_pct'] * 100:.1f}%")
+        if iv_r.get("iv30_proxy"):
+            lines.append(f"- IV30 (proxy from ATM avg): {iv_r['iv30_proxy']:.1f}")
+        lines.append(f"- Expiry used: {iv_r['front_expiry_used']} · ATM strike: ${iv_r['atm_strike_used']}")
+        lines.append("")
+
+    lines.append(f"Print history (last {n_q} quarters, Tier B: reaction distribution only)")
+    lines.append(
+        f"- Reactions: {ph['n_positive_reactions']} positive / {ph['n_negative_reactions']} negative"
+    )
+    if best_reaction:
+        lines.append(
+            f"- Best reaction: {best_reaction['period']} {_fmt_signed_pct(best_reaction['next_day_return_pct'])} next day"
+        )
+    if worst_reaction:
+        lines.append(
+            f"- Worst reaction: {worst_reaction['period']} {_fmt_signed_pct(worst_reaction['next_day_return_pct'])} next day"
+        )
+    lines.append("")
+
+    def _sig_note(bucket: dict, key_t: str, key_sig: str) -> str:
+        n = bucket.get("n", 0) if key_t == "t_stat" else bucket.get("post_announce_drift_n", 0)
+        if n < 4:
+            return "sample too small"
+        if bucket.get(key_sig):
+            return "significant"
+        t = bucket.get(key_t)
+        return f"t-stat {t:.2f}, not significant" if t is not None else "sample too small"
+
+    if pead.get("on_positive_reactions") or pead.get("on_negative_reactions"):
+        lines.append("Event-window CAR (T0 → T+5, SPY-adjusted, bucketed by reaction sign)")
+        if pead.get("on_positive_reactions") and pead["on_positive_reactions"].get("avg_t5_return_pct") is not None:
+            b = pead["on_positive_reactions"]
+            lines.append(f"- After positive reactions: {_fmt_signed_pct(b['avg_t5_return_pct'])} avg (n={b['n']}, {_sig_note(b, 't_stat', 'significant')})")
+        if pead.get("on_negative_reactions") and pead["on_negative_reactions"].get("avg_t5_return_pct") is not None:
+            m = pead["on_negative_reactions"]
+            lines.append(f"- After negative reactions: {_fmt_signed_pct(m['avg_t5_return_pct'])} avg (n={m['n']}, {_sig_note(m, 't_stat', 'significant')})")
+        lines.append("")
+
+        lines.append("Post-announcement drift (T+1 to T+5, SPY-adjusted, bucketed by reaction sign)")
+        if pead.get("on_positive_reactions") and pead["on_positive_reactions"].get("avg_post_announce_drift_t5_pct") is not None:
+            b = pead["on_positive_reactions"]
+            lines.append(f"- After positive reactions: {_fmt_signed_pct(b['avg_post_announce_drift_t5_pct'])} avg (n={b['post_announce_drift_n']}, {_sig_note(b, 'drift_t_stat', 'drift_significant')})")
+        if pead.get("on_negative_reactions") and pead["on_negative_reactions"].get("avg_post_announce_drift_t5_pct") is not None:
+            m = pead["on_negative_reactions"]
+            lines.append(f"- After negative reactions: {_fmt_signed_pct(m['avg_post_announce_drift_t5_pct'])} avg (n={m['post_announce_drift_n']}, {_sig_note(m, 'drift_t_stat', 'drift_significant')})")
+        lines.append("")
+
+    if peer_reaction_block:
+        pr = peer_reaction_block
+        lines.append(f"Peer reaction ({pr['peer_selection_method']}, bucketed by {pr['bucketing']})")
+        lines.append(f"- Peers: {', '.join(pr['peers_used'])}")
+        if pr["avg_peer_return_on_positive_reaction_pct"] is not None:
+            lines.append(f"- Peers on positive {ticker} reactions: {_fmt_signed_pct(pr['avg_peer_return_on_positive_reaction_pct'])} avg")
+        if pr["avg_peer_return_on_negative_reaction_pct"] is not None:
+            lines.append(f"- Peers on negative {ticker} reactions: {_fmt_signed_pct(pr['avg_peer_return_on_negative_reaction_pct'])} avg")
+        if pr["top_peers"]:
+            top_str = ", ".join(f"{t['ticker']} β={t['beta']:.2f}" for t in pr["top_peers"])
+            lines.append(f"- Top peers by print-day β: {top_str}")
+        lines.append("")
+
+    lines.append("Per-print detail (for inspection)")
+    lines.append("| Period | Print date | Session | EPS actual | Day-1 reaction | T+5 abnormal |")
+    lines.append("|---|---|---|---|---|---|")
+    for p in ph["all_prints"]:
+        eps_a = f"${p['eps_actual']:.2f}" if p.get("eps_actual") is not None else "n/a"
+        react = _fmt_signed_pct(p.get("reaction_pct"))
+        t5 = _fmt_signed_pct(p.get("t5_abnormal_pct")) if p.get("t5_abnormal_pct") is not None else "n/a"
+        lines.append(f"| {p['period']} | {p['print_date']} | {p['session']} | {eps_a} | {react} | {t5} |")
+
+    lines.append("")
+    lines.append("Tier B caveats")
+    for c in tier_caveats:
+        lines.append(f"- {c}")
+
+    return "\n".join(lines)
+
+
+# CLI removed — see examples/run-earnings-drilldown.py
