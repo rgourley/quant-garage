@@ -8,12 +8,13 @@ names that pulled back this week" and you get back what a sell-side
 analyst would write at 6am, with the supporting numbers and citations
 to the API calls underneath.
 
-Or you skip Claude entirely. Call the same tool from your code, parse
-the structured JSON it returns, and render it wherever you want. A
-research dashboard, a notebook, an agent that drops alerts into Slack.
-Both ways work because every skill ships the same compute as two
-layers: the JSON contract for developers and a rendered note, table,
-stream, or report for humans.
+Or you skip Claude entirely. `pip install quant-garage` and call the
+same tool from your own code. Every skill is an importable Python
+function that returns JSON, so it drops straight into a Jupyter
+notebook, a research dashboard, a Slack alert, a cron job. Both paths
+work because every skill ships the same compute as two layers: the
+JSON contract for developers and a rendered note, table, stream, or
+report for humans.
 
 Twenty tools. One framework. Built in the garage, not the trading
 floor.
@@ -50,8 +51,8 @@ survivors; `event-study` measures the abnormal return around each
 catalyst. You get from "what should I look at?" to "here's the regime
 context and the abnormal-return distribution" in a single workflow.
 
-Each tool plugs into the same `lib/quant_garage/` core: same client,
-same timezone handling, same audit-trail format, same significance
+Each tool plugs into the same `quant_garage/` core: same client, same
+timezone handling, same audit-trail format, same significance
 thresholds.
 
 ## The idea
