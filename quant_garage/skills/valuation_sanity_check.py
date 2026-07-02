@@ -40,34 +40,32 @@ NOW_UTC = datetime.now(timezone.utc)
 TODAY = today()
 
 
-# Shared peer-override map. Mirrors pitch-comps and earnings-drilldown.
-# Updates should land in all three (see references/peer-selection.md).
-PEER_OVERRIDES = {
-    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
-    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
-    "ADBE": ["CRM", "ORCL", "INTU", "NOW", "WDAY", "SAP"],
-    "NOW":  ["CRM", "WDAY", "ADBE", "ORCL", "INTU", "PANW"],
-    "WDAY": ["CRM", "NOW", "ADBE", "INTU", "ORCL"],
-    "INTU": ["CRM", "ADBE", "ORCL", "NOW", "WDAY"],
-    "PANW": ["CRWD", "FTNT", "ZS", "S", "CHKP", "OKTA"],
-    "CRWD": ["PANW", "FTNT", "ZS", "S", "OKTA"],
-    "AAPL":  ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
-    "NVDA":  ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
-    "MSFT":  ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
-    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
-    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
-    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
-    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
-    "JPM": ["BAC", "WFC", "C", "GS", "MS"],
-    "GS":  ["MS", "JPM", "BAC", "C"],
-    "V":  ["MA", "PYPL", "AXP"],
-    "MA": ["V", "PYPL", "AXP"],
-    "LLY":  ["NVO", "PFE", "MRK", "ABBV", "BMY", "AMGN"],
-    "MRK":  ["LLY", "PFE", "ABBV", "BMY", "AMGN", "JNJ"],
-    "NVO":  ["LLY", "PFE", "MRK", "ABBV"],
-    "XOM": ["CVX", "COP", "EOG", "OXY"],
-    "CVX": ["XOM", "COP", "EOG", "OXY"],
+from ..peer_catalog import PEER_OVERRIDES  # Q1: shared curated catalog
+
+# Verified ticker renames. Each entry live-checked: old symbol 404s AND
+# new symbol returns 200. TWTR/FB deliberately not included — TWTR's
+# successor X Corp is private (no equity), and FB still returns 200 on
+# reference lookups so a rename would silently swap to whatever company
+# holds that symbol now (Q2, verified 2026-07-02).
+TICKER_RENAMES = {
+    "PARA": "PSKY",  # Paramount Global -> Paramount Skydance (2026-01)
+    "SQ":   "XYZ",   # Square -> Block
+    "LC":   "LTRE",  # LendingClub reorg
 }
+
+
+def resolve_ticker(t):
+    """Return the current symbol for `t`, applying TICKER_RENAMES.
+
+    Kept as a plain function so callers can log which peers were remapped.
+    Returns (resolved_ticker, was_renamed).
+    """
+    up = t.upper()
+    new = TICKER_RENAMES.get(up)
+    if new and new != up:
+        return new, True
+    return up, False
+
 
 # Hardcoded constants documented in references/.
 WACC = 0.09       # See references/reverse-dcf.md
@@ -583,25 +581,61 @@ def compute_mc_fair_value(
 
     Factored out so it can be tested with synthetic inputs (no live API).
     """
-    def _n_valid(vs):
+    def _clean(vs):
         if vs is None:
-            return 0
-        return sum(1 for v in vs if v is not None and np.isfinite(float(v)))
+            return []
+        return [float(v) for v in vs if v is not None and np.isfinite(float(v))]
 
-    n_g = _n_valid(growth_values)
-    n_x = _n_valid(exit_multiple_values)
-    n_m = _n_valid(margin_values) if multiple_kind == "ev_ebitda" else None
+    g_clean = _clean(growth_values)
+    x_clean = _clean(exit_multiple_values)
+    m_clean = _clean(margin_values) if multiple_kind == "ev_ebitda" else None
+    n_g = len(g_clean)
+    n_x = len(x_clean)
+    n_m = len(m_clean) if m_clean is not None else None
 
-    if multiple_kind == "ev_ebitda":
-        insufficient = n_g < 5 or n_m < 5 or n_x < 5
-    elif multiple_kind == "ev_sales":
-        insufficient = n_g < 5 or n_x < 5
-    else:
-        raise ValueError(f"unknown multiple_kind: {multiple_kind}")
+    # Q3: degrade per-dimension instead of all-or-nothing. A dimension with
+    # 1-4 valid peer values sinks to a point-estimate (median), which
+    # contributes no variance to the FV distribution but lets the sampled
+    # dimensions still fire. A dimension with 0 valid values still fails —
+    # there is nothing to sample or point-estimate from.
+    MIN_SAMPLE_N = 5
+    zero_dims = []
+    if n_g == 0:
+        zero_dims.append("growth")
+    if multiple_kind == "ev_ebitda" and (n_m or 0) == 0:
+        zero_dims.append("margin")
+    if n_x == 0:
+        zero_dims.append("exit_multiple")
 
-    if insufficient:
+    if zero_dims:
         block = {
             "reason": "insufficient_peers",
+            "zero_peer_dims": zero_dims,
+            "n_peers_growth": n_g,
+            "n_peers_exit_multiple": n_x,
+            "samples": None,
+            "multiple_kind": multiple_kind,
+        }
+        if multiple_kind == "ev_ebitda":
+            block["n_peers_margin"] = n_m
+        return block
+
+    degraded_drivers = []
+    total_drivers = 2 if multiple_kind == "ev_sales" else 3
+    if n_g < MIN_SAMPLE_N:
+        degraded_drivers.append("growth")
+    if n_x < MIN_SAMPLE_N:
+        degraded_drivers.append("exit_multiple")
+    if multiple_kind == "ev_ebitda" and (n_m or 0) < MIN_SAMPLE_N:
+        degraded_drivers.append("margin")
+
+    # If every driver is point-estimated, the FV distribution collapses to
+    # a single value — MC adds no information over the reverse-DCF number
+    # already reported. Skip with a specific reason.
+    if len(degraded_drivers) == total_drivers:
+        block = {
+            "reason": "all_drivers_point_estimated",
+            "degraded_drivers": degraded_drivers,
             "n_peers_growth": n_g,
             "n_peers_exit_multiple": n_x,
             "samples": None,
@@ -618,12 +652,19 @@ def compute_mc_fair_value(
     seed_m = (seed + 1) if seed is not None else None
     seed_x = (seed + 2) if seed is not None else None
 
-    g_samples = sampler(growth_values, n=n_samples, seed=seed_g)
-    x_samples = sampler(exit_multiple_values, n=n_samples, seed=seed_x)
+    def _sample_or_const(clean_values, n_valid, seed_):
+        """Full sampler if n_valid >= MIN_SAMPLE_N, else a constant array
+        at the median so downstream math works but variance is 0."""
+        if n_valid >= MIN_SAMPLE_N:
+            return sampler(clean_values, n=n_samples, seed=seed_)
+        return np.full(n_samples, float(np.median(clean_values)))
+
+    g_samples = _sample_or_const(g_clean, n_g, seed_g)
+    x_samples = _sample_or_const(x_clean, n_x, seed_x)
 
     revenue_h = revenue_ttm * np.power(1.0 + g_samples, horizon)
     if multiple_kind == "ev_ebitda":
-        m_samples = sampler(margin_values, n=n_samples, seed=seed_m)
+        m_samples = _sample_or_const(m_clean, n_m, seed_m)
         ebitda_h = revenue_h * m_samples
         ev_h = ebitda_h * x_samples
     else:  # ev_sales: drop margin from formula
@@ -648,17 +689,26 @@ def compute_mc_fair_value(
     current_pct = _pct_of(current_price)
     target_pct = _pct_of(target_price)
 
+    # Point-estimated drivers have zero variance, so their Spearman rho
+    # is undefined / uninformative. Exclude them from the sensitivity
+    # block rather than surface a misleading rho ~ 0 that reads as
+    # "driver doesn't matter" (Q3 follow-up).
     if multiple_kind == "ev_ebitda":
         sens_inputs = {"growth": g_samples, "margin": m_samples,
                        "exit_multiple": x_samples}
     else:
         sens_inputs = {"growth": g_samples, "exit_multiple": x_samples}
-    sensitivity = spearman_sensitivity(sens_inputs, fv_samples)
-    sensitivity = [
-        {"driver": s["driver"], "rho": round(s["rho"], 3),
-         "abs_rho": round(s["abs_rho"], 3)}
-        for s in sensitivity
-    ]
+    sens_inputs = {k: v for k, v in sens_inputs.items()
+                   if k not in degraded_drivers}
+    if sens_inputs:
+        sensitivity = spearman_sensitivity(sens_inputs, fv_samples)
+        sensitivity = [
+            {"driver": s["driver"], "rho": round(s["rho"], 3),
+             "abs_rho": round(s["abs_rho"], 3)}
+            for s in sensitivity
+        ]
+    else:
+        sensitivity = []
 
     def _driver_block(values, n_valid):
         cleaned = np.asarray(
@@ -666,7 +716,10 @@ def compute_mc_fair_value(
              if v is not None and np.isfinite(float(v))],
             dtype=float,
         )
-        source = "peer_empirical" if distribution == "peer" else "peer_normal_fit"
+        if n_valid >= MIN_SAMPLE_N:
+            source = "peer_empirical" if distribution == "peer" else "peer_normal_fit"
+        else:
+            source = "peer_median_point_estimate"
         return {
             "source": source,
             "n_peers": n_valid,
@@ -676,11 +729,11 @@ def compute_mc_fair_value(
         }
 
     drivers_used = {
-        "growth": _driver_block(growth_values, n_g),
-        "exit_multiple": _driver_block(exit_multiple_values, n_x),
+        "growth": _driver_block(g_clean, n_g),
+        "exit_multiple": _driver_block(x_clean, n_x),
     }
     if multiple_kind == "ev_ebitda":
-        drivers_used["margin"] = _driver_block(margin_values, n_m)
+        drivers_used["margin"] = _driver_block(m_clean, n_m)
 
     caveats = [
         (f"Drivers sampled independently; true peer driver correlations "
@@ -688,12 +741,19 @@ def compute_mc_fair_value(
         (f"WACC held constant at {wacc*100:.1f}%; consider sensitivity "
          "analysis at +/- 100bps separately"),
     ]
+    if degraded_drivers:
+        caveats.append(
+            f"Point-estimated (no variance) at peer median: "
+            f"{', '.join(degraded_drivers)}. Tail width understates true "
+            f"uncertainty on these dimensions."
+        )
 
     return {
         "samples": n_samples,
         "seed": seed,
         "distribution": distribution,
         "multiple_kind": multiple_kind,
+        "degraded_drivers": degraded_drivers,
         "fv_per_share": fv_summary,
         "current_price_percentile": round(current_pct, 1) if current_pct is not None else None,
         "target_price_percentile": round(target_pct, 1) if target_pct is not None else None,
@@ -743,7 +803,8 @@ def fmt_mult(x):
     return f"{x:.1f}x"
 
 
-def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks):
+def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks,
+                    margin_dropped=False, mc_target_percentile=None):
     """Build the bold take.
 
     Direction matters: target-implied multiples ABOVE peer band = stretched
@@ -752,6 +813,11 @@ def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks):
     = thesis bets on outperformance. The verdict line classifies the
     target as `stretched`, `conservative`, or `mixed` based on the
     direction of the gaps, not just the count.
+
+    margin_dropped=True means subject EBITDA is non-positive so the
+    reverse-DCF auto-switched to EV/Sales and the margin term is unused
+    (Q4). In that mode the take omits the margin phrase and does not
+    count margin_sanity toward the stretched/conservative tally.
     """
     horizon = analyst["horizon_years"]
     growth_pp = analyst["assumed_growth"] * 100
@@ -774,34 +840,72 @@ def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks):
     # because the analyst is more bullish on fundamentals than the cohort)
     if growth_sanity.get("status") == "above":
         stretched += 1
-    if margin_sanity.get("status") == "above":
-        stretched += 1
     if growth_sanity.get("status") == "below":
         conservative += 1
-    if margin_sanity.get("status") == "below":
-        conservative += 1
+    if not margin_dropped:
+        if margin_sanity.get("status") == "above":
+            stretched += 1
+        if margin_sanity.get("status") == "below":
+            conservative += 1
 
-    line1 = (f"Target requires {ticker} growing {growth_pp:.0f}% CAGR for "
-              f"{horizon} years at {margin_pp:.0f}% EBITDA margin.")
-    if peer_growth is not None and peer_margin is not None:
+    if margin_dropped:
+        line1 = (f"Target requires {ticker} growing {growth_pp:.0f}% CAGR for "
+                  f"{horizon} years. Margin assumption unused: subject EBITDA "
+                  f"is non-positive so the reverse-DCF runs on EV/Sales.")
+    else:
+        line1 = (f"Target requires {ticker} growing {growth_pp:.0f}% CAGR for "
+                  f"{horizon} years at {margin_pp:.0f}% EBITDA margin.")
+    if peer_growth is not None and peer_margin is not None and not margin_dropped:
         line2 = (f"Peer median is {peer_growth*100:.0f}% / "
                  f"{peer_margin*100:.0f}%. The assumption is "
                  f"{fmt_pp(growth_delta)} on growth and "
                  f"{fmt_pp(margin_delta)} on margin.")
+    elif peer_growth is not None and margin_dropped:
+        line2 = (f"Peer median growth is {peer_growth*100:.0f}%. The growth "
+                 f"assumption is {fmt_pp(growth_delta)} vs the cohort.")
     else:
         line2 = "Peer median unavailable for direct delta comparison."
 
     # Verdict
+    fundamentals_phrase = "growth" if margin_dropped else "growth and margin"
+    # Q5: when MC fired the target's percentile in the peer-derived
+    # fair-value distribution is a stronger verdict signal than the
+    # multiple-vs-band heuristic. Use it as the line3 driver when
+    # available.
+    if mc_target_percentile is not None:
+        pct = mc_target_percentile
+        if pct >= 90:
+            line3 = (f"Target at the {pct:.0f}th percentile of the peer-derived "
+                     f"fair-value distribution — this requires tail-outcome "
+                     f"execution against the cohort.")
+        elif pct >= 75:
+            line3 = (f"Target at the {pct:.0f}th percentile of the peer-derived "
+                     f"fair-value distribution — priced above the IQR; needs "
+                     f"top-quartile execution vs the cohort.")
+        elif pct >= 50:
+            line3 = (f"Target at the {pct:.0f}th percentile of the peer-derived "
+                     f"fair-value distribution — upper half of plausible "
+                     f"outcomes, achievable without heroic assumptions.")
+        elif pct >= 25:
+            line3 = (f"Target at the {pct:.0f}th percentile of the peer-derived "
+                     f"fair-value distribution — lower half of the range; "
+                     f"cohort math backs this comfortably.")
+        else:
+            line3 = (f"Target at the {pct:.0f}th percentile of the peer-derived "
+                     f"fair-value distribution — below the IQR; the cohort "
+                     f"math supports meaningful upside vs the printed target.")
+        return f"{line1} {line2} {line3}"
+
     if stretched >= 3 and conservative == 0:
-        line3 = ("Defensible only if you believe the structural moat plus the "
-                 "growth/margin gap vs the cohort both persist; thesis carries "
-                 "the target, not the math.")
+        line3 = (f"Defensible only if you believe the structural moat plus "
+                 f"the {fundamentals_phrase} gap vs the cohort both persist; "
+                 f"thesis carries the target, not the math.")
     elif stretched >= 2 and conservative <= 1:
         # Mixed but tilted stretched
         dims = []
         if growth_sanity.get("status") == "above":
             dims.append("growth premium")
-        if margin_sanity.get("status") == "above":
+        if not margin_dropped and margin_sanity.get("status") == "above":
             dims.append("margin premium")
         if any(c.get("status") == "above" for c in mult_checks):
             dims.append("multiple premium")
@@ -815,9 +919,9 @@ def generate_take(ticker, analyst, growth_sanity, margin_sanity, mult_checks):
                  "valuation lens; the math is conservative against the "
                  "comp set.")
     elif conservative >= 2 and stretched <= 1:
-        line3 = ("Target's implied multiples sit at or below the cohort; "
-                 "the gap usually means the thesis is undemanding for the "
-                 "growth and margin assumed.")
+        line3 = (f"Target's implied multiples sit at or below the cohort; "
+                 f"the gap usually means the thesis is undemanding for the "
+                 f"{fundamentals_phrase} assumed.")
     elif stretched + conservative >= 3:
         # Genuinely mixed (some above, some below)
         line3 = ("Mixed read: some assumptions stretch vs the cohort, "
@@ -975,6 +1079,19 @@ def run(
         peers_list = peer_result["peers"]
         peer_selection_method = peer_result["method"]
 
+    # Apply rename map before fetch. Keep the original label so we can
+    # surface remaps in the render layer (Q2).
+    n_peers_requested = len(peers_list)
+    peers_requested = list(peers_list)
+    peers_resolved = []
+    peers_renamed = []
+    for pk in peers_list:
+        new_pk, renamed = resolve_ticker(pk)
+        peers_resolved.append(new_pk)
+        if renamed:
+            peers_renamed.append({"from": pk.upper(), "to": new_pk})
+    peers_list = peers_resolved
+
 
     # ----- Pull data -----
 
@@ -989,11 +1106,14 @@ def run(
         raise RuntimeError(f"subject {subject_ticker} data unavailable")
 
     peer_objs = []
+    peers_dropped = []
     for tk in peers_list:
         print(f"  Fetching peer {tk}...", file=sys.stderr)
         p = assemble_name(tk, sources)
         if p is not None:
             peer_objs.append(p)
+        else:
+            peers_dropped.append(tk)
         time.sleep(0.15)
 
 
@@ -1280,12 +1400,28 @@ def run(
         elif c.get("status") == "below":
             conservative += 1
 
+    # When EBITDA<0 forced the exit-multiple selection to EV/Sales, margin
+    # is dropped from the reverse-DCF math (Q4). Signal it to generate_take
+    # so the line1/line2 phrasing and stretched/conservative count match.
+    margin_dropped = (
+        selected_multiple == "ev_sales"
+        and str(multiple_source).startswith("auto")
+    )
+
+    # If MC fired, its target-price percentile is a better verdict signal
+    # than the multiple-vs-band heuristic (Q5). Pull it out if available.
+    mc_target_pct = None
+    if monte_carlo_block is not None and monte_carlo_block.get("samples"):
+        mc_target_pct = monte_carlo_block.get("target_price_percentile")
+
     take = generate_take(subject_ticker, {
         "target_price": target_price,
         "assumed_growth": args.assumed_growth,
         "assumed_margin": args.assumed_margin,
         "horizon_years": args.horizon,
-    }, growth_sanity, margin_sanity, multiple_sanity)
+    }, growth_sanity, margin_sanity, multiple_sanity,
+        margin_dropped=margin_dropped,
+        mc_target_percentile=mc_target_pct)
 
     read = generate_read(subject_ticker, stretched, conservative,
                           implied_cagr, peer_median_cagr,
@@ -1393,6 +1529,10 @@ def run(
         "peer_selection": {
             "method": peer_selection_method,
             "n_peers": len(peer_objs),
+            "n_peers_requested": n_peers_requested,
+            "peers_requested": peers_requested,
+            "peers_renamed": peers_renamed,
+            "peers_dropped": peers_dropped,
         },
         "take": take,
         "read": read,
@@ -1428,8 +1568,14 @@ def render(payload):
 
     # Header
     lines.append(f"{subj['ticker']} · Valuation sanity check as of {TODAY.isoformat()}")
-    if sel["method"] != "curated_override":
-        lines.append(f"Peer set: {sel['n_peers']} names via {sel['method']}")
+    n_loaded = sel.get("n_peers", 0)
+    n_requested = sel.get("n_peers_requested", n_loaded)
+    lines.append(f"Peer set: {n_loaded} of {n_requested} loaded via {sel['method']}")
+    for rn in sel.get("peers_renamed", []) or []:
+        lines.append(f"  renamed: {rn['from']} -> {rn['to']}")
+    dropped = sel.get("peers_dropped") or []
+    if dropped:
+        lines.append(f"  dropped ({len(dropped)}): {', '.join(dropped)}")
     lines.append("")
 
     # Target + current line
@@ -1543,11 +1689,26 @@ def render(payload):
         if mc.get("samples") is None:
             reason = mc.get("reason", "unavailable")
             if reason == "insufficient_peers":
+                zero = mc.get("zero_peer_dims") or []
+                if zero:
+                    lines.append(
+                        f"Monte Carlo skipped: no valid peer values for "
+                        f"{', '.join(zero)}."
+                    )
+                else:
+                    lines.append(
+                        f"Monte Carlo skipped: insufficient peers "
+                        f"(growth n={mc.get('n_peers_growth')}, "
+                        f"margin n={mc.get('n_peers_margin')}, "
+                        f"exit n={mc.get('n_peers_exit_multiple')}; min 5 each)."
+                    )
+            elif reason == "all_drivers_point_estimated":
+                degraded = mc.get("degraded_drivers") or []
                 lines.append(
-                    f"Monte Carlo skipped: insufficient peers "
-                    f"(growth n={mc.get('n_peers_growth')}, "
-                    f"margin n={mc.get('n_peers_margin')}, "
-                    f"exit n={mc.get('n_peers_exit_multiple')}; min 5 each)."
+                    f"Monte Carlo skipped: every driver ({', '.join(degraded)}) "
+                    f"has n<5 peer values, so the FV distribution collapses "
+                    f"to the reverse-DCF point estimate. Use --peers to "
+                    f"expand the cohort."
                 )
             else:
                 lines.append(f"Monte Carlo skipped: {reason}.")
@@ -1560,6 +1721,13 @@ def render(payload):
                 f"Fair value distribution (n={mc['samples']}, "
                 f"{label_map.get(dist_label, dist_label)}):"
             )
+            degraded = mc.get("degraded_drivers") or []
+            if degraded:
+                lines.append(
+                    f"  degraded: {', '.join(degraded)} point-estimated at "
+                    f"peer median (n<5); tail width understates true "
+                    f"uncertainty on these"
+                )
             lines.append(
                 f"  p10 {fmt_price(fv['p10'])}     p50 {fmt_price(fv['p50'])}"
             )

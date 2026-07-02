@@ -45,42 +45,7 @@ NOW_UTC = datetime.now(timezone.utc)
 TODAY = today()
 
 
-# Curated peer-override map. Mirrors the methodology in
-# skills/earnings-drilldown/references/peer-reaction.md; updates should land
-# in both maps. See skills/pitch-comps/references/peer-selection.md for the
-# rationale on why hand-curation beats SIC for the top names.
-PEER_OVERRIDES = {
-    # Software majors (the test case for this skill)
-    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
-    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
-    "ADBE": ["CRM", "ORCL", "INTU", "NOW", "WDAY", "SAP"],
-    "NOW":  ["CRM", "WDAY", "ADBE", "ORCL", "INTU", "PANW"],
-    "WDAY": ["CRM", "NOW", "ADBE", "INTU", "ORCL"],
-    "INTU": ["CRM", "ADBE", "ORCL", "NOW", "WDAY"],
-    "PANW": ["CRWD", "FTNT", "ZS", "S", "CHKP", "OKTA"],
-    "CRWD": ["PANW", "FTNT", "ZS", "S", "OKTA"],
-    # Mega-cap tech
-    "AAPL":  ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
-    "NVDA":  ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
-    "MSFT":  ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
-    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
-    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
-    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
-    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
-    # Banks
-    "JPM": ["BAC", "WFC", "C", "GS", "MS"],
-    "GS":  ["MS", "JPM", "BAC", "C"],
-    # Payments
-    "V":  ["MA", "PYPL", "AXP"],
-    "MA": ["V", "PYPL", "AXP"],
-    # Pharma
-    "LLY":  ["NVO", "PFE", "MRK", "ABBV", "BMY", "AMGN"],
-    "MRK":  ["LLY", "PFE", "ABBV", "BMY", "AMGN", "JNJ"],
-    "NVO":  ["LLY", "PFE", "MRK", "ABBV"],
-    # Energy
-    "XOM": ["CVX", "COP", "EOG", "OXY"],
-    "CVX": ["XOM", "COP", "EOG", "OXY"],
-}
+from ..peer_catalog import PEER_OVERRIDES  # Q1: shared curated catalog
 
 
 def get_ticker_details(ticker):

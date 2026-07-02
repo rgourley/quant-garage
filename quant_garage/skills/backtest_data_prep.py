@@ -37,30 +37,29 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 client = MassiveClient()
-# Routine HTTP goes through `client`. Flat-files S3 needs DISTINCT
-# credentials, generated separately in the Polygon dashboard under
-# "Flat Files" → not the same as MASSIVE_API_KEY. The legacy pattern of
-# passing the API key as both halves of S3 auth returns 403 on most
-# accounts (verified 2026-06-23 against a Stocks Business key). Read the
-# proper S3 credentials here; fall back to the legacy pattern with a
-# warning so the failure mode is loud, not silent.
-_KEY = client.api_key
-# MASSIVE_S3_* is the canonical brand-aligned env var. POLYGON_S3_* is
-# accepted as a fallback for users following legacy Polygon docs.
-_S3_ACCESS_KEY = (
-    os.environ.get("MASSIVE_S3_ACCESS_KEY")
-    or os.environ.get("POLYGON_S3_ACCESS_KEY")
-)
-_S3_SECRET_KEY = (
-    os.environ.get("MASSIVE_S3_SECRET_KEY")
-    or os.environ.get("POLYGON_S3_SECRET_KEY")
-)
-if _S3_ACCESS_KEY and _S3_SECRET_KEY:
-    _S3_AUTH = (_S3_ACCESS_KEY, _S3_SECRET_KEY)
-    _S3_AUTH_SOURCE = "massive_s3_credentials"
-else:
-    _S3_AUTH = (_KEY, _KEY)
-    _S3_AUTH_SOURCE = "massive_api_key_legacy_fallback"
+
+
+def _resolve_s3_auth():
+    """Resolve S3 credentials lazily so the WARN only fires when flat-files
+    is actually touched, not on every skill import (Q6).
+
+    Flat-files S3 needs credentials distinct from MASSIVE_API_KEY, generated
+    in the dashboard under "Flat Files". The legacy pattern of passing the
+    API key as both halves returns 403 on most accounts (verified 2026-06-23
+    against a Stocks Business key). MASSIVE_S3_* is canonical; POLYGON_S3_*
+    is accepted for users following legacy docs.
+    """
+    access_key = (
+        os.environ.get("MASSIVE_S3_ACCESS_KEY")
+        or os.environ.get("POLYGON_S3_ACCESS_KEY")
+    )
+    secret_key = (
+        os.environ.get("MASSIVE_S3_SECRET_KEY")
+        or os.environ.get("POLYGON_S3_SECRET_KEY")
+    )
+    if access_key and secret_key:
+        return (access_key, secret_key), "massive_s3_credentials"
+    key = client.api_key
     print(
         "WARN: flat-files S3 auth is falling back to MASSIVE_API_KEY as both "
         "access_key_id and secret_access_key. This pattern usually returns 403. "
@@ -69,6 +68,7 @@ else:
         "MASSIVE_S3_ACCESS_KEY and MASSIVE_S3_SECRET_KEY to silence this.",
         file=sys.stderr,
     )
+    return (key, key), "massive_api_key_legacy_fallback"
 
 
 # ----- HTTP helpers -----
@@ -104,14 +104,15 @@ def probe_flat_files():
     Flat-files lives behind an S3-compatible boto3 client, not a REST host,
     so MassiveClient does not wrap it. The probe stays on raw boto3.
     """
+    s3_auth, s3_auth_source = _resolve_s3_auth()
     try:
         import boto3
         from botocore.config import Config
         s3 = boto3.client(
             "s3",
             endpoint_url="https://files.polygon.io",
-            aws_access_key_id=_S3_AUTH[0],
-            aws_secret_access_key=_S3_AUTH[1],
+            aws_access_key_id=s3_auth[0],
+            aws_secret_access_key=s3_auth[1],
             config=Config(signature_version="s3v4"),
         )
         # Pick a known-good recent weekday
@@ -124,7 +125,7 @@ def probe_flat_files():
     except Exception as e:
         msg = str(e)
         if "403" in msg or "Forbidden" in msg or "InvalidAccessKey" in msg:
-            if _S3_AUTH_SOURCE == "massive_api_key_legacy_fallback":
+            if s3_auth_source == "massive_api_key_legacy_fallback":
                 print(
                     "INFO: flat-files returned 403 with the legacy "
                     "MASSIVE_API_KEY-as-S3-auth pattern (expected). Generate "

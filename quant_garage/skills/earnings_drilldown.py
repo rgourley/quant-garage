@@ -36,19 +36,7 @@ from ..timezones import utc_to_et
 SEC_HEADERS = {"User-Agent": "Rob Gourley rgourley@gmail.com"}
 TODAY = today()
 
-# Curated peer override map. Same shape as pitch_comps + valuation_sanity_check.
-PEER_OVERRIDES = {
-    "AAPL": ["NVDA", "MSFT", "GOOGL", "AMZN", "META", "TSM", "AVGO"],
-    "NVDA": ["AMD", "AVGO", "TSM", "MU", "ARM", "QCOM", "INTC"],
-    "MSFT": ["GOOGL", "AMZN", "META", "ORCL", "CRM", "AAPL"],
-    "GOOGL": ["META", "MSFT", "AMZN", "AAPL", "NFLX", "SNAP"],
-    "META":  ["GOOGL", "SNAP", "PINS", "NFLX", "AMZN"],
-    "AMZN":  ["GOOGL", "META", "MSFT", "AAPL", "SHOP", "WMT"],
-    "TSLA":  ["NIO", "RIVN", "LCID", "F", "GM"],
-    "CRM":  ["ORCL", "SAP", "NOW", "WDAY", "ADBE", "INTU", "PANW", "CRWD"],
-    "ORCL": ["CRM", "SAP", "MSFT", "ADBE", "NOW", "WDAY", "INTU"],
-    "ALLO": ["BEAM", "NTLA", "CRSP", "EDIT", "LYEL", "CABA", "RCKT"],
-}
+from ..peer_catalog import PEER_OVERRIDES  # Q1: shared curated catalog
 
 client = MassiveClient()
 
