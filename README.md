@@ -16,12 +16,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Twenty tools. One framework. Built in the garage, not the trading
+Twenty-six tools. One framework. Built in the garage, not the trading
 floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
 tier runs six of the tools end-to-end; $29/month Stocks Starter opens
-nineteen of the twenty.
+twenty-four of the twenty-six.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
 [issue](https://github.com/rgourley/quant-garage/issues) or send a
@@ -29,8 +29,8 @@ nineteen of the twenty.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having twenty that share
-data, methodology, and audit trail is that they chain.
+Each tool is useful on its own. The point of having twenty-six that
+share data, methodology, and audit trail is that they chain.
 
 Tuesday morning, you're long NVDA into Thursday's print.
 `earnings-drilldown` shows the implied move is rich vs the 8-quarter
@@ -105,9 +105,9 @@ workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
 alpha, you build on top of this.
 
-![20 skills, one framework](./assets/skills.png)
+![26 skills, one framework](./assets/skills.png)
 
-## The 20 tools, with real use cases
+## The 26 tools, with real use cases
 
 ### Earnings work
 
@@ -221,6 +221,42 @@ ships with explicit reasons so you see the evidence, not just the
 label. Run it at the open; it's the right anchor for everything
 else.
 
+**[`sector-rotation-signal`](skills/sector-rotation-signal)**
+`market-regime` reports current sector leadership as a snapshot.
+This one tells you how the leadership order has changed. Tracks 20-
+day RS rank for the 11 SPDR sector ETFs across a rotation window
+(default 30 days) and flags sectors that moved two or more positions
+up or down. Categorizes moves into growth / value-cyclical /
+defensive / rate-sensitive buckets and generates a plain-English
+theme read. Last week's run flagged risk-off: XLU up seven ranks and
+XLK down nine, defensives taking share from growth. Rank change is
+the leading signal; absolute standings are already priced.
+
+**[`macro-event-calendar`](skills/macro-event-calendar)**
+Sibling to `earnings-blackout`. Forward calendar of the macro
+releases that reprice the whole book: FOMC decisions, CPI, PPI, NFP,
+ISM manufacturing and services, GDP, PCE, JOLTS, jobless claims,
+retail sales. Every event ships with its expected release date, ET
+release time, historical mean absolute one-day SPY move on that
+release type, and impact tier. Crowded days (two-plus events on the
+same date) get their own callout. FOMC dates are hardcoded from the
+official schedule; recurring events are pattern-derived and flagged
+as such so you can verify against the official calendar before
+sizing around a print.
+
+**[`historical-analog-finder`](skills/historical-analog-finder)**
+`market-regime` tells you today's state. This one takes that state
+and finds K historical periods with the most similar setup, then
+reports the forward SPY return distribution across those analogs.
+Features are SPY-only (5/20/60/120-day return, above 50 and 200-day,
+RSI 14, realized vol, drawdown from 252-day high) with z-scored
+Euclidean distance. Deduplicates overlapping matches so one
+historical window can't dominate the K. The mean is not a forecast;
+the interquartile range is the honest read. Last run: 20 nearest
+analogs to the current tape gave a 75% hit-rate above zero at 60 and
+252 days, median +14.3% at 252d, with mid-2024 and late-2021 pulling
+opposite directions in the K set.
+
 ### Trading and execution
 
 **[`options-flow`](skills/options-flow)**
@@ -247,6 +283,19 @@ Measures fill vs NBBO at fill time, not arrival-price Implementation
 Shortfall. The exception report is short by design: only the broken
 stuff surfaces.
 
+**[`options-structure-analyzer`](skills/options-structure-analyzer)**
+You have a view but no structure yet. Tell the tool your thesis
+(direction bullish, direction bearish, vol long, vol short, or
+hedge), your horizon, and your target move. It enumerates the
+candidate options structures (long call or put, bull or bear spread,
+straddle, strangle, iron condor, protective put, collar), pulls the
+nearest expiry with priceable legs on both sides, computes each
+structure's payoff at your target, and ranks by payoff-to-capital.
+Not a recommendation. A structured comparison so you can pick the
+structure whose tradeoffs match your view, not just the one your
+platform happened to surface. On hedges, it reports the P&L improvement
+vs unhedged rather than a meaningless "percent of net premium" ratio.
+
 ### Risk and operations
 
 **[`portfolio-mark`](skills/portfolio-mark)**
@@ -265,6 +314,33 @@ days with per-name loss attribution, every position's share of the
 variance budget, and a Herfindahl-based concentration read. Pairs
 with `portfolio-mark`: marks tell you what the book is worth right
 now; this skill tells you what could happen to that value.
+
+**[`portfolio-rebalancer`](skills/portfolio-rebalancer)**
+`risk-report` tells you which name is driving the risk. This skill
+tells you what to do about it. Feed it the same weights + book
+value; set a variance-share cap, weight cap, and churn cap; it
+returns a specific rebalance ticket list: which names to trim, which
+to add, exact dollar amounts, before-and-after weight, before-and-
+after variance share. Iterative solver with a proportional
+redistribution rule so one name's trim doesn't over-concentrate the
+next name. Refuses to churn more than the preset per rebalance so a
+single call cannot blow up a portfolio. Not tax-aware, not
+liquidity-aware, honest about both in the caveats. Turns "ALLO
+carries 66 percent of variance" into "sell $66k of ALLO, redistribute,
+portfolio vol drops from 21 to 15 percent."
+
+**[`corporate-actions-scanner`](skills/corporate-actions-scanner)**
+Different job from `corp-actions-reconciler`. The reconciler checks
+whether your position file has the correct post-split share count.
+This one scans forward-looking: for a ticker or watchlist, it pulls
+SEC 8-K filings over a lookback window (default 180 days), filters
+to material items (offerings, private placements, splits, spin-offs,
+buybacks, M&A, restatements), cross-references Massive news for the
+headline, and computes the T+1 and T+5 price reactions. Built after
+a portfolio review missed an ALLO public offering (87.5 million
+shares at $2, 34 percent dilution) because news-scanner defaulted to
+a 24-hour window. The offering was 78 days old and dominating the
+current price, and no dedicated tool surfaced it.
 
 **[`corp-actions-reconciler`](skills/corp-actions-reconciler)**
 An ops desk inherits a position file from 2024. Did the share counts
@@ -316,13 +392,14 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Nineteen of the twenty tools run
-on this tier (only crypto-vol-scanner needs a separate plan).
+that powers the universe screeners. Twenty-four of the twenty-six
+tools run on this tier (only crypto-vol-scanner and full-fidelity
+options-structure-analyzer need separate plans).
 
 Specific tools need specific add-ons:
 
-- **Options data** for `options-flow` and full-mode `earnings-drilldown`:
-  Options Developer at $79/month
+- **Options data** for `options-flow`, `options-structure-analyzer`,
+  and full-mode `earnings-drilldown`: Options Developer at $79/month
 - **Benzinga Earnings** (consensus EPS + surprise %) for full-fidelity
   `earnings-drilldown` and `event-study`: ~$99/month add-on. Without it,
   these tools fall back to SEC EDGAR for press release dates, which we
@@ -347,7 +424,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-six tools end to end; Stocks Starter ($29/month) opens nineteen.
+six tools end to end; Stocks Starter ($29/month) opens twenty-four.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here
