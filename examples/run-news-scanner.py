@@ -31,9 +31,13 @@ def main() -> int:
     ap.add_argument("--watchlist", default="NVDA,TSLA,AAPL,SPY,META,NFLX",
                     help="Comma-separated tickers. Default: NVDA,TSLA,AAPL,SPY,META,NFLX")
     ap.add_argument("--hours", type=int, default=24,
-                    help="Lookback window in hours. Default 24.")
+                    help="Lookback window in hours. Default 24. Ignored when --last-n set.")
     ap.add_argument("--top", type=int, default=15,
-                    help="Max events to emit. Default 15.")
+                    help="Max events to emit overall. Default 15.")
+    ap.add_argument("--last-n", type=int, default=None,
+                    help="Take the N most recent articles per ticker regardless of "
+                         "time window. Use for retrospective analysis (portfolio "
+                         "reviews) where the material catalyst may be months old.")
     ap.add_argument("--sentiment-mode", choices=["auto", "keyword"], default="auto",
                     help="auto = prefer Benzinga insights; keyword = force keyword scorer.")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None,
@@ -53,6 +57,7 @@ def main() -> int:
             hours=args.hours,
             top_n=args.top,
             sentiment_mode=args.sentiment_mode,
+            last_n=args.last_n,
         )
     except ValueError as e:
         print(f"ERROR: {e}", file=sys.stderr)

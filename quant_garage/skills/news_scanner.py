@@ -411,15 +411,20 @@ def run(
     top_n: int = 15,
     sentiment_mode: str = "auto",
     client: MassiveClient | None = None,
+    last_n: int | None = None,
 ) -> dict:
     """Scan a watchlist for notable news events. Return canonical payload dict.
 
     Args:
         watchlist: comma-separated string or iterable of tickers.
-        hours: lookback window. Default 24.
-        top_n: max events to surface. Default 15.
+        hours: lookback window. Default 24. Ignored when last_n is set.
+        top_n: max events to surface (overall, after ranking). Default 15.
         sentiment_mode: 'auto' (Benzinga → keyword) or 'keyword' (force fallback).
         client: reuse an existing MassiveClient.
+        last_n: if set, ignore the time window and take the N most recent
+            articles per ticker. Use for retrospective analysis where the
+            material catalyst might be months old (offerings, arbitration
+            outcomes, FDA decisions). Recommended for portfolio reviews.
     """
     if isinstance(watchlist, str):
         tickers = [t.strip().upper() for t in watchlist.split(",") if t.strip()]
@@ -429,13 +434,23 @@ def run(
         raise ValueError("watchlist must contain at least one ticker")
     if sentiment_mode not in ("auto", "keyword"):
         raise ValueError("sentiment_mode must be 'auto' or 'keyword'")
+    if last_n is not None and last_n < 1:
+        raise ValueError("last_n must be >= 1")
 
     client = client or MassiveClient()
     sources = _Sources()
     now_utc = datetime.now(timezone.utc)
-    window_start_utc = now_utc - timedelta(hours=hours)
-    effective_news_window_hours = max(hours, 7 * 24)
-    news_fetch_start_utc = now_utc - timedelta(hours=effective_news_window_hours)
+    # When last_n is set, effectively disable the time window: fetch back
+    # 5 years and don't filter individual articles by publish date. Per-
+    # ticker trimming happens after candidate collection.
+    if last_n is not None:
+        window_start_utc = now_utc - timedelta(days=365 * 5)
+        news_fetch_start_utc = window_start_utc
+        effective_news_window_hours = int(5 * 365 * 24)
+    else:
+        window_start_utc = now_utc - timedelta(hours=hours)
+        effective_news_window_hours = max(hours, 7 * 24)
+        news_fetch_start_utc = now_utc - timedelta(hours=effective_news_window_hours)
     effective_window_days = effective_news_window_hours / 24
     max_pages_per_ticker = max(4, int(effective_window_days * 25 / 50) + 1)
     max_articles_per_ticker = max_pages_per_ticker * 50
@@ -469,6 +484,7 @@ def run(
     skipped: list[dict] = []
     for t, articles in ticker_news_raw.items():
         in_window = 0
+        per_ticker_kept = 0
         for idx, a in enumerate(articles):
             pub = _parse_iso(a.get("published_utc"))
             if not pub or pub < window_start_utc:
@@ -478,8 +494,14 @@ def run(
             if t not in article_tickers:
                 continue
             candidates.append((t, a, idx))
+            per_ticker_kept += 1
+            if last_n is not None and per_ticker_kept >= last_n:
+                break
         if in_window == 0:
-            skipped.append({"ticker": t, "reason": f"no articles in last {hours}h"})
+            reason = ("no articles found for this ticker"
+                      if last_n is not None
+                      else f"no articles in last {hours}h")
+            skipped.append({"ticker": t, "reason": reason})
 
     skipped_no_bar_count = 0
     insufficient_baseline_count = 0
