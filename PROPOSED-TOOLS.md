@@ -438,3 +438,273 @@ reachable:
 Every one of these is a clean addition. The framework's dual-layer
 contract and the audit gate mean adding them doesn't touch the existing
 20.
+
+---
+
+## Part 3: Portfolio decision-support and macro context
+
+Added 2026-07-02 after a live portfolio review missed an 87.5M-share ALLO
+public offering that was the single largest driver of the position's
+recent price action. The gaps that surfaced: no dedicated corporate-
+actions surface, no rebalance-recommendation layer on top of the risk
+report, no macro-event calendar to sit alongside the earnings one, and
+no fixed-income context to anchor equity valuations.
+
+Every entry here follows the Part 1/Part 2 shape.
+
+### `corporate-actions-scanner`
+
+**Gap:** `news-scanner` catches everything, `earnings-blackout` catches
+forward earnings, but nothing specifically surfaces material corporate
+actions (offerings, at-the-market programs, splits, spin-offs,
+buybacks, M&A, going-private). These are the news items that
+mechanically re-rate a stock and none of the current tools flag them
+with the specificity they deserve.
+
+**Does:** for a ticker or watchlist, hits SEC EDGAR for 8-K filings
+tagged Items 1.01, 3.02, 8.01 and cross-references Massive news for
+offering-specific keywords ("prices offering", "at-the-market", "S-3",
+"repurchase authorization", "special dividend", "acquires"). Returns
+an ordered stream of material corporate actions with the mechanic
+explained ("87.5M share offering at $2, 34% dilution, $175M raise").
+
+**Inputs:** `--ticker` or `--watchlist`, `--lookback-days` (default 180,
+this is deliberately wider than news-scanner's 24h default because
+material corporate actions can be months old and still be the dominant
+explainer), `--material-only` (filter out routine 8-Ks).
+
+**Returns:** per-event: date, action type (offering / split / spin /
+buyback / M&A / arb outcome), the mechanical impact (dilution
+percentage, cash raised, ratio, deal value), the price reaction at
+T+1/T+5, and a one-line English read.
+
+**Methodology (references/):** the 8-K item taxonomy and which items
+actually matter for retail-relevant corporate actions, the keyword
+list for the news cross-reference (offering, ATM, S-3, buyback,
+authorization, definitive agreement, arbitration), the base rate that
+routine 8-Ks (Item 5.02 officer changes, Item 5.07 vote results)
+outnumber material ones ~10:1 so the material-only filter is not
+optional, and the honest caveat that some material actions (especially
+private placements) reach 8-K after the fact.
+
+**Output mode:** stream (per-event blocks). **Plan:** Stocks Starter
+(EDGAR is free, Massive news is included).
+
+### `portfolio-rebalancer`
+
+**Gap:** `risk-report` tells you ALLO carries 66% of portfolio
+variance at 18% weight. `performance-attribution` tells you where
+returns came from. Neither tool answers "so what should I change?"
+The decision-support layer is missing.
+
+**Does:** takes current positions with weights and outputs a specific
+rebalance recommendation to hit a variance-share cap ("trim ALLO from
+18.3% weight to 10% to move variance share from 66% to 30%"). Not
+tax-aware in v1, not liquidity-aware in v1, but honest about both.
+
+**Inputs:** a positions/weights file (same shape as risk-report),
+`--max-variance-share` (default 25%), `--max-weight-per-name`
+(default 15%), `--min-trade-size-dollar` (avoid dust trades),
+optional `--target-vol` for whole-portfolio scaling.
+
+**Returns:** current variance shares per name, proposed weight changes
+(delta and post-trade weight), post-trade projected variance share
+per name, dollar amounts to buy/sell per name, and a "before/after"
+summary of portfolio vol, beta, and top-3 variance share. Refuses to
+recommend more than a preset max churn per rebalance (default 10% of
+book) so the tool doesn't blow up a portfolio in one call.
+
+**Methodology (references/):** variance-share attribution (already in
+risk-report), constrained quadratic optimization to hit the caps,
+why the tool is not a full Markowitz mean-variance optimizer (needs
+covariance shrinkage assumptions and forward-return estimates it
+does not have), and the caveat that this is descriptive rebalancing
+against a risk cap, not a return-maximizing optimizer.
+
+**Output mode:** table + take. **Plan:** Stocks Starter.
+
+### `macro-event-calendar`
+
+**Gap:** `earnings-blackout` is single-name and forward-looking.
+Nothing covers the macro calendar (Fed meetings, FOMC minutes, CPI,
+PPI, NFP, ISM manufacturing/services, GDP, PCE, JOLTS, jobless
+claims, retail sales). These events reprice the whole book and
+belong in every portfolio review.
+
+**Does:** for a date range, returns the scheduled macro events with
+the release time, prior print, consensus (where available), and the
+historical average absolute SPY reaction to the release. Flags
+"crowded" windows where multiple events cluster.
+
+**Inputs:** `--window-days` (default 30), optional `--events`
+(filter to a subset, e.g. "FOMC,CPI,NFP"), `--benchmark`
+(reaction target, default SPY).
+
+**Returns:** per-event: date, release time (ET), event name, prior,
+consensus, historical average |SPY 1-day move| on that release,
+percentile of that move vs SPY's own history. Sorted by date.
+
+**Methodology (references/):** the release schedule sources (BLS, BEA,
+Fed, ISM, Conference Board, Census, Department of Labor), why
+consensus is stale by the time a release lands (revisions and
+whisper), the historical reaction estimator (rolling 24 releases),
+and the caveat that macro reactions are regime-dependent (CPI hits
+harder in inflation regimes than in disinflation).
+
+**Output mode:** table. **Plan:** none for the calendar itself
+(release schedules are public); Stocks Starter for the SPY reaction
+estimator.
+
+### `fixed-income-context`
+
+**Gap:** every equity valuation in the set uses implicit assumptions
+about WACC and equity risk premium, but nothing in the toolchain
+actually looks at the rates side of the world. Rates and credit
+spreads drive equity multiples more than most equity-only screens
+admit.
+
+**Does:** pulls the Treasury yield curve (2s5s10s30s), IG and HY
+credit spreads, TIPS breakevens, and the SOFR term structure.
+Reports the current shape, its percentile vs trailing history, and
+the direction of change over the last 30 days. Flags the classic
+regime signals (curve inversion, HY spread widening, real yield
+inflection).
+
+**Inputs:** `--lookback-days` (default 252 for percentile ranking).
+
+**Returns:** current yield curve levels and slopes (2s10s, 5s30s, and
+the inversion flag), IG and HY OAS spreads with percentile, 5y/10y
+TIPS breakevens, one-line reads on each ("2s10s at -35bp, deepest
+inversion since 2000", "HY spread at 62nd percentile, no stress
+signal"), and a "regime read" that flags divergences (equity
+uptrending while credit spreads widen is the classic warning).
+
+**Methodology (references/):** which curve slopes matter and why
+(2s10s vs 3m10y for recession signal, real yield for growth
+expectations), OAS vs spread-to-worst for HY, TIPS breakevens as
+implied inflation vs actual inflation, and the caveat that the yield
+curve's recession-predictive power weakened post-2020 QE-era.
+
+**Output mode:** note. **Plan:** requires a fixed-income data source
+(FRED for Treasuries + spreads is free; Massive doesn't cover rates
+natively).
+
+### `historical-analog-finder`
+
+**Gap:** `market-regime` tells you the current state (uptrend, breadth
+73%, VIX unavailable, sector leadership XLV/XLF/XLI). Nothing takes
+that state and says "these are the prior periods with a similar
+setup and here's what SPY did next."
+
+**Does:** given the current market regime vector (SPY trend, 20-day
+breadth, VIX percentile, yield-curve shape, sector leadership),
+finds the K nearest prior periods using cosine similarity or a
+regime-classifier, and reports the forward 30/60/90/252-day SPY
+distribution across those analogs. Regime-conditional forecasting.
+
+**Inputs:** `--k` (nearest-analog count, default 20), `--horizon-days`
+(default 90), `--features` (which regime dimensions to weight),
+optional `--asof` for backtesting.
+
+**Returns:** the K matched historical dates, the forward-return
+distribution (mean, median, IQR, worst/best), the hit rate above
+zero, and a specific "similar to 2019 late-Q1, 2016 early-Q3, ..."
+analog list. A caveat block on how many analogs are non-overlapping
+(if K=20 but 15 of them are the same 2016 window, the effective
+sample is much smaller).
+
+**Methodology (references/):** feature normalization (z-scores across
+each regime dimension), the similarity function (Euclidean on
+z-scored features vs cosine, with the choice explained), overlap
+detection to prevent one historical window from dominating the
+distribution, and the honest caveat that regime-conditional
+forecasting works until the world changes structurally.
+
+**Output mode:** table + note. **Plan:** Stocks Starter.
+
+### `options-structure-analyzer`
+
+**Gap:** `income-strategist` covers covered-calls and cash-secured-
+puts (income), `options-flow` covers positioning, `vol-surface` (Part
+1 proposal) covers pricing. Nothing helps you pick the right
+structure for a directional or volatility view.
+
+**Does:** given a thesis (`--view` = "direction", "vol", "hedge") and
+a horizon, ranks the appropriate options structures (long call, put,
+vertical, straddle, strangle, calendar, collar) by expected P&L,
+capital required, breakevens, and the Greek exposure. Not a
+recommendation, a structured comparison.
+
+**Inputs:** `--ticker`, `--view` (direction bullish/bearish, vol
+long/short, hedge), `--horizon-days`, `--target-move-pct` (your
+thesis on how much and how fast).
+
+**Returns:** per-structure: max profit, max loss, breakeven levels,
+capital required, delta/vega/theta at inception, and a one-line
+plain-English read ("straddle costs $8.40 for a break of $8.40 in
+either direction; you need at least a 4% move by expiry to break
+even"). Sorted by risk/reward given the specified view.
+
+**Methodology (references/):** Black-Scholes for pricing sanity
+(rather than trusting exchange quotes for illiquid strikes), why
+verticals cap risk but also cap reward, calendar structures as a
+theta bet, and the caveat that options carry gap risk, dividend risk
+on calls, and assignment risk on shorts.
+
+**Output mode:** table. **Plan:** Options Developer add-on.
+
+### `sector-rotation-signal`
+
+**Gap:** `market-regime` reports current sector leadership
+(XLV/XLF/XLI up, XLE/XLK down) but treats it as a snapshot. Nothing
+flags the *change* — when leadership is rotating, that's the
+tradeable signal, not the current standings.
+
+**Does:** tracks 20-day and 60-day RS for the 11 SPDR sector ETFs
+against SPY, computes the trailing 30-day change in rank, and flags
+sectors that are rotating up or down through the leadership order.
+Complements `market-regime` (state) with a change-detection layer.
+
+**Inputs:** `--lookback-days` (default 252), `--rotation-window`
+(days over which to compute rank change, default 30).
+
+**Returns:** current rank of each sector by 20-day RS, the delta in
+rank over the rotation window, a "rotating in" and "rotating out"
+list, and a one-line macro read ("defensive rotation: XLU/XLP moving
+up, XLK/XLY moving down; consistent with late-cycle").
+
+**Methodology (references/):** sector-ETF proxy (11 SPDRs) vs the
+full sector universe, why rank change matters more than absolute RS
+(the market prices absolute strength; rank change is the leading
+signal), the caveat that sector rotation is noisy at short windows
+and clear at longer ones, and why this tool does not fire
+recommendations (leave the "so what" to a portfolio-level tool).
+
+**Output mode:** table + take. **Plan:** Stocks Starter.
+
+---
+
+## Revised build order (all three parts)
+
+The Part 1 ordering still stands for its own scope. Adding Part 3 the
+priority becomes:
+
+1. **`corporate-actions-scanner`**. Fills the specific gap that missed
+   the ALLO offering on 2026-07-02. Zero data-entitlement lift (EDGAR +
+   existing Massive news). Highest signal-to-noise in the whole
+   proposal set for retail-and-analyst use cases alike.
+2. **`macro-event-calendar`**. Free schedule data, complements the
+   existing earnings surface, and belongs in every portfolio review.
+3. **`portfolio-rebalancer`**. Requires `risk-report` output (already
+   available) and a solver library (SciPy already a dependency).
+   Decision layer that promotes the framework from measurement to
+   action.
+4. **`fixed-income-context`**. Free via FRED. Small skill, disproportionate
+   context add for every equity valuation and regime read.
+5. Part 1 items in original order: `short-interest-monitor`,
+   `insider-flow`, `liquidity-stress`.
+6. `sector-rotation-signal` and `historical-analog-finder` once the
+   Part 3 core is in — they lean on `market-regime` output shape.
+7. Part 2 retail items.
+8. `options-structure-analyzer` and Part 1 `vol-surface` and
+   `short-vol-postprint-pnl` after options entitlements.
