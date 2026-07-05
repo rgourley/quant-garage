@@ -48,24 +48,15 @@ VALID_VIEWS = (
 # ---------- Data ----------
 
 def _get_spot(client: MassiveClient, ticker: str) -> float | None:
-    """Resolve spot price from the snapshot endpoint. Walks the fallback
-    chain manually because resolve_price accepts zero as valid."""
+    """Resolve spot price via the shared snapshot fallback chain."""
     try:
         doc, _ = client.get(
             f"/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}"
         )
     except FetchError:
         return None
-    tkr = doc.get("ticker") or {}
-    for section, key in [
-        ("lastTrade", "p"), ("min", "c"),
-        ("day", "c"), ("prevDay", "c"),
-    ]:
-        section_data = tkr.get(section) or {}
-        val = section_data.get(key)
-        if val is not None and float(val) > 0:
-            return float(val)
-    return None
+    resolved = resolve_price(doc)
+    return resolved.price if resolved else None
 
 
 def _get_chain(

@@ -22,6 +22,13 @@ Resolution order:
     2. min.c        current minute bar close (intraday only)
     3. day.c        today's session close
     4. prevDay.c    previous session close (off-hours / quiet names)
+
+Zero is treated as an unpopulated field, not a valid price. The v2
+snapshot endpoint returns 0 for intraday sections (lastTrade.p, min.c,
+day.c) outside market hours or when the tape hasn't yet ticked;
+accepting 0 as a valid resolution silently gave every downstream skill
+a bogus $0.00 price. The chain now walks past zeros to the next
+populated field (typically prevDay.c during holidays / pre-market).
 """
 from __future__ import annotations
 
@@ -70,27 +77,29 @@ def resolve_price(snapshot_response: dict[str, Any]) -> PriceResolution:
     Returns a `PriceResolution` capturing which step won. Callers should
     inspect `.source` to surface confidence (lastTrade in market hours =
     high; prevDay = low).
+
+    Zero is rejected as unpopulated. See the module docstring for why.
     """
     ticker = snapshot_response.get("ticker") or {}
 
     last_trade = ticker.get("lastTrade") or {}
     price = last_trade.get("p")
-    if price is not None:
+    if price is not None and float(price) > 0:
         return PriceResolution(price=float(price), source="lastTrade", timestamp_ns=last_trade.get("t"))
 
     minute = ticker.get("min") or {}
     price = minute.get("c")
-    if price is not None:
+    if price is not None and float(price) > 0:
         return PriceResolution(price=float(price), source="min.c", timestamp_ns=minute.get("t"))
 
     day = ticker.get("day") or {}
     price = day.get("c")
-    if price is not None:
+    if price is not None and float(price) > 0:
         return PriceResolution(price=float(price), source="day.c", timestamp_ns=day.get("t"))
 
     prev_day = ticker.get("prevDay") or {}
     price = prev_day.get("c")
-    if price is not None:
+    if price is not None and float(price) > 0:
         return PriceResolution(price=float(price), source="prevDay.c", timestamp_ns=prev_day.get("t"))
 
     return PriceResolution(price=None, source="no_price", timestamp_ns=None)
