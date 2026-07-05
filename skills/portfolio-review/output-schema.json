@@ -1,0 +1,103 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "portfolio-review output",
+  "description": "Composite payload. `sections` holds each sub-skill's full payload; `headline` distills one fact per section for the read-first block.",
+  "type": "object",
+  "required": ["scan_params", "headline", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["tickers", "book_value", "n_positions", "as_of"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "book_value": { "type": "number" },
+        "n_positions": { "type": "integer" },
+        "n_equities": { "type": "integer" },
+        "n_etfs": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "description": "One-fact-per-section summary block.",
+      "properties": {
+        "regime": { "type": ["string", "null"] },
+        "rotation_theme": { "type": ["string", "null"] },
+        "portfolio_vol": {
+          "type": ["number", "null"],
+          "description": "Annualized vol, in percentage points (e.g. 21.3 = 21.3%)."
+        },
+        "max_variance_share_name": { "type": ["string", "null"] },
+        "max_variance_share_pct": {
+          "type": ["number", "null"],
+          "description": "Top variance contributor's share, in percentage points."
+        },
+        "top_earnings": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ticker": { "type": "string" },
+              "date": { "type": "string", "format": "date" },
+              "days_out": { "type": "integer" },
+              "session": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "next_macro_event": {
+          "type": ["object", "null"],
+          "properties": {
+            "name": { "type": "string" },
+            "date": { "type": "string", "format": "date" },
+            "days_out": { "type": "integer" },
+            "impact": { "type": "string" }
+          }
+        },
+        "top_corp_action": {
+          "type": ["object", "null"],
+          "properties": {
+            "ticker": { "type": "string" },
+            "date": { "type": "string", "format": "date" },
+            "flavor": { "type": ["string", "null"] },
+            "headline": { "type": ["string", "null"] },
+            "abnormal_t5_pct": { "type": ["number", "null"] }
+          }
+        },
+        "rebalance_summary": {
+          "type": ["object", "null"],
+          "properties": {
+            "vol_before": { "type": ["number", "null"] },
+            "vol_after": { "type": ["number", "null"] },
+            "n_trades": { "type": ["integer", "null"] },
+            "biggest_trim": { "type": ["object", "null"] }
+          }
+        }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "description": "Per-sub-skill full payloads, keyed by section name (market_regime, sector_rotation, risk_report, earnings_blackout, macro_calendar, corporate_actions, rebalancer). Each value is the full JSON payload of the corresponding sub-skill.",
+      "properties": {
+        "market_regime": { "type": ["object", "null"] },
+        "sector_rotation": { "type": ["object", "null"] },
+        "risk_report": { "type": ["object", "null"] },
+        "earnings_blackout": { "type": ["object", "null"] },
+        "macro_calendar": { "type": ["object", "null"] },
+        "corporate_actions": { "type": ["object", "null"] },
+        "rebalancer": { "type": ["object", "null"] }
+      }
+    },
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["section", "error"],
+        "properties": {
+          "section": { "type": "string" },
+          "error": { "type": "string" }
+        }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}
