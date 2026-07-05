@@ -137,7 +137,7 @@ def run(
     _try("risk_report", lambda: risk_report.run(
         positions=pos_str,
         lookback_days=lookback_days,
-        client=client,
+        client_=client,
     ))
 
     # 4) Earnings blackout (equities only — ETFs don't have earnings)
