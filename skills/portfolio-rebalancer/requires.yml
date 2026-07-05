@@ -1,0 +1,30 @@
+name: portfolio-rebalancer
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+notes: |
+  Same data pull pattern as risk-report: daily aggs per position and
+  benchmark over the lookback window. Reuses risk-report's covariance
+  machinery (shrunk correlation, name vols, position_variance_
+  contributions) end-to-end.
+
+  Solver is a small iterative loop, not a QP; targets variance-share
+  caps by sqrt-scaling over-cap weights, redistributing proportionally
+  to under-cap names, clipping to max_weight, and renormalizing to
+  preserve gross exposure. Churn cap applied at the end as a
+  proportional scale on the delta vector when the target churn
+  exceeds the limit.
+
+  Deliberately narrow: this is a risk-cap solver, not a mean-variance
+  optimizer. Forward return estimates are not used.
+fallbacks:
+  - risk-report

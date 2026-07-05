@@ -1,0 +1,73 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "historical-analog-finder output",
+  "type": "object",
+  "required": ["scan_params", "current_regime", "analogs", "forward_return_distributions", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["k", "horizons_days", "benchmark", "history_years", "as_of", "reference_valid_date", "feature_names"],
+      "properties": {
+        "k": { "type": "integer" },
+        "horizons_days": { "type": "array", "items": { "type": "integer" } },
+        "benchmark": { "type": "string" },
+        "history_years": { "type": "integer" },
+        "min_gap_days": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" },
+        "reference_valid_date": { "type": "string", "format": "date" },
+        "feature_names": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "current_regime": {
+      "type": "object",
+      "properties": {
+        "raw": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        },
+        "z_scores": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        }
+      }
+    },
+    "analogs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "distance_z", "forward_returns"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "distance_z": { "type": "number" },
+          "forward_returns": {
+            "type": "object",
+            "additionalProperties": {
+              "type": ["number", "null"]
+            }
+          }
+        }
+      }
+    },
+    "n_analogs": { "type": "integer" },
+    "forward_return_distributions": {
+      "type": "object",
+      "description": "Keyed by horizon string (e.g. '30d', '90d'). Value contains p10/p25/median/p75/p90/mean/hit_rate_above_zero/n.",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "n": { "type": "integer" },
+          "mean": { "type": ["number", "null"] },
+          "median": { "type": ["number", "null"] },
+          "p10": { "type": ["number", "null"] },
+          "p25": { "type": ["number", "null"] },
+          "p75": { "type": ["number", "null"] },
+          "p90": { "type": ["number", "null"] },
+          "hit_rate_above_zero": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "effective_sample_size_note": { "type": "string" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

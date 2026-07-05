@@ -1,0 +1,87 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "sector-rotation-signal output",
+  "type": "object",
+  "required": ["scan_params", "rotations", "theme_read", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["rotation_window_days", "rs_window_days", "as_of", "now_ref_date", "then_ref_date"],
+      "properties": {
+        "rotation_window_days": { "type": "integer" },
+        "rs_window_days": { "type": "integer" },
+        "rs_secondary_window_days": { "type": "integer" },
+        "lookback_days": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" },
+        "now_ref_date": { "type": "string", "format": "date" },
+        "then_ref_date": { "type": "string", "format": "date" },
+        "missing_sector_etfs": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "rotations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["sector", "sector_name", "rank_now", "rank_then", "rank_delta", "rotation"],
+        "properties": {
+          "sector": { "type": "string" },
+          "sector_name": { "type": "string" },
+          "rank_now": { "type": "integer" },
+          "rank_then": { "type": "integer" },
+          "rank_delta": {
+            "type": "integer",
+            "description": "Positive means the sector moved UP the leadership order (rank number went DOWN)."
+          },
+          "rs_now_bps": { "type": "number" },
+          "rs_then_bps": { "type": "number" },
+          "rs_bps_delta": { "type": "number" },
+          "rs_60d_bps": { "type": ["number", "null"] },
+          "rotation": {
+            "type": "string",
+            "enum": ["rotating_in_strong", "rotating_in", "stable", "rotating_out", "rotating_out_strong"]
+          },
+          "category_tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": ["growth", "defensive", "value_cyclical", "rate_sensitive"]
+            }
+          }
+        }
+      }
+    },
+    "rotating_in": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sector": { "type": "string" },
+          "name": { "type": "string" },
+          "rank_delta": { "type": "integer" },
+          "category_tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "rotating_out": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "sector": { "type": "string" },
+          "name": { "type": "string" },
+          "rank_delta": { "type": "integer" },
+          "category_tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "theme_read": {
+      "type": "string",
+      "description": "Plain-English macro theme derived from the growth/value/defensive/rate-sensitive rotation buckets."
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

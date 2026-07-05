@@ -1,0 +1,99 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "options-structure-analyzer output",
+  "type": "object",
+  "required": ["scan_params", "underlying", "expiry_used", "structures", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["ticker", "view", "horizon_days", "target_move_pct", "as_of"],
+      "properties": {
+        "ticker": { "type": "string" },
+        "view": {
+          "type": "string",
+          "enum": ["direction_bullish", "direction_bearish", "vol_long", "vol_short", "hedge"]
+        },
+        "horizon_days": { "type": "integer" },
+        "target_move_pct": { "type": "number" },
+        "otm_pct_for_wings": { "type": "number" },
+        "wing_width_pct": { "type": "number" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "underlying": {
+      "type": "object",
+      "properties": {
+        "spot": { "type": "number" },
+        "target_price": { "type": "number" },
+        "implied_move_dollar": { "type": "number" }
+      }
+    },
+    "expiry_used": {
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "days_to_expiration": { "type": "integer" }
+      }
+    },
+    "structures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "structure_type", "legs", "breakevens", "payoff_at_target"],
+        "properties": {
+          "name": { "type": "string" },
+          "structure_type": {
+            "type": "string",
+            "enum": ["direction_bullish", "direction_bearish", "vol_long", "vol_short", "hedge"]
+          },
+          "legs": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["action", "type", "qty"],
+              "properties": {
+                "action": {
+                  "type": "string",
+                  "enum": ["buy", "sell", "hold"]
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["call", "put", "shares"]
+                },
+                "strike": { "type": ["number", "null"] },
+                "ticker": { "type": ["string", "null"] },
+                "premium": { "type": ["number", "null"] },
+                "qty": { "type": "integer" }
+              }
+            }
+          },
+          "net_debit": {
+            "type": "number",
+            "description": "Signed: positive = debit paid, negative = credit received."
+          },
+          "max_profit": {
+            "type": ["number", "null"],
+            "description": "Null when unbounded (long call, long straddle)."
+          },
+          "max_loss": { "type": ["number", "null"] },
+          "breakevens": {
+            "type": "array",
+            "items": { "type": "number" }
+          },
+          "payoff_at_target": {
+            "type": "number",
+            "description": "Dollar P&L if underlying = target_price at expiration."
+          },
+          "capital_required": {
+            "type": "number",
+            "description": "Approximate. For hedge structures may be the net premium delta (not the underlying position value)."
+          },
+          "read": { "type": "string" }
+        }
+      }
+    },
+    "n_structures": { "type": "integer" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

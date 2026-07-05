@@ -1,0 +1,33 @@
+name: historical-analog-finder
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/SPY/range/1/day/{from}/{to}
+notes: |
+  One long range-aggs call for SPY over the history window (default
+  20 years). All feature computation is local; no additional API
+  calls per analog lookup.
+
+  Deduplication requires a minimum 30-day gap between accepted
+  analogs so one historical window (e.g. late-2018 correction, early-
+  2020 COVID) doesn't dominate the K nearest neighbors. This is a
+  practical necessity — the raw Euclidean-nearest neighbors are often
+  consecutive days within the same regime.
+
+  The search space excludes the last ~90 valid days of history to
+  avoid look-ahead: an analog date must have enough forward history
+  for the longest requested horizon.
+
+  Feature set is deliberately SPY-only for v1. A richer version would
+  fold in sector rotation and rates features, but requires a wider
+  data pull. Documented as a caveat.
+fallbacks:
+  - market-regime

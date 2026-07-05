@@ -1,0 +1,36 @@
+name: options-structure-analyzer
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+  - product: options
+    tier: developer
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /v3/snapshot/options/{ticker}
+notes: |
+  Options Developer entitlement required for the chain snapshot
+  endpoint. Chain is fetched once per run with a wide strike band
+  (+/- 40% of spot) and a horizon window (target +/- 30 days) so the
+  nearest-expiry-with-both-sides selection has enough contracts to
+  choose from.
+
+  Spot fallback chain is strict: rejects zero values from lastTrade,
+  min, day; final fallback is prevDay.c. This handles market-closed
+  states where the snapshot returns zeros in the intraday sections.
+
+  Structures with unpriceable legs are skipped rather than modeled
+  with a zero-premium leg. The `no priceable structures` error path
+  triggers when e.g. the wing legs of a condor lack recent prints.
+
+  Payoff-at-target is analytic, evaluated at expiration. No IV
+  modeling, no delta/vega/theta output (greeks are empty on the
+  chain snapshot at this tier).
+fallbacks:
+  - options-flow

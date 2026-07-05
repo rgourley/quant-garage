@@ -70,10 +70,16 @@ A few things to know up front:
 | `portfolio-mark` (delayed) | REST | Stocks Starter (+ Crypto Starter) | 15-min marks |
 | `portfolio-mark` (live) | WebSocket | Stocks Advanced (+ Crypto Developer) | WS stream + fallback chain |
 | `risk-report` | REST | Stocks Starter | Daily aggs per name + benchmark; VaR/ES/drawdown/stress |
+| `corporate-actions-scanner` | REST | Stocks Basic | 8-K scan + news cross-ref + T+1/T+5 reactions; SEC EDGAR is free |
+| `macro-event-calendar` | REST | Stocks Basic | Forward FOMC/CPI/NFP/ISM/GDP/PCE schedule + historical SPY reactions |
+| `sector-rotation-signal` | REST | Stocks Starter | Rank-change detection on the 11 SPDR sector ETFs vs SPY |
+| `historical-analog-finder` | REST | Stocks Starter | K nearest historical regime analogs + forward SPY return distribution |
+| `portfolio-rebalancer` | REST | Stocks Starter | Variance-share-cap solver on top of risk-report; outputs trade tickets |
+| `options-structure-analyzer` | REST | Stocks Starter + Options Developer | Rank options structures for direction/vol/hedge views |
 
 ## What you get at each step
 
-**Free Basic key.** Six skills run end to end:
+**Free Basic key.** Eight skills run end to end:
 
 - `universe-builder`
 - `corp-actions-reconciler`
@@ -81,6 +87,8 @@ A few things to know up front:
 - `t+1-settlement-prep`
 - `factor-research` (lite mode)
 - `earnings-blackout`
+- `corporate-actions-scanner`
+- `macro-event-calendar`
 
 The 5/min rate cap will throttle fan-out workflows. Single-name lookups
 and small screens are fine. Enough to demo the suite and decide whether

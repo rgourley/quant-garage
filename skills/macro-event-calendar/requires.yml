@@ -1,0 +1,30 @@
+name: macro-event-calendar
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/SPY/range/1/day/{from}/{to}
+notes: |
+  Runs on free Basic; one SPY range-aggs call for the history window
+  (default 730 days). Pattern generators for recurring events (NFP,
+  CPI, PPI, ISM, GDP, PCE, JOLTS, claims, retail sales, sentiment) are
+  local; no external calendar API needed. FOMC dates hardcoded from
+  the official published schedule.
+
+  Historical reactions are computed on-the-fly by running the same
+  date-pattern generator over the lookback window and matching to the
+  SPY bar for each generated date. Sample sizes are visible in the
+  render layer so callers can weigh reaction stats appropriately (24
+  for CPI is meaningful, 4 for FOMC less so).
+
+  Sibling to earnings-blackout. Both belong in any portfolio-review
+  workflow — earnings-blackout for single-name calendar, macro-event-
+  calendar for whole-tape catalysts.
+fallbacks: []

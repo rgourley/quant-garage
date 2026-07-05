@@ -1,0 +1,86 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "corporate-actions-scanner output",
+  "description": "Canonical output. Layer 1 (structured) for UIs and downstream agents; Layer 2 rendered stream described in references/rendering.md.",
+  "type": "object",
+  "required": ["scan_params", "events", "n_events", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["tickers", "lookback_days", "as_of"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "lookback_days": { "type": "integer" },
+        "material_only": { "type": "boolean" },
+        "top_n": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "filing_date", "buckets"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "filing_date": { "type": "string", "format": "date" },
+          "acceptance_dt": { "type": "string" },
+          "accession": { "type": "string" },
+          "items_raw": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Raw 8-K item codes as filed (e.g. '2.03', '8.01')."
+          },
+          "buckets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Materiality buckets mapped from items (e.g. 'material_agreement', 'unregistered_equity_sale')."
+          },
+          "flavor": {
+            "type": ["string", "null"],
+            "description": "Keyword-detected event flavor: public_offering, atm_offering, private_placement, share_repurchase, special_dividend, stock_split, spin_off, acquisition_announcement, acquisition_target, restatement, or null if no keyword match."
+          },
+          "headline": {
+            "type": ["string", "null"],
+            "description": "Matched news article headline (within +/- 2 days of the filing)."
+          },
+          "news_source": {
+            "type": ["string", "null"],
+            "description": "Publisher name for the matched article."
+          },
+          "news_url": {
+            "type": ["string", "null"],
+            "description": "URL of the matched article, when available."
+          },
+          "reaction_t1_pct": {
+            "type": ["number", "null"],
+            "description": "Close-to-close percentage change from filing date to T+1. Not SPY-adjusted."
+          },
+          "reaction_t5_pct": {
+            "type": ["number", "null"],
+            "description": "Close-to-close percentage change from filing date to T+5. Not SPY-adjusted."
+          },
+          "primary_doc_description": { "type": "string" }
+        }
+      }
+    },
+    "skipped_tickers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "reason"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "n_events": { "type": "integer" },
+    "n_tickers_with_events": { "type": "integer" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

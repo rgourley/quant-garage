@@ -1,0 +1,96 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "portfolio-rebalancer output",
+  "type": "object",
+  "required": ["scan_params", "trades", "constraint_status", "portfolio_before", "portfolio_after", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["tickers", "book_value", "max_variance_share", "max_weight", "max_churn", "as_of"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "book_value": { "type": "number" },
+        "max_variance_share": { "type": "number" },
+        "max_weight": { "type": "number" },
+        "max_churn": { "type": "number" },
+        "benchmark": { "type": "string" },
+        "lookback_days": { "type": "integer" },
+        "shrinkage": { "type": "number" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "trades": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "action", "delta_weight_pp", "delta_dollar"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "action": { "type": "string", "enum": ["buy", "sell"] },
+          "delta_weight_pp": {
+            "type": "number",
+            "description": "Signed change in portfolio weight, percentage points."
+          },
+          "delta_dollar": {
+            "type": "number",
+            "description": "Signed change in dollar amount (positive = buy, negative = sell)."
+          },
+          "weight_before": { "type": "number" },
+          "weight_after": { "type": "number" },
+          "variance_share_before": { "type": "number" },
+          "variance_share_after": { "type": "number" }
+        }
+      }
+    },
+    "n_trades": { "type": "integer" },
+    "actual_churn": {
+      "type": "number",
+      "description": "One-way turnover of the actual trade list (sum of |delta| / 2)."
+    },
+    "iterations": {
+      "type": "integer",
+      "description": "Number of solver iterations before convergence or max_iter."
+    },
+    "constraint_status": {
+      "type": "object",
+      "required": ["all_variance_shares_within_cap"],
+      "properties": {
+        "all_variance_shares_within_cap": { "type": "boolean" },
+        "still_over_cap": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ticker": { "type": "string" },
+              "variance_share": { "type": "number" },
+              "weight": { "type": "number" }
+            }
+          }
+        },
+        "churn_hit_cap": { "type": "boolean" }
+      }
+    },
+    "portfolio_before": {
+      "type": "object",
+      "properties": {
+        "annualized_vol": { "type": "number" },
+        "top_3_variance_share": { "type": "number" },
+        "herfindahl": { "type": "number" },
+        "max_variance_share": { "type": "number" },
+        "max_variance_share_name": { "type": "string" }
+      }
+    },
+    "portfolio_after": {
+      "type": "object",
+      "properties": {
+        "annualized_vol": { "type": "number" },
+        "top_3_variance_share": { "type": "number" },
+        "herfindahl": { "type": "number" },
+        "max_variance_share": { "type": "number" },
+        "max_variance_share_name": { "type": "string" }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

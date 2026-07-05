@@ -1,0 +1,29 @@
+name: sector-rotation-signal
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+notes: |
+  Reuses the sector taxonomy from market-regime (SECTOR_ETFS,
+  GROWTH_SECTORS, DEFENSIVE_SECTORS) to stay in lockstep. Adds two
+  local groupings (VALUE_CYCLICAL_SECTORS, RATE_SENSITIVE_SECTORS)
+  used only in the theme-read heuristic.
+
+  Reference-date lookup uses the latest trading day <= today for
+  "now" and today - rotation_window for "then". Rotation classified
+  from |rank_delta|: 2+ = rotating, 3+ = strong. 1-position moves
+  stay classified as stable to avoid noise-floor rotation calls.
+
+  Complements market-regime (state) with a change-detection layer.
+  market-regime tells you WHERE the market is; this skill tells you
+  where it's MOVING TO.
+fallbacks:
+  - market-regime

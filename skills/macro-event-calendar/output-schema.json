@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "macro-event-calendar output",
+  "type": "object",
+  "required": ["scan_params", "upcoming", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["window_days", "history_days", "benchmark", "as_of"],
+      "properties": {
+        "window_days": { "type": "integer" },
+        "history_days": { "type": "integer" },
+        "benchmark": { "type": "string" },
+        "as_of": { "type": "string", "format": "date" },
+        "event_filter": {
+          "type": ["array", "null"],
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "upcoming": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["event_key", "event_name", "date", "impact_tier"],
+        "properties": {
+          "event_key": { "type": "string" },
+          "event_name": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "release_time_et": { "type": "string" },
+          "days_out": { "type": "integer" },
+          "impact_tier": {
+            "type": "string",
+            "enum": ["very_high", "high", "medium", "low"]
+          },
+          "issuer": { "type": "string" },
+          "historical_mean_abs_spy_move_pct": { "type": ["number", "null"] },
+          "historical_median_abs_spy_move_pct": { "type": ["number", "null"] },
+          "historical_p90_abs_spy_move_pct": { "type": ["number", "null"] },
+          "historical_n_samples": { "type": ["integer", "null"] },
+          "pattern_derived": {
+            "type": "boolean",
+            "description": "True when the date is pattern-derived (NFP = 1st Friday, etc.) and should be verified against the official calendar. False for hardcoded events (FOMC)."
+          }
+        }
+      }
+    },
+    "crowded_days": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["date", "n_events"],
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "n_events": { "type": "integer" },
+          "events": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": { "type": "string" },
+                "name": { "type": "string" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "n_events": { "type": "integer" },
+    "n_dates": { "type": "integer" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

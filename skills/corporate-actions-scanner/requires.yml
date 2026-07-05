@@ -1,0 +1,33 @@
+name: corporate-actions-scanner
+kind: skill
+interface: rest
+output_mode: stream
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET https://data.sec.gov/submissions/CIK{CIK}.json
+  - GET /v3/reference/tickers/{ticker}
+  - GET /v2/reference/news
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+notes: |
+  Runs on free Basic tier for the Massive side; SEC EDGAR is public
+  and requires no key. Above ~15 tickers or ~180d lookback, the free
+  tier's 5/min rate limit becomes the bottleneck (news + aggs per
+  ticker). Any paid tier removes the limit.
+
+  8-K item classification is deterministic per the ITEM_TAXONOMY
+  constant. Flavor detection (offering vs buyback vs M&A) is keyword-
+  matched against the news title + description within +/- 2 days of
+  the filing.
+
+  Complements corp-actions-reconciler (which reconciles positions
+  against splits/dividends) rather than replacing it. Different job:
+  reconciler validates share counts; scanner surfaces new material
+  events.
+fallbacks:
+  - news-scanner
