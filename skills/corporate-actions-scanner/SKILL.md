@@ -82,8 +82,6 @@ these.
 
 ## Doesn't handle (yet)
 
-- **Reactions are not SPY-adjusted.** T+1 and T+5 mix name-specific
-  and market moves. event-study does this properly; port pending.
 - **Match ambiguity on multi-hit windows.** When multiple news articles
   hit within the +/- 2 day window and all contain flavor keywords, the
   match picks the closest by date. Rare but real.

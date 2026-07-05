@@ -33,7 +33,8 @@ Every output also ships as canonical JSON matching
 
 - 8-K item taxonomy is deterministic; keyword-based flavor detection
   is heuristic (title + description scan, +/- 2 day match window).
-- Reactions are close-to-close, not SPY-adjusted (v1).
+- Reactions are close-to-close; SPY-adjusted (abnormal) columns
+  subtract the same-window SPY return so the signal is name-specific.
 - Deduplicates same-day filings with identical item buckets.
 
 ## Plan requirement

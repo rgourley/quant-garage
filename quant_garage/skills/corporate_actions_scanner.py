@@ -310,7 +310,9 @@ def run(
         lookback_days: how far back to scan. Default 180.
         material_only: if True, drop 8-Ks whose items are all non-material
             per ITEM_TAXONOMY. Default True.
-        top_n: max events to surface, ranked by |T+5 reaction|. Default 30.
+        top_n: max events to surface, ranked by |T+5 abnormal reaction|
+            (falls back to raw T+5, then T+1, when abnormal is unavailable).
+            Default 30.
         client: reuse an existing MassiveClient.
     """
     if isinstance(watchlist, str):
@@ -325,6 +327,13 @@ def run(
     client = client or MassiveClient()
     today_d = today()
     lookback_start = today_d - timedelta(days=lookback_days)
+
+    # SPY bars over the full lookback window are needed for market-
+    # adjusted reactions. One call for the whole run instead of per-
+    # filing. Padded to today so the T+5 buffer is covered.
+    spy_bars = _fetch_daily_aggs(
+        client, "SPY", lookback_start - timedelta(days=10), today_d,
+    )
 
     events: list[dict] = []
     skipped: list[dict] = []
@@ -383,6 +392,14 @@ def run(
                 source = (news.get("publisher") or {}).get("name")
             reaction_t1 = _reaction_pct(bars, fdate, 1)
             reaction_t5 = _reaction_pct(bars, fdate, 5)
+            spy_t1 = _reaction_pct(spy_bars, fdate, 1) if spy_bars else None
+            spy_t5 = _reaction_pct(spy_bars, fdate, 5) if spy_bars else None
+            abnormal_t1 = (reaction_t1 - spy_t1
+                            if reaction_t1 is not None and spy_t1 is not None
+                            else None)
+            abnormal_t5 = (reaction_t5 - spy_t5
+                            if reaction_t5 is not None and spy_t5 is not None
+                            else None)
             # Bucket labels (map to English)
             bucket_labels = [
                 ITEM_TAXONOMY[b][0] for b in f["buckets"] if b in ITEM_TAXONOMY
@@ -402,6 +419,14 @@ def run(
                                      if reaction_t1 is not None else None),
                 "reaction_t5_pct": (round(reaction_t5 * 100, 2)
                                      if reaction_t5 is not None else None),
+                "spy_t1_pct": (round(spy_t1 * 100, 2)
+                                if spy_t1 is not None else None),
+                "spy_t5_pct": (round(spy_t5 * 100, 2)
+                                if spy_t5 is not None else None),
+                "abnormal_t1_pct": (round(abnormal_t1 * 100, 2)
+                                     if abnormal_t1 is not None else None),
+                "abnormal_t5_pct": (round(abnormal_t5 * 100, 2)
+                                     if abnormal_t5 is not None else None),
                 "primary_doc_description": f["primary_doc_description"],
             })
 
@@ -427,14 +452,14 @@ def run(
                 seen[key] = challenger
     events = list(seen.values())
 
-    # Rank by absolute T+5 reaction (fallback to T+1 if T+5 is None)
+    # Rank by absolute T+5 abnormal (SPY-adjusted) reaction. Falls back
+    # to raw T+5, then T+1, when the abnormal legs are unavailable.
     def _rank_key(e):
-        r5 = e.get("reaction_t5_pct")
-        r1 = e.get("reaction_t1_pct")
-        if r5 is not None:
-            return -abs(r5)
-        if r1 is not None:
-            return -abs(r1)
+        for k in ("abnormal_t5_pct", "reaction_t5_pct",
+                  "abnormal_t1_pct", "reaction_t1_pct"):
+            v = e.get(k)
+            if v is not None:
+                return -abs(v)
         return 0
 
     events.sort(key=_rank_key)
@@ -497,7 +522,7 @@ def render(payload: dict) -> str:
 
     lines.append(
         f"{payload['n_events']} events across "
-        f"{payload['n_tickers_with_events']} tickers · ranked by |T+5 reaction|"
+        f"{payload['n_tickers_with_events']} tickers · ranked by |T+5 abn|"
     )
     lines.append("")
 
@@ -517,7 +542,16 @@ def render(payload: dict) -> str:
             lines.append(f"  HEADLINE ({src}): {e['headline'][:140]}")
         r1 = _format_pct(e.get("reaction_t1_pct"))
         r5 = _format_pct(e.get("reaction_t5_pct"))
-        lines.append(f"  REACTION: T+1 {r1}  ·  T+5 {r5}")
+        ab1 = e.get("abnormal_t1_pct")
+        ab5 = e.get("abnormal_t5_pct")
+        if ab1 is not None or ab5 is not None:
+            ab1_str = _format_pct(ab1)
+            ab5_str = _format_pct(ab5)
+            lines.append(
+                f"  REACTION: T+1 {r1} (abn {ab1_str})  ·  T+5 {r5} (abn {ab5_str})"
+            )
+        else:
+            lines.append(f"  REACTION: T+1 {r1}  ·  T+5 {r5}")
         if e.get("news_url"):
             lines.append(f"  ↳ {e['news_url']}")
         lines.append("")
@@ -533,7 +567,8 @@ def render(payload: dict) -> str:
         "Caveats: 8-K item classification is deterministic; flavor is "
         "keyword-matched against Massive news within +/- 2 days of the "
         "filing (may miss if news post-dated by more than 2 days). "
-        "Reaction is close-to-close, SPY-unadjusted. Some material "
+        "Reactions are close-to-close; abn columns subtract same-window "
+        "SPY return so the signal is name-specific. Some material "
         "actions (private placements, small M&A) surface with a lag."
     )
     return "\n".join(lines)

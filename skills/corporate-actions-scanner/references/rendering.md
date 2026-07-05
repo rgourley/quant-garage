@@ -29,9 +29,11 @@ conditional: skip when the corresponding field is null.
 
 - **HEADLINE** — matched news article title, truncated at 140 chars.
   Source in parens is the publisher name. Skip when no news match.
-- **REACTION** — `T+1 {signed-pct}%  ·  T+5 {signed-pct}%`. Both from
-  close-to-close, not SPY-adjusted. Skip a leg if the corresponding
-  bar was unavailable.
+- **REACTION** — `T+1 {signed-pct}% (abn {signed-pct}%)  ·  T+5 ...`.
+  Raw close-to-close, then abnormal (name minus SPY) in parens when
+  the SPY leg is available. Skip a leg if the corresponding bar was
+  unavailable. Falls back to the raw-only form when SPY bars couldn't
+  be fetched.
 - **URL** — prefix with `↳ ` (indented arrow). Skip when no URL.
 
 Blank line between blocks.
@@ -44,5 +46,7 @@ Blank line between blocks.
 
 ## Sort order
 
-Descending by `|reaction_t5_pct|`, falling back to `|reaction_t1_pct|`
-when T+5 is null. Then trim to `top_n` events overall.
+Descending by `|abnormal_t5_pct|` (SPY-adjusted), falling back to
+`|reaction_t5_pct|`, then `|abnormal_t1_pct|`, then
+`|reaction_t1_pct|` when the preferred metric is null. Trim to
+`top_n` events overall.

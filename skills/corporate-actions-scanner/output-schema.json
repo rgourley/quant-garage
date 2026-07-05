@@ -54,11 +54,27 @@
           },
           "reaction_t1_pct": {
             "type": ["number", "null"],
-            "description": "Close-to-close percentage change from filing date to T+1. Not SPY-adjusted."
+            "description": "Close-to-close percentage change from filing date to T+1 (raw, not benchmark-adjusted)."
           },
           "reaction_t5_pct": {
             "type": ["number", "null"],
-            "description": "Close-to-close percentage change from filing date to T+5. Not SPY-adjusted."
+            "description": "Close-to-close percentage change from filing date to T+5 (raw, not benchmark-adjusted)."
+          },
+          "spy_t1_pct": {
+            "type": ["number", "null"],
+            "description": "SPY close-to-close percentage change over the same T+1 window."
+          },
+          "spy_t5_pct": {
+            "type": ["number", "null"],
+            "description": "SPY close-to-close percentage change over the same T+5 window."
+          },
+          "abnormal_t1_pct": {
+            "type": ["number", "null"],
+            "description": "Reaction_t1_pct minus spy_t1_pct. Name-specific move net of market."
+          },
+          "abnormal_t5_pct": {
+            "type": ["number", "null"],
+            "description": "Reaction_t5_pct minus spy_t5_pct. Name-specific move net of market."
           },
           "primary_doc_description": { "type": "string" }
         }
