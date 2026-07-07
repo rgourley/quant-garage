@@ -110,7 +110,77 @@ alpha, you build on top of this.
 
 ![34 skills, one framework](./assets/skills.png)
 
-## The 26 tools, with real use cases
+## Eight one-command workflows
+
+Start here. Workflows are chains of the 26 building-block tools
+below, wired for specific cadences. Each takes a watchlist or a
+ticker (or nothing, for macro-only reads) and returns a single
+briefing with a headline block up top and the full per-tool detail
+below. If you only try one thing in this repo, try one of these.
+
+**[`portfolio-review`](skills/portfolio-review)**
+The full book review in one call. Chains eight sub-skills: market-
+regime, sector-rotation-signal, historical-analog-finder, risk-report,
+earnings-blackout, macro-event-calendar, corporate-actions-scanner,
+portfolio-rebalancer. Headline block distills each into one line:
+regime, rotation theme, 90-day forward SPY distribution, portfolio
+vol plus top variance contributor, next earnings, next macro, top
+8-K, rebalance verdict. Built after a live review missed an ALLO
+public offering (87.5M shares, 34% dilution) because the workflow
+was run manually and one tool was skipped. Now the workflow is one
+command that doesn't skip.
+
+**[`weekly-brief`](skills/weekly-brief)**
+Sunday-night prep. Watchlist-focused, not position-focused. market-
+regime, sector-rotation-signal, macro-event-calendar (7-day window),
+earnings-blackout (7-day window). The Sunday briefing that frames the
+week: what's the tape, what's rotating, what prints, what macro
+matters.
+
+**[`morning-brief`](skills/morning-brief)**
+60-second daily open. market-regime, macro-event-calendar (today +
+tomorrow), news-scanner (last N per watchlist ticker). Sharp
+counterpart to weekly-brief: shorter horizon, news-focused. Cron
+this at 8am for a briefing before you open the trading window.
+
+**[`preflight-trade`](skills/preflight-trade)**
+Before you hit execute. Takes a ticker plus intended action (buy,
+sell, add, reduce, exit). Chains technical-briefing, earnings-
+blackout (14d), news-scanner (last N), corporate-actions-scanner
+(90d). Returns a deterministic verdict (go, wait, review) plus red
+and green flag lists. Not a recommendation to trade or not trade.
+A structured "is now obviously a bad time" gate.
+
+**[`earnings-week-prep`](skills/earnings-week-prep)**
+For weeks where four of your names print in five days. earnings-
+blackout on the watchlist to find who prints, then earnings-drilldown
+plus technical-briefing for the top-N imminent prints. The Sunday-
+night briefing before a heavy earnings week.
+
+**[`historical-comparison`](skills/historical-comparison)**
+Twin decision-support. event-study on the specific event plus
+historical-analog-finder on the market regime. Both anchors together
+so you're not relying on one. Analog-only mode for when you don't
+have a specific event to study.
+
+**[`scan-and-frame`](skills/scan-and-frame)**
+Regime-framed idea generation. market-regime for context, universe-
+builder for candidates, relative-strength to rank the top N. Optional
+factor-research pass for factor context (heavy — off by default).
+Discovery-mode, not position-mode.
+
+**[`stock-one-pager`](skills/stock-one-pager)**
+Retail-tier single-name card. technical-briefing plus earnings-
+blackout plus market-regime, translated into plain language. The
+thing to read before you buy something you saw on social. Every
+claim is gated to what the data actually says; nothing is templated.
+
+## The 26 building-block tools, with real use cases
+
+The workflows above are chains of these. If you're building your
+own workflow or agent, this is the shelf of primitives to compose
+from. Each is a standalone `run() -> dict` with a rendered layer
+for humans and a JSON layer for downstream code.
 
 ### Earnings work
 
@@ -381,70 +451,6 @@ Kraken), and 24h move z-scores. Output is a stream of the top events,
 with a one-line read at the bottom on the broader regime (this week's
 read: "quiet regime, BTC realized vol at 30% sitting in the 25th
 percentile of trailing year, setup-watch day not entry day").
-
-## Eight one-command workflows
-
-Chains of the tools above, wired for specific cadences. Each takes a
-watchlist or a ticker (or nothing, for macro-only reads) and returns
-a single briefing with a headline block up top and the full per-tool
-detail below.
-
-**[`portfolio-review`](skills/portfolio-review)**
-The full book review in one call. Chains eight sub-skills: market-
-regime, sector-rotation-signal, historical-analog-finder, risk-report,
-earnings-blackout, macro-event-calendar, corporate-actions-scanner,
-portfolio-rebalancer. Headline block distills each into one line:
-regime, rotation theme, 90-day forward SPY distribution, portfolio
-vol plus top variance contributor, next earnings, next macro, top
-8-K, rebalance verdict. Built after a live review missed an ALLO
-public offering (87.5M shares, 34% dilution) because the workflow
-was run manually and one tool was skipped. Now the workflow is one
-command that doesn't skip.
-
-**[`weekly-brief`](skills/weekly-brief)**
-Sunday-night prep. Watchlist-focused, not position-focused. market-
-regime, sector-rotation-signal, macro-event-calendar (7-day window),
-earnings-blackout (7-day window). The Sunday briefing that frames the
-week: what's the tape, what's rotating, what prints, what macro
-matters.
-
-**[`morning-brief`](skills/morning-brief)**
-60-second daily open. market-regime, macro-event-calendar (today +
-tomorrow), news-scanner (last N per watchlist ticker). Sharp
-counterpart to weekly-brief: shorter horizon, news-focused. Cron
-this at 8am for a briefing before you open the trading window.
-
-**[`preflight-trade`](skills/preflight-trade)**
-Before you hit execute. Takes a ticker plus intended action (buy,
-sell, add, reduce, exit). Chains technical-briefing, earnings-
-blackout (14d), news-scanner (last N), corporate-actions-scanner
-(90d). Returns a deterministic verdict (go, wait, review) plus red
-and green flag lists. Not a recommendation to trade or not trade.
-A structured "is now obviously a bad time" gate.
-
-**[`earnings-week-prep`](skills/earnings-week-prep)**
-For weeks where four of your names print in five days. earnings-
-blackout on the watchlist to find who prints, then earnings-drilldown
-plus technical-briefing for the top-N imminent prints. The Sunday-
-night briefing before a heavy earnings week.
-
-**[`historical-comparison`](skills/historical-comparison)**
-Twin decision-support. event-study on the specific event plus
-historical-analog-finder on the market regime. Both anchors together
-so you're not relying on one. Analog-only mode for when you don't
-have a specific event to study.
-
-**[`scan-and-frame`](skills/scan-and-frame)**
-Regime-framed idea generation. market-regime for context, universe-
-builder for candidates, relative-strength to rank the top N. Optional
-factor-research pass for factor context (heavy — off by default).
-Discovery-mode, not position-mode.
-
-**[`stock-one-pager`](skills/stock-one-pager)**
-Retail-tier single-name card. technical-briefing plus earnings-
-blackout plus market-regime, translated into plain language. The
-thing to read before you buy something you saw on social. Every
-claim is gated to what the data actually says; nothing is templated.
 
 ## What to sign up for
 
