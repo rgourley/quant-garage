@@ -1,0 +1,48 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "earnings-week-prep output",
+  "type": "object",
+  "required": ["scan_params", "imminent_prints", "prep", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["tickers", "window_days", "as_of"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "window_days": { "type": "integer" },
+        "top_n_drilldown": { "type": "integer" },
+        "include_technicals": { "type": "boolean" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "earnings_blackout": { "type": ["object", "null"] },
+    "imminent_prints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "days_until": { "type": "integer" },
+          "session": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "prep": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "ticker": { "type": "string" },
+          "date": { "type": "string", "format": "date" },
+          "days_until": { "type": "integer" },
+          "session": { "type": ["string", "null"] },
+          "drilldown": { "type": ["object", "null"] },
+          "technical": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

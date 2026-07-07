@@ -1,0 +1,25 @@
+name: earnings-week-prep
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /vX/reference/financials
+  - GET https://data.sec.gov/submissions/CIK{cik}.json
+notes: |
+  Composite. Chains earnings-blackout (watchlist scan), earnings-
+  drilldown (per imminent print), and technical-briefing (per print).
+
+  earnings-drilldown is heavy — top_n_drilldown caps the per-name
+  drilldown count. Default 5. Users on free Basic can still run
+  this with lower top_n_drilldown, but the 5/min rate limit will
+  make it slow.
+fallbacks:
+  - earnings-blackout

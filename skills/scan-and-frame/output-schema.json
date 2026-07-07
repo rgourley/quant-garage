@@ -1,0 +1,42 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "scan-and-frame output",
+  "type": "object",
+  "required": ["scan_params", "headline", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["candidate_source", "min_mcap", "as_of"],
+      "properties": {
+        "candidate_source": { "type": "string" },
+        "min_mcap": { "type": "number" },
+        "max_mcap": { "type": ["number", "null"] },
+        "include_sectors": { "type": ["string", "array", "null"] },
+        "exclude_sectors": { "type": ["string", "array", "null"] },
+        "top_n_rank": { "type": "integer" },
+        "include_factor_research": { "type": "boolean" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "properties": {
+        "regime": { "type": ["string", "null"] },
+        "n_candidates": { "type": ["integer", "null"] },
+        "top_by_composite": { "type": "array" },
+        "top_factor": { "type": ["object", "null"] }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "market_regime": { "type": ["object", "null"] },
+        "universe_builder": { "type": ["object", "null"] },
+        "relative_strength": { "type": ["object", "null"] },
+        "factor_research": { "type": ["object", "null"] }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

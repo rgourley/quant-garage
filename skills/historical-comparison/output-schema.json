@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "historical-comparison output",
+  "type": "object",
+  "required": ["scan_params", "headline", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["event_class", "analog_k", "analog_horizons_days", "include_event", "as_of"],
+      "properties": {
+        "ticker": { "type": ["string", "null"] },
+        "event_class": { "type": "string" },
+        "event_date": { "type": ["string", "null"] },
+        "period": { "type": ["string", "null"] },
+        "analog_k": { "type": "integer" },
+        "analog_horizons_days": { "type": "array", "items": { "type": "integer" } },
+        "include_event": { "type": "boolean" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "properties": {
+        "event_summary": { "type": ["object", "null"] },
+        "analog_read": { "type": ["object", "null"] }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "event_study": { "type": ["object", "null"] },
+        "historical_analog": { "type": ["object", "null"] }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

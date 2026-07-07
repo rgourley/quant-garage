@@ -36,6 +36,12 @@ from . import sector_rotation_signal  # noqa: F401
 from . import historical_analog_finder  # noqa: F401
 from . import options_structure_analyzer  # noqa: F401
 from . import portfolio_review  # noqa: F401
+from . import weekly_brief  # noqa: F401
+from . import morning_brief  # noqa: F401
+from . import preflight_trade  # noqa: F401
+from . import earnings_week_prep  # noqa: F401
+from . import historical_comparison  # noqa: F401
+from . import scan_and_frame  # noqa: F401
 from . import slippage_cost  # noqa: F401
 from . import t1_settlement_prep  # noqa: F401
 try:

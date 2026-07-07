@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "morning-brief output",
+  "type": "object",
+  "required": ["scan_params", "headline", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["as_of"],
+      "properties": {
+        "tickers": { "type": "array" },
+        "news_last_n": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "properties": {
+        "regime": { "type": ["string", "null"] },
+        "today_events": { "type": "array" },
+        "top_news": { "type": "array" }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "market_regime": { "type": ["object", "null"] },
+        "macro_calendar": { "type": ["object", "null"] },
+        "news_scanner": { "type": ["object", "null"] }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

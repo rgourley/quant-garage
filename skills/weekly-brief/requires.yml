@@ -1,0 +1,23 @@
+name: weekly-brief
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+notes: |
+  Composite. Chains market-regime, sector-rotation-signal, macro-
+  event-calendar, and earnings-blackout. Shares a single MassiveClient
+  across sub-skills. All sub-skills accept `client` kwarg.
+
+  Watchlist-focused, not position-focused. Different from portfolio-
+  review (positions + risk) and different from morning-brief (daily
+  cadence with news).
+fallbacks:
+  - portfolio-review

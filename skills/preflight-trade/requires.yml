@@ -1,0 +1,25 @@
+name: preflight-trade
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /v2/reference/news
+  - GET https://data.sec.gov/submissions/CIK{cik}.json
+notes: |
+  Composite. Chains technical-briefing, earnings-blackout (14d),
+  news-scanner (last N), corporate-actions-scanner (90d) for a
+  single ticker. Verdict is deterministic — no LLM in the loop.
+
+  Not a recommendation. A "is now obviously a bad time" gate. The
+  operator makes the trade decision; this surfaces the flags.
+fallbacks:
+  - technical-briefing

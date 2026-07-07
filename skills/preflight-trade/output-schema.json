@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "preflight-trade output",
+  "type": "object",
+  "required": ["scan_params", "verdict", "green_flags", "red_flags", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["ticker", "action", "as_of"],
+      "properties": {
+        "ticker": { "type": "string" },
+        "action": { "type": "string", "enum": ["buy", "sell", "add", "reduce", "exit"] },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "verdict": { "type": "string", "enum": ["go", "wait", "review"] },
+    "green_flags": { "type": "array", "items": { "type": "string" } },
+    "red_flags": { "type": "array", "items": { "type": "string" } },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "technical_briefing": { "type": ["object", "null"] },
+        "earnings_blackout": { "type": ["object", "null"] },
+        "news_scanner": { "type": ["object", "null"] },
+        "corporate_actions": { "type": ["object", "null"] }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

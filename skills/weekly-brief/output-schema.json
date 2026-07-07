@@ -1,0 +1,39 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "weekly-brief output",
+  "type": "object",
+  "required": ["scan_params", "headline", "sections", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["tickers", "window_days", "as_of"],
+      "properties": {
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "window_days": { "type": "integer" },
+        "rotation_window_days": { "type": "integer" },
+        "as_of": { "type": "string", "format": "date" }
+      }
+    },
+    "headline": {
+      "type": "object",
+      "properties": {
+        "regime": { "type": ["string", "null"] },
+        "rotation_theme": { "type": ["string", "null"] },
+        "top_macro": { "type": "array" },
+        "prints_this_week": { "type": "array" },
+        "n_watchlist": { "type": "integer" }
+      }
+    },
+    "sections": {
+      "type": "object",
+      "properties": {
+        "market_regime": { "type": ["object", "null"] },
+        "sector_rotation": { "type": ["object", "null"] },
+        "macro_calendar": { "type": ["object", "null"] },
+        "earnings_blackout": { "type": ["object", "null"] }
+      }
+    },
+    "errors": { "type": "array" },
+    "generated_at": { "type": "string", "format": "date-time" }
+  }
+}

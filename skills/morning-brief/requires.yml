@@ -1,0 +1,23 @@
+name: morning-brief
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /v2/reference/news
+notes: |
+  Composite. Chains market-regime, macro-event-calendar (2d), news-
+  scanner (last_n per ticker). Watchlist optional; without it,
+  runs macro-only.
+
+  Sharp counterpart to weekly-brief (which is 7d and earnings-
+  focused).
+fallbacks:
+  - weekly-brief
