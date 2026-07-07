@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "stock-one-pager output",
+  "description": "Beginner-friendly single-name snapshot. Plain-language fields for the retail read, plus a `components` block that surfaces raw sub-skill readings for callers who want to layer more on top.",
+  "type": "object",
+  "required": ["skill", "ticker", "as_of", "current_price"],
+  "properties": {
+    "skill": { "type": "string", "const": "stock-one-pager" },
+    "ticker": { "type": "string" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "current_price": { "type": ["number", "null"] },
+    "trend_plain": {
+      "type": "string",
+      "description": "Plain-language trend read (e.g. 'in a fragile uptrend', 'range-bound')."
+    },
+    "recent_range_position": {
+      "type": "string",
+      "description": "Plain-language read on where price sits in its recent range vs Bollinger bands."
+    },
+    "liquidity_plain": {
+      "type": "string",
+      "description": "Plain-language liquidity read from the ADV bucket."
+    },
+    "next_catalyst": {
+      "type": ["object", "null"],
+      "description": "Next known catalyst (earnings-based today; extensible to news / regulatory events later).",
+      "properties": {
+        "type": { "type": "string" },
+        "date": { "type": ["string", "null"], "format": "date" },
+        "days_out": { "type": ["integer", "null"] },
+        "read": { "type": "string" }
+      }
+    },
+    "key_levels": {
+      "type": ["object", "null"],
+      "properties": {
+        "support": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "price": { "type": "number" },
+              "basis": { "type": "string" }
+            }
+          }
+        },
+        "resistance": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "price": { "type": "number" },
+              "basis": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "market_context_plain": {
+      "type": ["string", "null"],
+      "description": "Plain-language macro-regime read. Null when include_market_context=False."
+    },
+    "what_could_go_wrong": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Short list of honest risks based on the actual readings, not boilerplate."
+    },
+    "components": {
+      "type": "object",
+      "description": "Compact snapshot of the underlying sub-skill readings for callers who want the raw signals.",
+      "properties": {
+        "technical_briefing": { "type": "object" },
+        "earnings_blackout": { "type": "object" },
+        "market_regime": { "type": ["object", "null"] }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
