@@ -7,11 +7,35 @@ and churn caps.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.portfolio_rebalancer import run, render
+payload = run(
+    positions="JEPI=0.305,ALLO=0.183,BRK.B=0.163,GLD=0.145,SOFI=0.070",
+    book_value=650000,
+    max_variance_share=0.25,
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-portfolio-rebalancer.py \
   --positions "JEPI=0.305,ALLO=0.183,BRK.B=0.163,GLD=0.145,SOFI=0.070" \
   --book-value 650000 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/portfolio-rebalancer/`. In a Claude Code
+session, ask "rebalance my book to cap variance share at 25%" and
+Claude invokes the skill with your positions. For tool-use LLMs,
+`run()` returns JSON matching [`output-schema.json`](./output-schema.json)
+including the per-name trade tickets.
 
 ## What you get back
 

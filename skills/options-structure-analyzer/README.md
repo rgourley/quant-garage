@@ -6,11 +6,31 @@ A structured comparison, not a recommendation.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.options_structure_analyzer import run, render
+payload = run("NVDA", view="direction_bullish",
+               horizon_days=30, target_move_pct=0.08)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-options-structure-analyzer.py \
   --ticker NVDA --view direction_bullish \
   --horizon-days 30 --target-move-pct 0.08 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/options-structure-analyzer/`. In a Claude
+Code session, ask "how do I express bullish NVDA into a 30-day 8%
+move with options" and Claude invokes the skill. Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

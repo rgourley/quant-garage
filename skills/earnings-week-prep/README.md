@@ -6,9 +6,29 @@ briefing per imminent print (top-N by proximity).
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.earnings_week_prep import run, render
+payload = run(watchlist="NVDA,ALLO,SOFI,QCOM", window_days=7)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-earnings-week-prep.py --watchlist "NVDA,ALLO,SOFI,QCOM" --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/earnings-week-prep/`. In a Claude Code
+session, say "prep for this week's earnings" plus your watchlist
+— Claude finds who prints and runs the per-name drilldown.
+Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## Plan requirement
 

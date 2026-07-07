@@ -7,11 +7,34 @@ scanner, and portfolio-rebalancer into one call. Turns the manual
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.portfolio_review import run, render
+payload = run(
+    positions="JEPI=0.305,ALLO=0.183,BRK.B=0.163,GLD=0.145,SOFI=0.070",
+    book_value=650000,
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-portfolio-review.py \
   --positions "JEPI=0.305,ALLO=0.183,BRK.B=0.163,GLD=0.145,SOFI=0.070" \
   --book-value 650000 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/portfolio-review/`. In a Claude Code session,
+say "review my portfolio" and provide your positions — Claude runs
+the full 8-tool chain in one call. Tool-use LLMs consume the
+`run()` payload matching [`output-schema.json`](./output-schema.json),
+including the per-sub-skill sections.
 
 ## What you get back
 

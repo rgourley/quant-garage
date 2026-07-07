@@ -6,10 +6,30 @@ forward return distribution across those analogs.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.historical_analog_finder import run, render
+payload = run(k=20, horizon_days=[30, 60, 90, 252])
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-historical-analog-finder.py --format render
 python3 examples/run-historical-analog-finder.py --k 30 --horizons 30,60,90,252 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/historical-analog-finder/`. In a Claude Code
+session, ask "find historical analogs to today's market" or "what
+usually happens after setups like this" and Claude invokes the
+skill. Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

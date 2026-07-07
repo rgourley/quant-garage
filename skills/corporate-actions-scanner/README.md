@@ -7,10 +7,31 @@ news-scanner's 24-hour default window misses.
 
 ## Quick start
 
+Three ways to invoke. Same code, three surfaces.
+
+### Python library
+
+```python
+from quant_garage.skills.corporate_actions_scanner import run, render
+payload = run("ALLO", lookback_days=180)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-corporate-actions-scanner.py --ticker ALLO --lookback-days 180 --format render
 python3 examples/run-corporate-actions-scanner.py --watchlist "NVDA,AAPL,ALLO,SOFI" --lookback-days 90 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered automatically at `skills/corporate-actions-scanner/`. In
+a Claude Code session, ask "scan ALLO for material 8-Ks over the
+last 6 months" and Claude invokes the skill. For any LLM that
+supports tool use, the `run()` function returns JSON matching
+[`output-schema.json`](./output-schema.json) — wire it in as a
+tool and the agent gets the same output your CLI does.
 
 ## What you get back
 

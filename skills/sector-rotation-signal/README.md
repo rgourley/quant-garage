@@ -7,10 +7,29 @@ rate-sensitive theme read.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.sector_rotation_signal import run, render
+payload = run(rotation_window=30)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-sector-rotation-signal.py --format render
 python3 examples/run-sector-rotation-signal.py --rotation-window 60 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/sector-rotation-signal/`. In a Claude Code
+session, ask "what sectors are rotating" or "is the market
+rotating right now" and Claude invokes the skill. Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

@@ -7,11 +7,30 @@ sales / sentiment.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.macro_event_calendar import run, render
+payload = run(window_days=30)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-macro-event-calendar.py --format render
 python3 examples/run-macro-event-calendar.py --window-days 60 --format render
 python3 examples/run-macro-event-calendar.py --events "FOMC,CPI,NFP" --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered automatically at `skills/macro-event-calendar/`. In a
+Claude Code session, ask "what's on the macro calendar this week"
+or "when's the next FOMC" and Claude invokes the skill. For any
+tool-use LLM, `run()` returns JSON matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

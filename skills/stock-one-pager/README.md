@@ -7,9 +7,29 @@ saw on social."
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.stock_one_pager import run, render
+payload = run("NVDA")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-stock-one-pager.py --ticker NVDA --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/stock-one-pager/`. In a Claude Code session,
+ask "what should I know about NVDA" or "give me a snapshot on
+ALLO" — Claude runs the composite and returns the plain-language
+card. Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 
