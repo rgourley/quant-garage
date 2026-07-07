@@ -16,12 +16,13 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Twenty-six tools. One framework. Built in the garage, not the trading
-floor.
+Twenty-six tools plus eight one-command workflows. One framework.
+Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs six of the tools end-to-end; $29/month Stocks Starter opens
-twenty-four of the twenty-six.
+tier runs six of the tools plus most workflows end-to-end; $29/month
+Stocks Starter opens twenty-four of the twenty-six tools and every
+workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
 [issue](https://github.com/rgourley/quant-garage/issues) or send a
@@ -30,7 +31,9 @@ twenty-four of the twenty-six.
 ## What the collection does
 
 Each tool is useful on its own. The point of having twenty-six that
-share data, methodology, and audit trail is that they chain.
+share data, methodology, and audit trail is that they chain. The
+eight workflows show what that chaining looks like when someone
+wires the pieces together for a specific cadence.
 
 Tuesday morning, you're long NVDA into Thursday's print.
 `earnings-drilldown` shows the implied move is rich vs the 8-quarter
@@ -105,7 +108,7 @@ workflow, not strategy. The takes are pattern-matchers grounded in
 methodology; they aren't a trading model. If you want production
 alpha, you build on top of this.
 
-![26 skills, one framework](./assets/skills.png)
+![34 skills, one framework](./assets/skills.png)
 
 ## The 26 tools, with real use cases
 
@@ -379,6 +382,70 @@ with a one-line read at the bottom on the broader regime (this week's
 read: "quiet regime, BTC realized vol at 30% sitting in the 25th
 percentile of trailing year, setup-watch day not entry day").
 
+## Eight one-command workflows
+
+Chains of the tools above, wired for specific cadences. Each takes a
+watchlist or a ticker (or nothing, for macro-only reads) and returns
+a single briefing with a headline block up top and the full per-tool
+detail below.
+
+**[`portfolio-review`](skills/portfolio-review)**
+The full book review in one call. Chains eight sub-skills: market-
+regime, sector-rotation-signal, historical-analog-finder, risk-report,
+earnings-blackout, macro-event-calendar, corporate-actions-scanner,
+portfolio-rebalancer. Headline block distills each into one line:
+regime, rotation theme, 90-day forward SPY distribution, portfolio
+vol plus top variance contributor, next earnings, next macro, top
+8-K, rebalance verdict. Built after a live review missed an ALLO
+public offering (87.5M shares, 34% dilution) because the workflow
+was run manually and one tool was skipped. Now the workflow is one
+command that doesn't skip.
+
+**[`weekly-brief`](skills/weekly-brief)**
+Sunday-night prep. Watchlist-focused, not position-focused. market-
+regime, sector-rotation-signal, macro-event-calendar (7-day window),
+earnings-blackout (7-day window). The Sunday briefing that frames the
+week: what's the tape, what's rotating, what prints, what macro
+matters.
+
+**[`morning-brief`](skills/morning-brief)**
+60-second daily open. market-regime, macro-event-calendar (today +
+tomorrow), news-scanner (last N per watchlist ticker). Sharp
+counterpart to weekly-brief: shorter horizon, news-focused. Cron
+this at 8am for a briefing before you open the trading window.
+
+**[`preflight-trade`](skills/preflight-trade)**
+Before you hit execute. Takes a ticker plus intended action (buy,
+sell, add, reduce, exit). Chains technical-briefing, earnings-
+blackout (14d), news-scanner (last N), corporate-actions-scanner
+(90d). Returns a deterministic verdict (go, wait, review) plus red
+and green flag lists. Not a recommendation to trade or not trade.
+A structured "is now obviously a bad time" gate.
+
+**[`earnings-week-prep`](skills/earnings-week-prep)**
+For weeks where four of your names print in five days. earnings-
+blackout on the watchlist to find who prints, then earnings-drilldown
+plus technical-briefing for the top-N imminent prints. The Sunday-
+night briefing before a heavy earnings week.
+
+**[`historical-comparison`](skills/historical-comparison)**
+Twin decision-support. event-study on the specific event plus
+historical-analog-finder on the market regime. Both anchors together
+so you're not relying on one. Analog-only mode for when you don't
+have a specific event to study.
+
+**[`scan-and-frame`](skills/scan-and-frame)**
+Regime-framed idea generation. market-regime for context, universe-
+builder for candidates, relative-strength to rank the top N. Optional
+factor-research pass for factor context (heavy — off by default).
+Discovery-mode, not position-mode.
+
+**[`stock-one-pager`](skills/stock-one-pager)**
+Retail-tier single-name card. technical-briefing plus earnings-
+blackout plus market-regime, translated into plain language. The
+thing to read before you buy something you saw on social. Every
+claim is gated to what the data actually says; nothing is templated.
+
 ## What to sign up for
 
 Use **Massive**. It's the API quant-garage is
@@ -394,7 +461,8 @@ unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
 that powers the universe screeners. Twenty-four of the twenty-six
 tools run on this tier (only crypto-vol-scanner and full-fidelity
-options-structure-analyzer need separate plans).
+options-structure-analyzer need separate plans). Every workflow
+composite runs on Starter.
 
 Specific tools need specific add-ons:
 

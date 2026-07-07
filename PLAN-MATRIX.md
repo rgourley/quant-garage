@@ -77,6 +77,22 @@ A few things to know up front:
 | `portfolio-rebalancer` | REST | Stocks Starter | Variance-share-cap solver on top of risk-report; outputs trade tickets |
 | `options-structure-analyzer` | REST | Stocks Starter + Options Developer | Rank options structures for direction/vol/hedge views |
 
+## The workflow composites
+
+Composites chain existing tools. Their tier requirement is the max
+tier of any sub-skill invoked; every workflow runs on Stocks Starter.
+
+| Workflow | Chains | Min asset access |
+|---|---|---|
+| `portfolio-review` | 8 sub-skills (regime, rotation, analog, risk, earnings, macro, corp-actions, rebalancer) | Stocks Starter |
+| `weekly-brief` | 4 (regime, rotation, macro-calendar 7d, earnings-blackout 7d) | Stocks Basic |
+| `morning-brief` | 3 (regime, macro-calendar 2d, news-scanner last-N) | Stocks Basic |
+| `preflight-trade` | 4 (technical, earnings, news, corp-actions) | Stocks Starter |
+| `earnings-week-prep` | 3 (earnings-blackout + per-print drilldown + technical) | Stocks Starter |
+| `historical-comparison` | 2 (event-study + historical-analog-finder) | Stocks Starter |
+| `scan-and-frame` | 3-4 (regime, universe, RS, optional factor) | Stocks Starter |
+| `stock-one-pager` | 3 (technical, earnings, regime) | Stocks Starter |
+
 ## What you get at each step
 
 **Free Basic key.** Eight skills run end to end:
