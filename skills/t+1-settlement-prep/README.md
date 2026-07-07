@@ -9,9 +9,28 @@ suggested next action per flag.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.t1_settlement_prep import run, render
+payload = run("examples/sample-trades.csv")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-t1-settlement-prep.py examples/sample-trades.csv
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/t+1-settlement-prep/`. In a Claude Code
+session, ask "walk tonight's trades for settlement risk". Tool-use
+LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

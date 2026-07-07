@@ -10,9 +10,28 @@ WebSocket for intraday.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.portfolio_mark import run, render
+payload = run("examples/sample-book.csv")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-portfolio-mark.py examples/sample-book.csv
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/portfolio-mark/`. In a Claude Code session,
+ask "mark my book to current fair value" and pass your positions.
+Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

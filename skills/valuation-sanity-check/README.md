@@ -9,10 +9,31 @@ opposite of what I expected.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.valuation_sanity_check import run, render
+payload = run("NVDA", target_price=250,
+               assumed_growth=0.28, assumed_margin=0.60, horizon=5)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-valuation-sanity-check.py NVDA \
   --target 250 --growth 0.28 --margin 0.60 --horizon 5
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/valuation-sanity-check/`. In a Claude Code
+session, ask "sanity-check the $250 NVDA target with 28% growth,
+60% margin, 5-year horizon" and Claude runs the reverse-DCF plus
+peer distribution. Tool-use LLMs consume the `run()` payload
+matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

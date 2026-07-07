@@ -9,9 +9,28 @@ every flag.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.corp_actions import run, render
+payload = run("examples/sample-positions.csv")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-corp-actions.py examples/sample-positions.csv
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/corp-actions-reconciler/`. In a Claude Code
+session, ask "reconcile my position file for splits and dividends
+since 2024". Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

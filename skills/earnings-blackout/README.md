@@ -5,11 +5,33 @@ have earnings in the next N days, which just printed, which are clear.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.earnings_blackout import run, render
+payload = run(
+    watchlist="NVDA,TSLA,AMZN,GOOGL,META,AAPL,MSFT",
+    window_days=7,
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-earnings-blackout.py \
   --watchlist NVDA,TSLA,AMZN,GOOGL,META,AAPL,MSFT \
   --window-days 7
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/earnings-blackout/`. In a Claude Code
+session, ask "who prints this week from my watchlist" or "any
+earnings blackout risk on X". Tool-use LLMs consume the `run()`
+payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get
 

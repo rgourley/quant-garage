@@ -8,9 +8,31 @@ off on means the market already knew; that's a flag worth surfacing.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.news_scanner import run, render
+payload = run(watchlist="NVDA,TSLA,AAPL", hours=24)
+# Retrospective analysis (ignore time window):
+payload = run(watchlist="ALLO", last_n=5)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-news-scanner.py
+python3 examples/run-news-scanner.py --watchlist "ALLO" --last-n 5 --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/news-scanner/`. In a Claude Code session,
+ask "what news moved my watchlist overnight" or "surface the last
+5 material news items on ALLO". Tool-use LLMs consume the `run()`
+payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

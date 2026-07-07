@@ -10,9 +10,32 @@ into pandas and start backtesting.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.backtest_data_prep import run, render
+payload = run(
+    universe="top100",
+    window=("2022-06-25", "2026-06-25"),
+    out_dir="./backtest-data/",
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-backtest-data-prep.py --window 4y --seed top100
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/backtest-data-prep/`. In a Claude Code
+session, ask "build a clean 4-year OHLCV dataset for the top 100
+US stocks". Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

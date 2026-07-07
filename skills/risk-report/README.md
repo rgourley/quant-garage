@@ -17,6 +17,21 @@ to that value?"
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.risk_report import run, render
+payload = run(
+    positions="NVDA=0.25,AMZN=0.25,GOOGL=0.25,META=0.25",
+    lookback_days=252,
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-risk-report.py \
   --positions NVDA=0.25,AMZN=0.25,GOOGL=0.25,META=0.25 \
@@ -31,6 +46,13 @@ Or pass a book JSON:
 ```bash
 python3 examples/run-risk-report.py --book examples/sample-book.json
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/risk-report/`. In a Claude Code session, ask
+"run a risk report on my book" and pass your positions — Claude
+returns VaR, ES, drawdown, and the variance budget. Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 The JSON supports either `weight` per position or `shares` + `price`
 (in which case weights are computed from value share). See

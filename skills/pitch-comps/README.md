@@ -9,9 +9,28 @@ take the MD or PM wants on page two.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.pitch_comps import run, render
+payload = run("CRM")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-pitch-comps.py CRM
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/pitch-comps/`. In a Claude Code session,
+ask "build a CRM comp set" or "how does NVDA screen vs semis on
+multiples". Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

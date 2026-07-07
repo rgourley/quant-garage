@@ -9,9 +9,28 @@ the ask. Two trades, same direction.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.options_flow import run, render
+payload = run(watchlist="NVDA,TSLA,SPY,AAPL,META")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-options-flow.py
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/options-flow/`. In a Claude Code session,
+ask "any unusual options activity on TSLA today" or "scan my
+watchlist for sweeps". Tool-use LLMs consume the `run()` payload
+matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

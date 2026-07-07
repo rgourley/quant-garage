@@ -10,10 +10,33 @@ on EPS. Guidance is dominating headlines this regime.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.event_study import run, render
+payload = run(
+    tickers="AAPL,NVDA,MSFT,GOOGL,META",
+    event_class="earnings",
+    period="most_recent",
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-event-study.py --mode cross_section \
   --tickers AAPL,NVDA,MSFT,GOOGL,META --event earnings
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/event-study/`. In a Claude Code session,
+ask "run an event study on the mega-cap tech Q1 prints" or
+"measure NVDA's abnormal return around the last earnings". Tool-use
+LLMs consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

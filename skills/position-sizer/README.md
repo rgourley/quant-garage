@@ -14,6 +14,23 @@ the edges.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.position_sizer import run, render
+payload = run(
+    tickers="NVDA,AMZN,GOOGL,META",
+    target_vol=0.12,
+    max_weight=0.30,
+    kelly_edges="NVDA=0.15,AMZN=0.10,GOOGL=0.08,META=0.12",
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-position-sizer.py \
   --tickers NVDA,AMZN,GOOGL,META \
@@ -21,6 +38,13 @@ python3 examples/run-position-sizer.py \
   --max-weight 0.30 \
   --kelly-edges NVDA=0.15,AMZN=0.10,GOOGL=0.08,META=0.12
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/position-sizer/`. In a Claude Code session,
+ask "how should I size NVDA/AMZN/GOOGL/META at 12% target vol"
+and Claude runs the four sizing methods. Tool-use LLMs consume
+the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## Sample output
 

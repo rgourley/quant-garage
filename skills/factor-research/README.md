@@ -10,9 +10,28 @@ risk-taking).
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.factor_research import run, render
+payload = run(universe_size=500, years=5)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-factor-research.py
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/factor-research/`. In a Claude Code session,
+ask "what factor is working in this regime" or "run factor
+research on the S&P 500 over 5 years". Tool-use LLMs consume the
+`run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

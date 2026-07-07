@@ -13,11 +13,30 @@ sizes, percentile context, no opinionated tone.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.market_regime import run, render
+payload = run()
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-market-regime.py
 python3 examples/run-market-regime.py --lookback-days 252 --format render
 python3 examples/run-market-regime.py --format json
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/market-regime/`. In a Claude Code session,
+ask "what's the regime" or "morning market check" — Claude runs
+the skill. Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

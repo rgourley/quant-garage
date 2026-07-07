@@ -11,6 +11,22 @@ watchlist ranker.
 
 ## Quick start
 
+Three ways to invoke. Add sector-ETF context by passing
+`include_sectors=True` / `--include-sectors`.
+
+### Python library
+
+```python
+from quant_garage.skills.relative_strength import run, render
+payload = run(
+    watchlist="NVDA,AMD,MU,INTC,QCOM,AVGO,TXN,KLAC,AMAT,LRCX",
+    windows="5,20,60,120",
+)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-relative-strength.py \
   --watchlist NVDA,AMD,MU,INTC,QCOM,AVGO,TXN,KLAC,AMAT,LRCX \
@@ -18,8 +34,11 @@ python3 examples/run-relative-strength.py \
   --windows 5,20,60,120
 ```
 
-Add `--include-sectors` to drop the 11 SPDR sector ETFs into the same
-ranking for sector-leadership context.
+### Claude Code / LLM tool use
+
+Discovered at `skills/relative-strength/`. In a Claude Code
+session, ask "rank my semi watchlist by RS vs SPY". Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

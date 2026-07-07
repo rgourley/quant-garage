@@ -9,9 +9,28 @@ supporting numbers below.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.earnings_drilldown import run, render
+payload = run("NVDA")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-tier-b.py NVDA
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/earnings-drilldown/`. In a Claude Code
+session, ask "preview NVDA earnings" or "should I fade the straddle
+into AAPL's print" — Claude runs the full drilldown. Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

@@ -13,12 +13,31 @@ readings, not a hardcoded narrative.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.technical_briefing import run, render
+payload = run("NVDA", lookback_days=252)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-technical-briefing.py \
   --ticker NVDA \
   --lookback-days 252 \
   --format render
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/technical-briefing/`. In a Claude Code
+session, ask "technical read on NVDA" or "what does the chart say
+on ALLO" — Claude runs the skill. Tool-use LLMs consume the
+`run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## Sample output
 

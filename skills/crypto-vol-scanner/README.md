@@ -10,9 +10,28 @@ week's read: "quiet regime, BTC realized vol at 30% sitting in the
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.crypto_vol_scanner import run, render
+payload = run(watchlist="BTC-USD,ETH-USD,SOL-USD,AVAX-USD")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-crypto-vol-scanner.py
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/crypto-vol-scanner/`. In a Claude Code
+session, ask "any vol spikes across BTC/ETH/SOL right now" or
+"scan my alt watchlist for cross-exchange basis". Tool-use LLMs
+consume the `run()` payload matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

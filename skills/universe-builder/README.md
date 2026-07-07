@@ -10,10 +10,29 @@ candidates.
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.universe_builder import run, render
+payload = run(candidate_source="curated", min_mcap=10e9)
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-universe-builder.py \
   --min-price 20 --min-adv 400000 --min-mom-3m 0.10 --max-week-return 0.0
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/universe-builder/`. In a Claude Code session,
+ask "find me every US name above $20 with quarterly momentum that
+pulled back this week". Tool-use LLMs consume the `run()` payload
+matching [`output-schema.json`](./output-schema.json).
 
 ## What you get back
 

@@ -16,9 +16,28 @@ not "did execution match the PM's decision price."
 
 ## Quick start
 
+Three ways to invoke.
+
+### Python library
+
+```python
+from quant_garage.skills.slippage_cost import run, render
+payload = run("examples/sample-fills.csv")
+print(render(payload))
+```
+
+### CLI
+
 ```bash
 python3 examples/run-slippage-cost.py examples/sample-fills.csv
 ```
+
+### Claude Code / LLM tool use
+
+Discovered at `skills/slippage-cost/`. In a Claude Code session,
+ask "review yesterday's fills for slippage" and pass the fills
+file. Tool-use LLMs consume the `run()` payload matching
+[`output-schema.json`](./output-schema.json).
 
 ## What you get back
 
