@@ -210,17 +210,63 @@ def _fetch_news_window(
     return articles
 
 
+# Bucket -> expected flavors. When a filing's items map to any of
+# these buckets, articles whose detected flavor is in the corresponding
+# set are prioritized. Missing buckets fall back to "any flavor".
+BUCKET_EXPECTED_FLAVORS: dict[str, set[str]] = {
+    "material_agreement":
+        {"acquisition_announcement", "share_repurchase", "special_dividend"},
+    "acquisition_disposition":
+        {"acquisition_announcement", "acquisition_target"},
+    "control_change":
+        {"acquisition_target", "acquisition_announcement"},
+    "unregistered_equity_sale":
+        {"private_placement", "public_offering"},
+    "new_debt_or_obligation":
+        {"private_placement"},
+    "charter_bylaws_amendment":
+        {"stock_split", "spin_off"},
+    "restatement":
+        {"restatement"},
+    "other_material_event":
+        set(),  # anything goes; 8.01 is the catch-all
+    "reg_fd_disclosure":
+        set(),  # 7.01 is the catch-all
+}
+
+
 def _match_news_to_filing(
     articles: list[dict], filing_date: str,
+    filing_buckets: list[str] | None = None,
 ) -> dict | None:
-    """Find the news article closest to the 8-K filing date. Prefer
-    same-day, fall back to +/- 2 days. Rank same-day matches by whether
-    the title contains a flavor keyword."""
+    """Find the news article that best matches an 8-K filing.
+
+    Ranking (best first):
+      1. Article's detected flavor is one of the expected flavors for
+         the filing's item buckets (huge boost).
+      2. Article has at least one flavor keyword hit (a hint of
+         relevance beyond a generic wire piece).
+      3. Closer publication date (0-day gap ranks before +/- 1, etc.).
+      4. More flavor keyword hits overall (tiebreak).
+
+    Articles with zero flavor hits AND published on a different day
+    are dropped: linking a generic same-week wire story to a specific
+    material 8-K is worse than reporting no match. Same-day + zero
+    hits are still allowed so we surface the filing itself when the
+    only news that day is generic market coverage.
+    """
     try:
         target = date.fromisoformat(filing_date)
     except ValueError:
         return None
-    candidates: list[tuple[int, int, dict]] = []  # (day_gap, -flavor_hits, article)
+
+    expected_flavors: set[str] = set()
+    for bucket in filing_buckets or []:
+        expected_flavors |= BUCKET_EXPECTED_FLAVORS.get(bucket, set())
+    # Empty expected_flavors means "no specific expectation" — every
+    # candidate scores 0 on axis 1, and the tiebreakers decide.
+
+    candidates: list[tuple[int, int, int, int, dict]] = []
     for a in articles:
         pub_str = a.get("published_utc") or ""
         try:
@@ -231,16 +277,28 @@ def _match_news_to_filing(
         if gap > 2:
             continue
         text = f"{a.get('title', '')} {a.get('description', '')}"
+        detected_flavor = _detect_flavor(text)
         hits = sum(
             1 for kws in FLAVOR_KEYWORDS.values()
             for kw in kws if kw in text.lower()
         )
-        # Prefer smaller gap, more flavor hits
-        candidates.append((gap, -hits, a))
+        # Drop off-day articles with zero flavor signal.
+        if gap > 0 and hits == 0:
+            continue
+        flavor_match = (
+            1 if detected_flavor and detected_flavor in expected_flavors
+            else 0
+        )
+        has_any_flavor = 1 if hits > 0 else 0
+        # Sort key: prefer flavor match (desc), then any-flavor (desc),
+        # then closer date (asc), then more hits (desc).
+        candidates.append(
+            (-flavor_match, -has_any_flavor, gap, -hits, a)
+        )
     if not candidates:
         return None
-    candidates.sort(key=lambda x: (x[0], x[1]))
-    return candidates[0][2]
+    candidates.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    return candidates[0][4]
 
 
 def _fetch_daily_aggs(
@@ -381,7 +439,15 @@ def run(
 
         for f in filings:
             fdate = date.fromisoformat(f["filing_date"])
-            news = _match_news_to_filing(articles, f["filing_date"])
+            # Pass the filing's item buckets so the matcher can prefer
+            # articles with a flavor consistent with the filing type.
+            filing_bucket_labels = [
+                ITEM_TAXONOMY[b][0] for b in f["buckets"]
+                if b in ITEM_TAXONOMY
+            ]
+            news = _match_news_to_filing(
+                articles, f["filing_date"], filing_bucket_labels,
+            )
             flavor = None
             headline = None
             source = None

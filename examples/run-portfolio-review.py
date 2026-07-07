@@ -57,6 +57,14 @@ def main() -> int:
                     help="Sector-rotation lookback. Default 30.")
     ap.add_argument("--skip-rebalance", action="store_true", default=False,
                     help="Skip the rebalancer section (context only).")
+    ap.add_argument("--skip-analog", action="store_true", default=False,
+                    help="Skip the historical-analog-finder section "
+                         "(saves ~5s on the SPY 20yr fetch).")
+    ap.add_argument("--analog-k", type=int, default=20,
+                    help="K nearest neighbors for historical-analog-finder. Default 20.")
+    ap.add_argument("--analog-horizons", default="30,60,90,252",
+                    help="Comma-separated forward horizons (trading days). "
+                         "Default 30,60,90,252.")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                     help="stdout format. Default: json.")
     ap.add_argument("--out", type=str, default=None,
@@ -66,6 +74,16 @@ def main() -> int:
     fmt = args.format or os.environ.get("QUANT_GARAGE_OUTPUT_FORMAT", "json")
     if fmt not in ("render", "json", "both"):
         print(f"ERROR: --format must be render|json|both, got {fmt!r}",
+              file=sys.stderr)
+        return 2
+
+    try:
+        analog_horizons = [
+            int(h.strip()) for h in args.analog_horizons.split(",")
+            if h.strip()
+        ]
+    except ValueError:
+        print("ERROR: --analog-horizons must be comma-separated integers",
               file=sys.stderr)
         return 2
 
@@ -81,7 +99,10 @@ def main() -> int:
             earnings_window_days=args.earnings_window_days,
             macro_window_days=args.macro_window_days,
             rotation_window_days=args.rotation_window_days,
+            analog_k=args.analog_k,
+            analog_horizons_days=analog_horizons,
             include_rebalance=not args.skip_rebalance,
+            include_historical_analog=not args.skip_analog,
         )
     except (ValueError, RuntimeError) as e:
         print(f"ERROR: {e}", file=sys.stderr)

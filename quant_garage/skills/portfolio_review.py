@@ -38,6 +38,7 @@ from . import (
     macro_event_calendar,
     corporate_actions_scanner,
     portfolio_rebalancer,
+    historical_analog_finder,
 )
 
 
@@ -83,7 +84,10 @@ def run(
     earnings_window_days: int = 30,
     macro_window_days: int = 30,
     rotation_window_days: int = 30,
+    analog_k: int = 20,
+    analog_horizons_days: list[int] | None = None,
     include_rebalance: bool = True,
+    include_historical_analog: bool = True,
     client: MassiveClient | None = None,
 ) -> dict:
     """Run the composite portfolio review.
@@ -99,10 +103,15 @@ def run(
         earnings_window_days: forward earnings-blackout window. Default 30.
         macro_window_days: forward macro-calendar window. Default 30.
         rotation_window_days: sector-rotation lookback. Default 30.
-        include_rebalance: if False, skip the rebalancer (useful when
-            the caller just wants context, not recommendations).
+        analog_k: nearest-neighbor count for historical-analog-finder. Default 20.
+        analog_horizons_days: forward horizons for analog forecast.
+            Default [30, 60, 90, 252].
+        include_rebalance: if False, skip the rebalancer.
+        include_historical_analog: if False, skip the analog forecast.
         client: reuse an existing MassiveClient.
     """
+    if analog_horizons_days is None:
+        analog_horizons_days = [30, 60, 90, 252]
     weights = _parse_positions(positions)
     if not weights:
         raise ValueError("positions must contain at least one ticker=weight pair")
@@ -121,18 +130,29 @@ def run(
             errors.append({"section": section_name, "error": str(exc)})
 
     # 1) Macro regime
-    print("[1/7] market-regime...", file=sys.stderr)
+    print("[1/8] market-regime...", file=sys.stderr)
     _try("market_regime", lambda: market_regime.run(client=client))
 
     # 2) Sector rotation
-    print("[2/7] sector-rotation-signal...", file=sys.stderr)
+    print("[2/8] sector-rotation-signal...", file=sys.stderr)
     _try("sector_rotation", lambda: sector_rotation_signal.run(
         rotation_window=rotation_window_days,
         client=client,
     ))
 
-    # 3) Risk report
-    print("[3/7] risk-report...", file=sys.stderr)
+    # 3) Historical analog (regime-conditional forward distribution)
+    if include_historical_analog:
+        print("[3/8] historical-analog-finder...", file=sys.stderr)
+        _try("historical_analog", lambda: historical_analog_finder.run(
+            k=analog_k,
+            horizon_days=analog_horizons_days,
+            client=client,
+        ))
+    else:
+        sections["historical_analog"] = None
+
+    # 4) Risk report
+    print("[4/8] risk-report...", file=sys.stderr)
     pos_str = ",".join(f"{t}={weights[t]}" for t in tickers)
     _try("risk_report", lambda: risk_report.run(
         positions=pos_str,
@@ -140,9 +160,9 @@ def run(
         client_=client,
     ))
 
-    # 4) Earnings blackout (equities only — ETFs don't have earnings)
+    # 5) Earnings blackout (equities only — ETFs don't have earnings)
     if equities:
-        print(f"[4/7] earnings-blackout ({len(equities)} equities)...",
+        print(f"[5/8] earnings-blackout ({len(equities)} equities)...",
               file=sys.stderr)
         _try("earnings_blackout", lambda: earnings_blackout.run(
             watchlist=list(equities),
@@ -152,16 +172,16 @@ def run(
     else:
         sections["earnings_blackout"] = None
 
-    # 5) Macro calendar
-    print("[5/7] macro-event-calendar...", file=sys.stderr)
+    # 6) Macro calendar
+    print("[6/8] macro-event-calendar...", file=sys.stderr)
     _try("macro_calendar", lambda: macro_event_calendar.run(
         window_days=macro_window_days,
         client=client,
     ))
 
-    # 6) Corporate actions (equities only — ETFs don't file 8-Ks)
+    # 7) Corporate actions (equities only — ETFs don't file 8-Ks)
     if equities:
-        print(f"[6/7] corporate-actions-scanner ({len(equities)} equities)...",
+        print(f"[7/8] corporate-actions-scanner ({len(equities)} equities)...",
               file=sys.stderr)
         _try("corporate_actions", lambda: corporate_actions_scanner.run(
             watchlist=",".join(equities),
@@ -171,9 +191,9 @@ def run(
     else:
         sections["corporate_actions"] = None
 
-    # 7) Rebalancer
+    # 8) Rebalancer
     if include_rebalance:
-        print("[7/7] portfolio-rebalancer...", file=sys.stderr)
+        print("[8/8] portfolio-rebalancer...", file=sys.stderr)
         _try("rebalancer", lambda: portfolio_rebalancer.run(
             positions=pos_str,
             book_value=book_value,
@@ -218,6 +238,7 @@ def _build_headline(
     hl: dict = {
         "regime": None,
         "rotation_theme": None,
+        "analog_read": None,
         "portfolio_vol": None,
         "max_variance_share_name": None,
         "max_variance_share_pct": None,
@@ -234,6 +255,28 @@ def _build_headline(
     sr = sections.get("sector_rotation")
     if sr:
         hl["rotation_theme"] = sr.get("theme_read")
+
+    ha = sections.get("historical_analog")
+    if ha:
+        # Pick the 90d horizon (or the middle horizon requested) as the
+        # summary. Report median forward return + hit rate.
+        dists = ha.get("forward_return_distributions") or {}
+        horizons = ha.get("scan_params", {}).get("horizons_days") or []
+        # Prefer 90d, else middle horizon
+        preferred = 90 if 90 in horizons else (
+            horizons[len(horizons) // 2] if horizons else None
+        )
+        if preferred is not None:
+            key = f"{preferred}d"
+            row = dists.get(key) or {}
+            hl["analog_read"] = {
+                "horizon_days": preferred,
+                "n_analogs": ha.get("n_analogs"),
+                "median": row.get("median"),
+                "p25": row.get("p25"),
+                "p75": row.get("p75"),
+                "hit_rate_above_zero": row.get("hit_rate_above_zero"),
+            }
 
     rr = sections.get("risk_report")
     if rr:
@@ -378,6 +421,23 @@ def render(payload: dict) -> str:
         lines.append(f"Regime:        {hl['regime'].upper()}")
     if hl.get("rotation_theme"):
         lines.append(f"Rotation:      {hl['rotation_theme']}")
+    if hl.get("analog_read"):
+        ar = hl["analog_read"]
+        median = ar.get("median")
+        p25 = ar.get("p25")
+        p75 = ar.get("p75")
+        hit = ar.get("hit_rate_above_zero")
+        median_str = _fmt_pct_decimal(median) if median is not None else "n/a"
+        iqr_str = (
+            f"[{_fmt_pct_decimal(p25)}, {_fmt_pct_decimal(p75)}]"
+            if p25 is not None and p75 is not None else ""
+        )
+        hit_str = f", {hit * 100:.0f}% > 0" if hit is not None else ""
+        lines.append(
+            f"Analog {ar['horizon_days']}d:    median SPY "
+            f"{median_str}{hit_str} across {ar.get('n_analogs')} analogs"
+            + (f" · IQR {iqr_str}" if iqr_str else "")
+        )
     if hl.get("portfolio_vol") is not None:
         line = f"Portfolio vol: {hl['portfolio_vol']:.1f}%"
         if (hl.get("max_variance_share_name")
@@ -434,6 +494,8 @@ def render(payload: dict) -> str:
     render_map = [
         ("market_regime", "MACRO REGIME", market_regime.render),
         ("sector_rotation", "SECTOR ROTATION", sector_rotation_signal.render),
+        ("historical_analog", "HISTORICAL ANALOGS",
+         historical_analog_finder.render),
         ("risk_report", "PORTFOLIO RISK", risk_report.render),
         ("earnings_blackout", "EARNINGS CALENDAR (30d)",
          earnings_blackout.render),
