@@ -77,36 +77,36 @@ API just provides the inputs.
 
 ## Who this is for
 
-Anyone serious about market research who wants tools they can fork
-and put their own ideas behind.
+Four honest audiences.
 
-**Active traders** building a personal daily workflow that doesn't
-depend on a $25k Bloomberg terminal. Run the earnings preview before
-the open, the options flow scan during lunch, the post-trade TCA at
-the close. Adjust the methodology references to match how you actually
-think about a name.
+**Retail investors with a real book.** $50K to a few million. You
+make informed decisions, you don't day-trade, you don't have a
+Bloomberg terminal, and you want sell-side-quality output on the
+positions you actually hold. The workflows above (portfolio-review,
+weekly-brief, preflight-trade) were built for this exact use pattern.
 
-**Indie devs** building finance-adjacent apps. The structured JSON
-contract on every tool means you wire the output into your dashboard,
-agent, or notebook without parsing markdown. Each skill is a working
-data layer you can call from your own code.
+**Fintech and market-data developers.** You're building on top of
+Massive (or considering it) and you need reference tooling that
+shows what a serious integration looks like. Every skill is a
+working data layer with source-cited outputs, retry logic, and
+proper fallback chains. Fork it, adapt it, ship it.
 
-**Power users** researching their own positions. You want a sanity
-check that doesn't come from a Reddit thread or a chatbot guessing.
-You want the citation, the timestamp, the sample size, the honest
-caveat when the data is thin.
+**LLM and agent developers.** You're building finance-adjacent
+agents that need tool-use with real citations, not fabricated
+numbers. Every `run()` returns JSON matching a schema; every skill
+is discoverable as a Claude Code skill under `skills/`. The dual-
+layer contract is designed for exactly this use case.
 
-The obvious users too: **buy-side junior analysts** prototyping
-faster, **sell-side analysts** who want their morning notes drafted
-by 6am, **PMs** sanity-checking a model before the meeting, **quant
-data engineers** forking the framework into something proprietary,
-**armchair quants** who want production-shaped tools to learn the
-craft on.
+**Analysts and PMs, as supplementary tooling.** You have Bloomberg
+or Factset. You don't need this to replace them. You do need it
+for the scriptable workflows the terminal is bad at: batch a
+watchlist scan, feed the output into a Slack channel, run a
+sanity check that's reproducible and citation-anchored.
 
-**Not for:** people looking for alpha. These tools encode analyst
-workflow, not strategy. The takes are pattern-matchers grounded in
-methodology; they aren't a trading model. If you want production
-alpha, you build on top of this.
+**Not for:** people looking for a trading system. These tools
+encode analyst workflow, not strategy. The takes are pattern-
+matchers grounded in methodology; they aren't a signal engine. If
+you want production alpha, you build on top of this.
 
 ![34 skills, one framework](./assets/skills.png)
 
@@ -174,6 +174,25 @@ Retail-tier single-name card. technical-briefing plus earnings-
 blackout plus market-regime, translated into plain language. The
 thing to read before you buy something you saw on social. Every
 claim is gated to what the data actually says; nothing is templated.
+
+## Use cases, mapped to workflows
+
+Concrete situations, mapped to the workflow that solves them.
+
+| Situation | Workflow | Approx runtime |
+|---|---|---|
+| "It's Sunday evening. What's the setup for the week?" | [`weekly-brief`](skills/weekly-brief) | ~30s |
+| "It's 8am. What's the tape doing and what happened overnight?" | [`morning-brief`](skills/morning-brief) | ~15s |
+| "I want to review my whole book, deep." | [`portfolio-review`](skills/portfolio-review) | ~90s |
+| "I'm about to buy X. Is now obviously a bad time?" | [`preflight-trade`](skills/preflight-trade) | ~30s |
+| "Four of my names print earnings this week. Prep them." | [`earnings-week-prep`](skills/earnings-week-prep) | ~2 min |
+| "I have a directional view on X. How do I express it with options?" | [`options-structure-analyzer`](skills/options-structure-analyzer) | ~15s |
+| "What usually happens after market setups like this?" | [`historical-comparison`](skills/historical-comparison) | ~20s |
+| "What sectors are actually rotating right now?" | [`sector-rotation-signal`](skills/sector-rotation-signal) | ~10s |
+| "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
+| "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
+
+For the 26 individual primitives (compose your own workflow), scroll down.
 
 ## The 26 building-block tools, with real use cases
 
