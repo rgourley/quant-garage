@@ -1,0 +1,27 @@
+name: fixed-income-context
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+notes: |
+  ETF-proxy rates and credit view. One range-aggs call per proxy
+  plus benchmark (SPY). 9 calls total, well under the free-tier
+  rate limit.
+
+  Proxies: SHV (0-1y UST), SHY (1-3y), IEF (7-10y), TLT (20y+),
+  TIP (TIPS), LQD (IG credit), HYG (HY credit), AGG (aggregate).
+
+  Regime classifier is heuristic (six buckets: risk_off, credit_
+  stress, goldilocks, reflation, rate_pressure, neutral). Meant
+  as a context-setting surface for equity workflows, not a
+  standalone macro engine.
+fallbacks:
+  - market-regime

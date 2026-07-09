@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "fixed-income-context output",
+  "type": "object",
+  "required": ["scan_params", "proxies", "spreads", "regime", "generated_at"],
+  "properties": {
+    "scan_params": {
+      "type": "object",
+      "required": ["lookback_days", "benchmark", "as_of"],
+      "properties": {
+        "lookback_days": { "type": "integer" },
+        "correlation_window": { "type": "integer" },
+        "benchmark": { "type": "string" },
+        "as_of": { "type": "string", "format": "date" },
+        "missing_tickers": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "proxies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "name", "kind", "current_price"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "name": { "type": "string" },
+          "kind": {
+            "type": "string",
+            "enum": ["duration_short", "duration_intermediate", "duration_long", "inflation_protected", "credit_ig", "credit_hy", "aggregate"]
+          },
+          "duration_yrs": { "type": "number" },
+          "current_price": { "type": "number" },
+          "return_1d_pct": { "type": ["number", "null"] },
+          "return_5d_pct": { "type": ["number", "null"] },
+          "return_20d_pct": { "type": ["number", "null"] },
+          "return_60d_pct": { "type": ["number", "null"] },
+          "return_120d_pct": { "type": ["number", "null"] },
+          "sma_50": { "type": ["number", "null"] },
+          "sma_200": { "type": ["number", "null"] },
+          "above_sma_50": { "type": ["boolean", "null"] },
+          "above_sma_200": { "type": ["boolean", "null"] },
+          "price_percentile_252d": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "spreads": {
+      "type": "object",
+      "properties": {
+        "hyg_lqd_credit_spread_delta_5d_pct": { "type": ["number", "null"] },
+        "hyg_lqd_credit_spread_delta_20d_pct": { "type": ["number", "null"] },
+        "hyg_lqd_credit_spread_delta_60d_pct": { "type": ["number", "null"] },
+        "tlt_ief_duration_spread_delta_20d_pct": { "type": ["number", "null"] }
+      }
+    },
+    "credit_equity_correlation_60d": {
+      "type": ["number", "null"],
+      "description": "60-day rolling correlation of HYG daily log returns to the benchmark."
+    },
+    "regime": {
+      "type": "object",
+      "required": ["label", "read"],
+      "properties": {
+        "label": {
+          "type": "string",
+          "enum": ["risk_off", "credit_stress", "goldilocks", "reflation", "rate_pressure", "neutral"]
+        },
+        "read": { "type": "string" }
+      }
+    },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

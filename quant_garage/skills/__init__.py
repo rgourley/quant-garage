@@ -42,6 +42,7 @@ from . import preflight_trade  # noqa: F401
 from . import earnings_week_prep  # noqa: F401
 from . import historical_comparison  # noqa: F401
 from . import scan_and_frame  # noqa: F401
+from . import fixed_income_context  # noqa: F401
 from . import slippage_cost  # noqa: F401
 from . import t1_settlement_prep  # noqa: F401
 try:
