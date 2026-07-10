@@ -60,20 +60,25 @@ thresholds.
 
 ## The idea
 
-LLMs are confidently wrong about market data. They quote stock prices
-from a year ago, hallucinate peer baskets, invent beat rates. The fix
-isn't a better LLM. The fix is wrapping the LLM in a workflow that's
-grounded in real data with the methodology baked in.
+Every number in this repo cites a live API call. Every take is
+computed from actual readings. Every peer set carries its sample
+size. When the data is thin, the tool says so instead of guessing.
 
-That's what each tool here does. It pulls live market data from the
-Massive API, runs the actual analyst workflow,
-and returns a result you can trace back to the calls it made and the
-timestamps it made them at. No guesses. No hallucinated peer baskets.
+That's the whole difference between a research tool and a chatbot
+with a market-data plugin. The tools refuse to fabricate when the
+data isn't there, and they surface the endpoint and timestamp for
+each figure so you can retrace the reasoning.
 
-The methodology references inside each skill folder are where the IP
-lives: statistical methods, sample-size rules, base rates, edge cases,
-honest caveats about what the take does and doesn't prove. The Massive
-API just provides the inputs.
+The methodology references inside each skill folder are where the
+IP lives: statistical methods, sample-size rules, base rates, edge
+cases, honest caveats about what the take does and doesn't prove.
+The Massive API provides the inputs. Everything else is workflow.
+
+LLMs and agents work better on top of this surface than under it.
+Ask Claude Code "review my book" and it invokes the composite; ask
+any tool-use LLM and it consumes the same JSON. The dual layer
+means humans read a briefing, agents read a schema, both are anchored
+to the same live citation trail.
 
 ## Who this is for
 
