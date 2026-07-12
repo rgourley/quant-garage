@@ -1,0 +1,29 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "zero-dte-gamma output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "underlying", "expiration_date", "entitled", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "zero-dte-gamma" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "underlying": { "type": "string" },
+    "expiration_date": { "type": "string", "format": "date" },
+    "days_to_expiration": { "type": "integer" },
+    "entitled": { "type": "boolean" },
+    "spot": { "type": ["number", "null"] },
+    "n_strikes": { "type": "integer" },
+    "n_contracts": { "type": "integer" },
+    "total_call_gamma_notional": { "type": "number" },
+    "total_put_gamma_notional": { "type": "number" },
+    "net_dealer_gex": { "type": "number" },
+    "gamma_regime": { "type": "string", "enum": ["long_gamma", "short_gamma"] },
+    "gamma_flip_strike": { "type": ["number", "null"] },
+    "top_gamma_pins": { "type": "array" },
+    "gamma_by_strike": { "type": "array" },
+    "risk_free_rate": { "type": "number" },
+    "default_iv": { "type": "number" },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}

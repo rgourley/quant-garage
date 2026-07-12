@@ -1,0 +1,54 @@
+name: zero-dte-gamma
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+  - product: options
+    tier: developer
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic + Options Developer"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: options
+        tier: developer
+    enables: [chain_snapshot, gex_aggregation, gamma_pins]
+endpoints:
+  - GET /v3/reference/options/contracts
+  - GET /v3/snapshot/options/{underlying}
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{underlying}
+auth: bearer
+notes: |
+  Note-mode skill computing dealer gamma exposure aggregated by strike.
+
+  Convention: dealer is short customer calls (customers buy calls,
+  dealers sell them), long customer puts (customers buy puts, dealers
+  sell them). Consistent with retail-driven 0DTE flow research.
+
+  Cash gamma per contract = gamma × OI × 100 × spot² / 100.
+    where the outer /100 gives dollar-gamma per 1% underlying move.
+
+  Long gamma regime (net > 0): dealers hedge against price moves,
+  compressing intraday range. Sell-vol favored.
+  Short gamma regime (net < 0): dealers hedge with the market,
+  amplifying moves. Buy-vol / breakout favored.
+
+  Gamma flip strike: cumulative dealer GEX walking from lowest to
+  highest strike crosses zero. Break past this level shifts regime.
+
+  Caveats surfaced in every run:
+    - Dealer positioning assumption is convention, not actual books.
+    - Snapshot-based; intraday flow can flip the picture within
+      hours.
+    - When target expiry > 1 day out, an "expiry dilutes" warning
+      fires.
+fallbacks:
+  - options-flow
+  - options-structure-analyzer
