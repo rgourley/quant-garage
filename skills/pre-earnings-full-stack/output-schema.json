@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pre-earnings-full-stack output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "proposed_weight", "posture", "tier_caveats"],
+  "properties": {
+    "skill": { "type": "string", "const": "pre-earnings-full-stack" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "proposed_weight": { "type": "number" },
+    "horizon_days": { "type": "integer" },
+    "earnings_blackout": { "type": ["object", "null"] },
+    "event_study": { "type": ["object", "null"] },
+    "guidance_tracker": { "type": ["object", "null"] },
+    "analyst_tracker": { "type": ["object", "null"] },
+    "mc_sizing": { "type": ["object", "null"] },
+    "posture": {
+      "type": "object",
+      "properties": {
+        "verdict": { "type": "string", "enum": ["constructive_setup", "mixed_setup", "avoid_or_hedge", "no_imminent_print"] },
+        "print_imminent": { "type": "boolean" },
+        "print_status": { "type": ["string", "null"] },
+        "signals": { "type": "array" },
+        "warnings": { "type": "array" },
+        "reaction_take": { "type": ["string", "null"] },
+        "mc_p5_return": { "type": ["number", "null"] }
+      }
+    },
+    "sub_skill_errors": { "type": "object" },
+    "tier_caveats": { "type": "array" }
+  }
+}

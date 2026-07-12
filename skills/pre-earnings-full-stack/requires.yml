@@ -1,0 +1,47 @@
+name: pre-earnings-full-stack
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic + Benzinga Earnings + Analyst Ratings + Corporate Guidance"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_earnings
+        tier: addon
+      - product: benzinga_analyst_ratings
+        tier: addon
+    enables: [full_five_source_stack]
+  B:
+    label: "Stocks Basic only"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [three_source_stack]
+    loses: [guidance_track_record, analyst_positioning]
+endpoints:
+  - /stocks/filings/8-K/vX/disclosures
+  - /benzinga/v1/guidance
+  - /benzinga/v1/ratings
+  - /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Composite chaining five sub-skills for a single-ticker pre-print
+  read. Sub-skills fail gracefully on entitlement gaps; the workflow
+  completes with what remains.
+
+  Posture verdict rules:
+    constructive_setup: >=2 signals AND 0 warnings AND print imminent
+    avoid_or_hedge: >=2 warnings AND <=1 signal AND print imminent
+    mixed_setup: everything else with print imminent
+    no_imminent_print: no upcoming earnings detected
+fallbacks:
+  - earnings-drilldown
