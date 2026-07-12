@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "manager-portfolio-diff output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "filer_cik", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "manager-portfolio-diff" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "filer_cik": { "type": "string" },
+    "filer_display_name": { "type": ["string", "null"] },
+    "periods": {
+      "type": ["object", "null"],
+      "properties": {
+        "current": { "type": ["string", "null"] },
+        "prior": { "type": ["string", "null"] }
+      }
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "properties": {
+        "n_holdings_current": { "type": "integer" },
+        "n_holdings_prior": { "type": "integer" },
+        "total_market_value_current": { "type": "number" },
+        "total_market_value_prior": { "type": "number" },
+        "portfolio_value_delta_pct": { "type": ["number", "null"] },
+        "n_initiations": { "type": "integer" },
+        "n_exits": { "type": "integer" },
+        "n_adds": { "type": "integer" },
+        "n_trims": { "type": "integer" },
+        "n_unchanged": { "type": "integer" }
+      }
+    },
+    "changes": {
+      "type": ["object", "null"],
+      "properties": {
+        "initiation": { "type": "array", "items": { "$ref": "#/definitions/changeEntry" } },
+        "exit": { "type": "array", "items": { "$ref": "#/definitions/changeEntry" } },
+        "add": { "type": "array", "items": { "$ref": "#/definitions/changeEntry" } },
+        "trim": { "type": "array", "items": { "$ref": "#/definitions/changeEntry" } },
+        "unchanged": { "type": "array", "items": { "$ref": "#/definitions/changeEntry" } }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "object" } }
+  },
+  "definitions": {
+    "changeEntry": {
+      "type": "object",
+      "properties": {
+        "cusip": { "type": "string" },
+        "issuer_name": { "type": ["string", "null"] },
+        "prior_shares": { "type": ["integer", "null"] },
+        "current_shares": { "type": ["integer", "null"] },
+        "prior_market_value": { "type": ["number", "null"] },
+        "current_market_value": { "type": ["number", "null"] },
+        "delta_shares": { "type": "integer" },
+        "delta_shares_pct": { "type": ["number", "null"] }
+      }
+    }
+  }
+}

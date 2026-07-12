@@ -1,0 +1,55 @@
+name: manager-portfolio-diff
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [thirteen_f_diff, initiation_exit_add_trim_classification]
+endpoints:
+  - GET /stocks/filings/vX/13-F
+auth: bearer
+notes: |
+  Note-mode skill that pulls all 13-F rows for a caller-supplied
+  filer (alias or CIK), groups by period, and diffs the two most
+  recent quarters by CUSIP.
+
+  Filer resolution:
+    Aliases (case-insensitive): berkshire/buffett, baupost/klarman,
+    renaissance/rentech, bridgewater, third point/loeb,
+    pershing/pershing square/ackman, tiger global/coleman,
+    scion/burry, appaloosa/tepper.
+    Or pass filer_cik directly (10-digit zero-padded).
+
+  Aggregation:
+    Multiple rows per CUSIP occur when multiple managers file jointly
+    on one Form 13-F. The skill sums shares and market_value across
+    those rows before diffing.
+
+  Classification:
+    initiation: in current, not in prior
+    exit:       in prior, not in current
+    add:        in both, share change >= +25%
+    trim:       in both, share change <= -25%
+    unchanged:  otherwise
+
+  Caveats surfaced in every run:
+    - 13-F is lagged ~45 days after quarter-end.
+    - Long positions + long options only. Shorts don't appear.
+    - Market value is filer-reported at period date, not marked
+      to a current price.
+
+  Not for issuer-oriented queries. The 13-F endpoint does not
+  support ticker or CUSIP filters, only filer_cik and filing_date.
+fallbacks:
+  - insider-flow
