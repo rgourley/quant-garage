@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "filing-sentiment output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "filing-sentiment" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "filings": {
+      "type": ["object", "null"],
+      "properties": {
+        "current": { "type": ["string", "null"], "format": "date" },
+        "prior": { "type": ["string", "null"], "format": "date" }
+      }
+    },
+    "sections": {
+      "type": ["object", "null"],
+      "properties": {
+        "current": { "$ref": "#/definitions/sectionsBlock" },
+        "prior": { "oneOf": [ { "$ref": "#/definitions/sectionsBlock" }, { "type": "null" } ] }
+      }
+    },
+    "yoy_deltas": {
+      "type": ["object", "null"],
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "prior_n_tokens": { "type": "integer" },
+          "current_n_tokens": { "type": "integer" },
+          "length_delta_pct": { "type": ["number", "null"] },
+          "categories": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "object",
+              "properties": {
+                "prior_rate_per_10k": { "type": "number" },
+                "current_rate_per_10k": { "type": "number" },
+                "delta_per_10k": { "type": "number" },
+                "delta_pct": { "type": ["number", "null"] },
+                "label": { "type": "string", "enum": ["flat", "noticeable", "material", "dramatic", "n/a"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "object" } }
+  },
+  "definitions": {
+    "sectionsBlock": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "n_tokens": { "type": "integer" },
+          "counts": { "type": "object", "additionalProperties": { "type": "integer" } },
+          "rates_per_10k": { "type": "object", "additionalProperties": { "type": "number" } }
+        }
+      }
+    }
+  }
+}

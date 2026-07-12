@@ -1,0 +1,51 @@
+name: filing-sentiment
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [ten_k_sections, loughran_mcdonald_scoring, yoy_tone_shift]
+endpoints:
+  - GET /stocks/filings/10-K/vX/sections
+auth: bearer
+notes: |
+  Note-mode skill that scores Business + Risk Factors sections of the
+  two most recent 10-K filings using the Loughran-McDonald finance
+  sentiment dictionary and reports YoY tone shifts by category.
+
+  Categories (from LM master dictionary):
+    negative      economic loss / negative outcome
+    uncertain     imprecision / vagueness
+    litigious     legal exposure / dispute
+    modal_strong  strong modal verbs
+    modal_weak    weak modal verbs
+    constraining  restrictions / obligations
+
+  Normalization: rate per 10,000 tokens per section per filing. Makes
+  sections of different lengths comparable across filings and issuers.
+
+  Shift labels (on |delta| / current_rate ratio):
+    flat        < 10%
+    noticeable  10-25%
+    material    25-50%
+    dramatic    >= 50%
+
+  Any category whose current rate is under 10 per 10k gets label "n/a"
+  (sample too small to trust).
+
+  Not clause-level. Bag-of-words captures aggregate tone; a "dramatic"
+  score change flags where to read the section text, not what changed
+  specifically.
+fallbacks:
+  - risk-factor-delta
