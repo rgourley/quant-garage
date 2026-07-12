@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "signal-decay output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "signal_kind", "classification", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "signal-decay" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "signal_kind": { "type": "string", "enum": ["momentum", "mean_reversion", "vol_expansion", "trend_break"] },
+    "signal_window": { "type": "integer" },
+    "forward_horizon": { "type": "integer" },
+    "ic_window": { "type": "integer" },
+    "lookback_days": { "type": "integer" },
+    "n_prices": { "type": "integer" },
+    "n_ic_points": { "type": "integer" },
+    "ic_mean": { "type": "number" },
+    "ic_std": { "type": "number" },
+    "ic_mean_early": { "type": "number" },
+    "ic_mean_recent": { "type": "number" },
+    "ic_delta_recent_minus_early": { "type": "number" },
+    "decay_rate_per_day": { "type": ["number", "null"] },
+    "half_life_trading_days": { "type": ["number", "null"] },
+    "classification": {
+      "type": "string",
+      "enum": ["fast_decay", "moderate_decay", "slow_decay", "essentially_stable", "not_significantly_decaying"]
+    },
+    "signal_tearsheet": { "type": ["object", "null"] },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}

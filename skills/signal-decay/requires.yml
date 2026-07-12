@@ -1,0 +1,55 @@
+name: signal-decay
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [rolling_ic, exponential_decay_fit, tearsheet]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Note-mode skill implementing 2024-25 factor decay analysis.
+
+  Signal builders (all take past prices, return per-bar signal series):
+    momentum: N-day log return
+    mean_reversion: negative of z-score to N-day SMA
+    vol_expansion: ratio of short vol to long vol
+    trend_break: (close - SMA) / ATR
+
+  IC computation: rolling 63-day Pearson correlation of signal vs
+  forward-5-day log return. Series produces roughly 1200 points on a
+  5-year sample.
+
+  Decay fit: OLS on log|IC| vs time index. Slope = -lambda,
+  half_life = ln(2) / lambda.
+
+  Classification thresholds (trading days):
+    fast_decay        <60
+    moderate_decay    60-250
+    slow_decay        250-1000
+    essentially_stable >1000
+    not_significantly_decaying: no fit (positive slope or noise)
+
+  Tearsheet on signed-signal PnL uses quant_garage.performance
+  helpers: CAGR, annualized vol, Sharpe, deflated Sharpe p-value,
+  Sortino, Calmar, max DD, ulcer, profit factor, tail ratio, hit
+  rates.
+
+  Caveats surfaced in every run:
+    - Log-linear decay fit assumes smooth decay, not regime shifts.
+    - No fit could mean stable signal OR noisy IC.
+    - Low |mean IC| flag when signal may not be economically meaningful.
+fallbacks:
+  - factor-research
