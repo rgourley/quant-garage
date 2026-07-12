@@ -16,13 +16,14 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Forty-one primitives plus thirteen one-command workflows. One
+Forty-two primitives plus thirteen one-command workflows. One
 framework. Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs twenty of the primitives plus most workflows end-to-end;
-$29/month Stocks Starter opens thirty-eight of the forty-one primitives
-and every workflow.
+tier runs twenty-one of the primitives plus most workflows end-to-end;
+$29/month Stocks Starter opens thirty-nine of the forty-two primitives
+and every workflow. One primitive (prediction-market-monitor) needs
+no Massive key at all — it uses Kalshi's public read-only API.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
 [issue](https://github.com/rgourley/quant-garage/issues) or send a
@@ -30,7 +31,7 @@ and every workflow.
 
 ## What the collection does
 
-Each primitive is useful on its own. The point of having forty-one that
+Each primitive is useful on its own. The point of having forty-two that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -197,9 +198,9 @@ Concrete situations, mapped to the workflow that solves them.
 | "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
 | "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
 
-For the 41 individual primitives (compose your own workflow), scroll down.
+For the 42 individual primitives (compose your own workflow), scroll down.
 
-## The 41 building-block tools, with real use cases
+## The 42 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -360,6 +361,18 @@ SPY: 120-day vol drops from 11.66% (traditional) to 2.08% (rough) —
 a 5x reduction that changes how you size long-horizon scenarios.
 
 ### Market context
+
+**[`prediction-market-monitor`](skills/prediction-market-monitor)**
+Kalshi prediction market monitor for Fed decisions, CPI, GDP, NFP,
+and other macro / market events. Motivated by 2025-26 post-election
+growth of prediction markets as leading indicators. Reports the
+implied probability at each strike, derives the cross-strike
+probability distribution when the event is a laddered strike-type
+(like KXFED-27APR-T4.25, T4.00, T3.75...), and computes the modal
+outcome and expected value. Live on Kalshi Fed decisions: October
+2027 shows 63.5% probability of a 25bp hike; December 2027 shows a
+split market (37.5% hike vs 49% cut). Uses Kalshi's public
+read-only API; no Massive key required.
 
 **[`market-regime`](skills/market-regime)**
 Daily macro briefing before you do anything else. SPY trend (above
@@ -655,7 +668,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirty-eight of the forty-one
+that powers the universe screeners. Thirty-nine of the forty-two
 tools run on this tier (crypto-vol-scanner, full-fidelity
 options-structure-analyzer, guidance-tracker, and analyst-tracker
 need separate plans; the latter two are Benzinga add-ons). Every workflow

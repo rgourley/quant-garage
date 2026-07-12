@@ -96,6 +96,7 @@ A few things to know up front:
 | `vs-benchmark-audit` | Workflow | Stocks Basic | Full tearsheet with DSR correction + rolling IC vs benchmark |
 | `smart-money-cluster` | Workflow | Stocks Basic | manager-portfolio-diff across curated cohort of well-known filers |
 | `pre-earnings-full-stack` | Workflow | Stocks Basic | earnings-blackout + event-study + guidance + analyst + MC sizing |
+| `prediction-market-monitor` | REST | (no Massive key) | Kalshi public API for Fed decisions, CPI, GDP, NFP implied probabilities |
 
 ## The workflow composites
 
