@@ -87,6 +87,7 @@ A few things to know up front:
 | `hurst-exponent` | REST | Stocks Basic | R/S Hurst estimator on daily returns; single-name persistence classifier; free tier |
 | `mc-portfolio-simulator` | REST | Stocks Basic | Monte Carlo forward P&L simulator; free tier |
 | `risk-report` (with --mc) | REST | Stocks Basic | Adds path-VaR MC block to existing risk-report; normal or student-t innovations |
+| `change-point-detector` | REST | Stocks Basic | Bayesian Online Change-Point Detection (Adams-MacKay 2007) on daily returns; free tier |
 
 ## The workflow composites
 

@@ -16,12 +16,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Thirty-seven tools plus eight one-command workflows. One framework.
+Thirty-eight tools plus eight one-command workflows. One framework.
 Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs fifteen of the tools plus most workflows end-to-end; $29/month
-Stocks Starter opens thirty-five of the thirty-seven tools and every
+tier runs sixteen of the tools plus most workflows end-to-end; $29/month
+Stocks Starter opens thirty-six of the thirty-eight tools and every
 workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
@@ -30,7 +30,7 @@ workflow.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having thirty-seven that
+Each tool is useful on its own. The point of having thirty-eight that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -197,9 +197,9 @@ Concrete situations, mapped to the workflow that solves them.
 | "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
 | "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
 
-For the 37 individual primitives (compose your own workflow), scroll down.
+For the 38 individual primitives (compose your own workflow), scroll down.
 
-## The 37 building-block tools, with real use cases
+## The 38 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -324,6 +324,19 @@ mean-reverting (H < 0.45), random walk (H in [0.45, 0.55]), or
 trending (H > 0.55). Answers "is this name a mean-reversion setup or
 a momentum setup?" Utilities and staples cluster on the low side,
 growth names in strong runs on the high side.
+
+**[`change-point-detector`](skills/change-point-detector)**
+Bayesian Online Change-Point Detection (Adams & MacKay 2007) on a
+ticker's daily log returns. Detects the specific dates where the
+return-generating distribution shifted (regime change in mean, vol,
+or both), reports posterior confidence at each boundary, and emits
+per-segment annualized return + vol so you can see what changed.
+Live on ALLO: the 2026-04-14 detection lands on the exact date of
+the ALPHA3 trial futility announcement, confidence 0.9965. Not for
+real-time entries (BOCPD lags real change points by 5-20
+observations); use for post-hoc regime labeling and to audit
+whether a pair's cointegration or a factor's edge broke partway
+through the lookback.
 
 ### Market context
 
@@ -609,7 +622,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirty-five of the thirty-seven
+that powers the universe screeners. Thirty-six of the thirty-eight
 tools run on this tier (crypto-vol-scanner, full-fidelity
 options-structure-analyzer, guidance-tracker, and analyst-tracker
 need separate plans; the latter two are Benzinga add-ons). Every workflow
@@ -643,7 +656,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-fifteen tools end to end; Stocks Starter ($29/month) opens thirty-five.
+sixteen tools end to end; Stocks Starter ($29/month) opens thirty-six.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here
