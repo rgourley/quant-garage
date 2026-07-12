@@ -37,6 +37,43 @@ def annualized_vol(daily_returns: Sequence[float], trading_days_per_year: int = 
     return sigma_daily * math.sqrt(trading_days_per_year)
 
 
+def ewma_vol(
+    daily_returns: Sequence[float],
+    lambda_: float = 0.94,
+    trading_days_per_year: int = TRADING_DAYS_PER_YEAR,
+) -> float:
+    """
+    Annualized exponentially-weighted-moving-average vol (RiskMetrics).
+
+    σ²_t = λ · σ²_{t-1} + (1 - λ) · r²_{t-1}. Seeded with the full-sample
+    realized variance so the estimate does not depend on the first
+    observation. Returns σ_final · sqrt(trading_days_per_year).
+
+    λ = 0.94 is the RiskMetrics daily convention (effective half-life
+    about 11 days). Recent moves dominate. λ ∈ (0, 1); at λ = 1 this
+    reduces to the seed variance, at λ → 0 to the last squared return.
+
+    Compared to `annualized_vol`, EWMA responds faster to regime shifts
+    at the cost of noisier estimates on quiet series. Prefer for sizing
+    decisions where you want to cut exposure into rising vol; prefer
+    realized when you want a stable multi-month estimate.
+    """
+    if not (0.0 < lambda_ < 1.0):
+        raise ValueError(f"ewma_vol: lambda_ must be in (0, 1), got {lambda_}")
+    arr = np.asarray(list(daily_returns), dtype=float)
+    arr = arr[np.isfinite(arr)]
+    if arr.size < 5:
+        raise ValueError(
+            f"ewma_vol: need at least 5 valid daily returns, got {arr.size}"
+        )
+    var_seed = float(np.var(arr, ddof=1))
+    var_t = var_seed
+    for r in arr:
+        var_t = lambda_ * var_t + (1.0 - lambda_) * (r * r)
+    sigma_daily = math.sqrt(var_t)
+    return sigma_daily * math.sqrt(trading_days_per_year)
+
+
 def correlation_matrix(returns_panel: dict[str, Sequence[float]]) -> tuple[list[str], np.ndarray]:
     """Compute pairwise Pearson correlation across aligned-date returns.
 

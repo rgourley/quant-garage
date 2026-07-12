@@ -31,6 +31,10 @@ def main() -> int:
     ap.add_argument("--var-confidence", default="0.95,0.99")
     ap.add_argument("--stress-n", type=int, default=5)
     ap.add_argument("--shrinkage", type=float, default=0.05)
+    ap.add_argument("--vol", choices=["realized", "ewma"], default="realized",
+                    help="Vol estimator. 'realized' = trailing-window std; 'ewma' = RiskMetrics EWMA (responds faster to recent regime). Default realized.")
+    ap.add_argument("--ewma-lambda", type=float, default=0.94,
+                    help="EWMA decay when --vol ewma. 0.94 is the RiskMetrics daily convention. Default 0.94.")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -48,6 +52,8 @@ def main() -> int:
             var_confidence=args.var_confidence,
             stress_n=args.stress_n,
             shrinkage=args.shrinkage,
+            vol_method=args.vol,
+            ewma_lambda=args.ewma_lambda,
         )
     except (ValueError, RuntimeError) as e:
         print(f"ERROR: {e}", file=sys.stderr)

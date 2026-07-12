@@ -25,6 +25,7 @@ from .. import (
     today,
     utcnow_iso,
     annualized_vol,
+    ewma_vol,
     correlation_matrix,
     covariance_matrix,
     shrink_correlation,
@@ -48,6 +49,15 @@ TODAY = today()
 _AGGS_CACHE: dict[str, list[dict]] = {}
 
 N_TRADING_MIN = 60
+
+
+def _vol(returns, method: str, ewma_lambda: float = 0.94) -> float:
+    """Dispatch to realized or EWMA annualized vol. Raises on unknown method."""
+    if method == "realized":
+        return float(annualized_vol(returns))
+    if method == "ewma":
+        return float(ewma_vol(returns, lambda_=ewma_lambda))
+    raise ValueError(f"vol_method must be 'realized' or 'ewma', got {method!r}")
 
 
 # ----- HTTP -----
@@ -229,6 +239,8 @@ def run(
     var_confidence: Iterable[float] | str = "0.95,0.99",
     stress_n: int = 5,
     shrinkage: float = 0.05,
+    vol_method: str = "realized",
+    ewma_lambda: float = 0.94,
     client_: MassiveClient | None = None,
 ) -> dict:
     """Compute a full risk report for a fixed book.
@@ -253,6 +265,9 @@ def run(
         varconf_arg = var_confidence
     else:
         varconf_arg = ",".join(str(v) for v in var_confidence)
+
+    if vol_method not in ("realized", "ewma"):
+        raise ValueError(f"vol_method must be 'realized' or 'ewma', got {vol_method!r}")
 
     args = SimpleNamespace(
         positions=positions_arg,
@@ -383,7 +398,7 @@ def run(
     name_vols: dict[str, float] = {}
     for t in position_tickers:
         r = np.asarray(aligned_returns[t], dtype=float)
-        name_vols[t] = round(float(annualized_vol(r)), 4)
+        name_vols[t] = round(_vol(r, vol_method, ewma_lambda), 4)
 
     # Correlation + cov on the position panel only (benchmark not part of cov)
     position_panel = {t: aligned_returns[t] for t in position_tickers}
@@ -408,7 +423,7 @@ def run(
 
     # ----- Portfolio stats -----
 
-    port_vol_ann = annualized_vol(port_ret)
+    port_vol_ann = _vol(port_ret, vol_method, ewma_lambda)
     port_mean_ann = float(np.mean(port_ret)) * 252.0
     sharpe_naive = port_mean_ann / port_vol_ann if port_vol_ann > 0 else 0.0
 
@@ -557,6 +572,8 @@ def run(
         "lookback_days": int(args.lookback_days),
         "n_obs_aligned": int(len(aligned_dates)),
         "benchmark": bench,
+        "vol_method": vol_method,
+        "ewma_lambda": ewma_lambda if vol_method == "ewma" else None,
         "stats": stats_block,
         "var": {
             "lookback_days": int(len(aligned_dates)),
@@ -603,8 +620,14 @@ def render(payload: dict) -> str:
     lines.append(
         f"Risk Report — {', '.join(tickers)} (gross {book['gross_exposure']*100:.1f}%)"
     )
+    vol_tag = payload.get("vol_method", "realized")
+    if vol_tag == "ewma":
+        lam = payload.get("ewma_lambda")
+        vol_desc = f"EWMA vol (λ={lam})"
+    else:
+        vol_desc = "realized vol"
     lines.append(
-        f"Lookback {payload['lookback_days']}d · Benchmark {bench} · As of {payload['as_of']}"
+        f"Lookback {payload['lookback_days']}d · Benchmark {bench} · {vol_desc} · As of {payload['as_of']}"
     )
     lines.append("")
 

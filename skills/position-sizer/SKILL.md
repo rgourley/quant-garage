@@ -35,6 +35,9 @@ Optional:
 - Target vol (default 12%)
 - Leverage cap (default 1.0x; Σ|w| ≤ cap across every method)
 - Max single-position weight (default no cap)
+- Vol estimator (default `realized`; `ewma` for RiskMetrics EWMA with
+  configurable λ, default 0.94, that responds faster to recent regime
+  shifts, so sizing cuts exposure into rising vol rather than lagging it)
 
 ## What you get back
 
@@ -125,10 +128,10 @@ shipping; field names and versions shift.
   when one name's edge is dominated by another's. v1 floors negative
   signals at zero and surfaces a `negative_signals_floored: true` flag.
   A long-short v2 PR is the obvious extension; queued.
-- **Static vol estimate.** The 252-day realized vol is a backward-
-  looking number. Forward-looking vol from options IV (calls into the
-  Options chain at the ATM strike) would be more honest at the cost of
-  pulling the chain per name. Queued for v2.
+- **Options-implied vol.** `--vol ewma` gets you a regime-responsive
+  vol from the realized series. Fully forward-looking vol from the
+  options chain (ATM IV) would be more honest at the cost of pulling
+  the chain per name. Queued for v2.
 - **Single horizon.** All methods assume the user's holding horizon
   matches the lookback window's regime. A multi-horizon view (e.g.,
   60-day vol vs 252-day vol) would show how regime-sensitive each

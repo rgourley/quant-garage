@@ -54,6 +54,7 @@ from .monte_carlo import (
 )
 from .sizing import (
     annualized_vol,
+    ewma_vol,
     correlation_matrix,
     covariance_matrix,
     shrink_correlation,
@@ -115,6 +116,7 @@ __all__ = [
     "percentile_summary",
     "DistributionKind",
     "annualized_vol",
+    "ewma_vol",
     "correlation_matrix",
     "covariance_matrix",
     "shrink_correlation",

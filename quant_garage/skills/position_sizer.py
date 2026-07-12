@@ -25,6 +25,7 @@ from .. import (
     today,
     utcnow_iso,
     annualized_vol,
+    ewma_vol,
     correlation_matrix,
     covariance_matrix,
     shrink_correlation,
@@ -43,6 +44,15 @@ TODAY = today()
 _AGGS_CACHE: dict[str, list[dict]] = {}
 
 VALID_METHODS = ("vol_target", "kelly", "risk_parity", "equal_weight")
+
+
+def _vol(returns, method: str, ewma_lambda: float = 0.94) -> float:
+    """Dispatch to realized or EWMA annualized vol."""
+    if method == "realized":
+        return float(annualized_vol(returns))
+    if method == "ewma":
+        return float(ewma_vol(returns, lambda_=ewma_lambda))
+    raise ValueError(f"vol_method must be 'realized' or 'ewma', got {method!r}")
 
 
 # ----- HTTP -----
@@ -171,6 +181,8 @@ def run(
     kelly_scale: float = 0.25,
     methods: Iterable[str] | str = "vol_target,kelly,risk_parity,equal_weight",
     shrinkage: float = 0.05,
+    vol_method: str = "realized",
+    ewma_lambda: float = 0.94,
     client_: MassiveClient | None = None,
 ) -> dict:
     """Emit position sizes under multiple sizing methods for a fixed basket.
@@ -300,10 +312,13 @@ def run(
 
     # ----- Per-name stats -----
 
+    if vol_method not in ("realized", "ewma"):
+        raise ValueError(f"vol_method must be 'realized' or 'ewma', got {vol_method!r}")
+
     name_stats: dict[str, dict] = {}
     for t in tickers_used_input:
         r = np.asarray(aligned_returns[t], dtype=float)
-        sigma_ann = annualized_vol(r)
+        sigma_ann = _vol(r, vol_method, ewma_lambda)
         # Annualized mean: daily mean * 252. Display-only (Kelly takes edges from user).
         mean_ann = float(np.mean(r)) * 252.0
         name_stats[t] = {
@@ -388,9 +403,14 @@ def run(
 
     # ----- Always-on caveats -----
 
-    tier_caveats.append(
-        f"Vol estimates use {len(aligned_dates)}-day realized; future vol may differ."
-    )
+    if vol_method == "ewma":
+        tier_caveats.append(
+            f"Vol estimates use EWMA (λ={ewma_lambda}) over the {len(aligned_dates)}-day window; recent moves dominate. Future vol may still differ."
+        )
+    else:
+        tier_caveats.append(
+            f"Vol estimates use {len(aligned_dates)}-day realized; future vol may differ."
+        )
     tier_caveats.append(
         f"Correlation matrix shrunk {args.shrinkage*100:.0f}% toward identity for "
         f"numerical safety."
@@ -420,6 +440,8 @@ def run(
         "tickers_excluded": excluded,
         "lookback_days": int(args.lookback_days),
         "n_obs_aligned": len(aligned_dates),
+        "vol_method": vol_method,
+        "ewma_lambda": ewma_lambda if vol_method == "ewma" else None,
         "target_vol": float(args.target_vol),
         "leverage_cap": float(args.leverage_cap),
         "max_weight": args.max_weight,
@@ -456,9 +478,16 @@ def render(payload: dict) -> str:
     lines.append(f"Position sizes — {', '.join(used)}")
     cap_txt = (f"Max weight {payload['max_weight']*100:.0f}%"
                if payload["max_weight"] is not None else "Max weight none")
+    vol_tag = payload.get("vol_method", "realized")
+    if vol_tag == "ewma":
+        lam = payload.get("ewma_lambda")
+        vol_desc = f"EWMA vol (λ={lam})"
+    else:
+        vol_desc = "realized vol"
     lines.append(
         f"Target vol {payload['target_vol']*100:.0f}% · "
         f"Lookback {payload['lookback_days']}d · "
+        f"{vol_desc} · "
         f"{cap_txt} · "
         f"Leverage cap {payload['leverage_cap']:.1f}x"
     )

@@ -38,6 +38,9 @@ Optional:
 - Lookback window in trading days (default 252)
 - VaR confidence levels (default `0.95,0.99`)
 - Number of worst historical days to surface (default 5)
+- Vol estimator (default `realized`; `ewma` for RiskMetrics EWMA with
+  configurable λ, default 0.94, that responds faster to recent regime
+  shifts)
 
 ## What you get back
 
