@@ -1,0 +1,21 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "prediction-market-monitor output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "source", "events", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "prediction-market-monitor" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string" },
+    "series_ticker": { "type": ["string", "null"] },
+    "keyword": { "type": ["string", "null"] },
+    "event_ticker_filter": { "type": ["string", "null"] },
+    "n_events": { "type": "integer" },
+    "n_events_reported": { "type": "integer" },
+    "n_markets_total": { "type": "integer" },
+    "events": { "type": "array" },
+    "tier_caveats": { "type": "array" },
+    "sources": { "type": "array" }
+  }
+}

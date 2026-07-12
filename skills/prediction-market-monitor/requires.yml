@@ -1,0 +1,46 @@
+name: prediction-market-monitor
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: any
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Any tier (Kalshi public API)"
+    needs:
+      - product: any
+        tier: basic
+    enables: [implied_probability, distribution_derivation]
+endpoints:
+  - GET https://api.elections.kalshi.com/trade-api/v2/markets
+auth: none
+notes: |
+  Kalshi's public read-only API does not require authentication.
+  Uses urllib directly. Rate-limits at 10 req/s per Kalshi's docs;
+  the skill throttles at ~1 req per 150ms.
+
+  Implied distribution derivation for laddered strike events:
+    - Sort markets by floor_strike ascending.
+    - Yes-mid at each strike = P(rate > strike).
+    - Bucket probability = P(above lower) - P(above upper) walking up.
+    - Modal outcome = highest bucket probability.
+    - Expected value = probability-weighted midpoint of buckets.
+
+  Series shortcuts (case-insensitive):
+    fed, fed_decision, cpi, core_cpi, cpi_yoy, ppi, nfp, unemployment,
+    gdp, jobless_claims, recession, spx_close, btc_close,
+    housing_starts, retail_sales, ism_manufacturing, consumer_confidence
+
+  Caveats surfaced in every run:
+    - Kalshi markets on off-consensus outcomes may reflect market-
+      maker spread rather than genuine informed conviction.
+    - Prediction market prices are risk-neutral, not physical
+      probabilities.
+fallbacks:
+  - macro-event-calendar
+  - fixed-income-context
