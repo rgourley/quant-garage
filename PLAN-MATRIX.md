@@ -88,6 +88,9 @@ A few things to know up front:
 | `mc-portfolio-simulator` | REST | Stocks Basic | Monte Carlo forward P&L simulator; free tier |
 | `risk-report` (with --mc) | REST | Stocks Basic | Adds path-VaR MC block to existing risk-report; normal or student-t innovations |
 | `change-point-detector` | REST | Stocks Basic | Bayesian Online Change-Point Detection (Adams-MacKay 2007) on daily returns; free tier |
+| `signal-decay` | REST | Stocks Basic | Rolling IC + exponential decay fit + tearsheet on candidate signals; free tier |
+| `rough-vol-forecast` | REST | Stocks Basic | Rough-volatility (Bayer-Friz-Gatheral 2016) multi-horizon vol forecast; free tier |
+| `zero-dte-gamma` | REST | Stocks Basic + Options Developer | Dealer gamma exposure aggregation for near-expiry SPY/SPX/QQQ options |
 
 ## The workflow composites
 

@@ -16,12 +16,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Thirty-eight tools plus eight one-command workflows. One framework.
+Forty-one tools plus eight one-command workflows. One framework.
 Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs sixteen of the tools plus most workflows end-to-end; $29/month
-Stocks Starter opens thirty-six of the thirty-eight tools and every
+tier runs eighteen of the tools plus most workflows end-to-end; $29/month
+Stocks Starter opens forty-one of the forty-one tools and every
 workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
@@ -30,7 +30,7 @@ workflow.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having thirty-eight that
+Each tool is useful on its own. The point of having forty-one that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -197,9 +197,9 @@ Concrete situations, mapped to the workflow that solves them.
 | "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
 | "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
 
-For the 38 individual primitives (compose your own workflow), scroll down.
+For the 41 individual primitives (compose your own workflow), scroll down.
 
-## The 38 building-block tools, with real use cases
+## The 41 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -338,6 +338,27 @@ observations); use for post-hoc regime labeling and to audit
 whether a pair's cointegration or a factor's edge broke partway
 through the lookback.
 
+**[`signal-decay`](skills/signal-decay)**
+Estimate the half-life of a candidate signal. Runs rolling 63-day IC
+vs 5-day forward returns over a 5-year window, fits an exponential
+decay to the IC series, and reports the half-life in trading days
+plus a full performance tearsheet (deflated Sharpe, Sortino, Calmar,
+ulcer, tail ratio, hit rate) on the signed-signal PnL. Motivated by
+2024-25 factor decay research (Israel-Moskowitz-Ross,
+Falck-Rej-Thesmar 2024, Chen-Zimmermann factor zoo). Live on SPY
+mean-reversion: mean IC went from +0.06 early quarter to -0.16
+recent quarter — the classic short-horizon mean-reversion effect
+has completely flipped sign this cycle.
+
+**[`rough-vol-forecast`](skills/rough-vol-forecast)**
+Rough-volatility-scaled vol forecast (Bayer-Friz-Gatheral 2016)
+across multiple horizons. Under rough vol, realized vol scales as
+h^H with H ~ 0.14 (Livieri et al. 2018 empirical) — much slower
+than sqrt(t). Reports the rough-vol forecast alongside traditional
+Brownian scaling and EWMA so you see the divergence directly. On
+SPY: 120-day vol drops from 11.66% (traditional) to 2.08% (rough) —
+a 5x reduction that changes how you size long-horizon scenarios.
+
 ### Market context
 
 **[`market-regime`](skills/market-regime)**
@@ -396,6 +417,18 @@ clustering. Output is a tight stream of the top 10-20 prints with a
 sentiment tag per block. Yesterday's run surfaced a TSLA bullish read
 where someone sold $400 puts on the bid AND bought $385 calls above
 the ask. Two trades, same direction.
+
+**[`zero-dte-gamma`](skills/zero-dte-gamma)**
+Estimate net dealer gamma exposure (GEX) for same-day-expiry SPY /
+SPX / QQQ / IWM options and identify gamma pins. Motivated by
+2024-25 research (Baltussen-Terhorst-Van Vliet 2024, Bhattacharya
+2024) documenting that 0DTE options now drive systematic intraday
+moves through market-maker delta hedging pressure. Reports net
+dealer gamma, gamma regime (long/short), gamma flip strike, and top
+5 pins with per-side call and put notional. Live on SPY 2026-07-13
+expiry: $754.95 spot, dealers net short $1.25B gamma at the top
+pins concentrated at $759 call strikes (9,412 OI) — expect
+intraday moves to accelerate rather than mean-revert.
 
 **[`news-scanner`](skills/news-scanner)**
 You want today's notable news cross-referenced against the price
@@ -622,7 +655,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirty-six of the thirty-eight
+that powers the universe screeners. Thirty-eight of the forty-one
 tools run on this tier (crypto-vol-scanner, full-fidelity
 options-structure-analyzer, guidance-tracker, and analyst-tracker
 need separate plans; the latter two are Benzinga add-ons). Every workflow
@@ -656,7 +689,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-sixteen tools end to end; Stocks Starter ($29/month) opens thirty-six.
+eighteen tools end to end; Stocks Starter ($29/month) opens thirty-eight.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here
