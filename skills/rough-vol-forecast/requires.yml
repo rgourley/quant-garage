@@ -1,0 +1,47 @@
+name: rough-vol-forecast
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [rough_vol_scaling, multi_horizon_forecast]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Note-mode skill implementing rough-volatility scaling per
+  Bayer-Friz-Gatheral (2016) across multiple forecast horizons.
+
+  Vol scaling models compared:
+    Traditional Brownian:  sigma(h) = sigma_daily * sqrt(h)
+    EWMA (RiskMetrics):    same sqrt-time but decay-weighted vol
+    Rough (BFG 2016):      sigma(h) = sigma_daily * h^H
+
+  Default H = 0.14 (Livieri et al. 2018 empirical for daily equity
+  returns). Override with hurst kwarg or --hurst CLI arg for
+  name-specific estimates.
+
+  Under H < 0.5, rough vol damps long-horizon growth vs sqrt(t) and
+  slightly lifts short-horizon estimates.
+
+  Caveats surfaced in every run:
+    - H default is empirical from published research; may not fit
+      any given name.
+    - Naive R/S H estimate on raw returns is biased and NOT used as
+      the default. Real rough-vol H comes from realized-vol series
+      at higher frequencies.
+    - Not a calibrated options-pricing engine.
+fallbacks:
+  - technical-briefing
+  - risk-report

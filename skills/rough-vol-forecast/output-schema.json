@@ -1,0 +1,35 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rough-vol-forecast output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "hurst_used", "per_horizon", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "rough-vol-forecast" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "lookback_days": { "type": "integer" },
+    "n_returns": { "type": "integer" },
+    "hurst_used": { "type": "number" },
+    "hurst_estimated_on_returns": { "type": "number" },
+    "realized_annualized_vol": { "type": "number" },
+    "ewma_annualized_vol": { "type": "number" },
+    "ewma_lambda": { "type": "number" },
+    "horizons_days": { "type": "array", "items": { "type": "integer" } },
+    "per_horizon": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "horizon_days": { "type": "integer" },
+          "traditional_vol": { "type": "number" },
+          "ewma_vol": { "type": "number" },
+          "rough_vol": { "type": "number" },
+          "rough_over_traditional": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}
