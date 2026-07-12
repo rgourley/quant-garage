@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "filing-triangulation output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "triangulation", "tier_caveats"],
+  "properties": {
+    "skill": { "type": "string", "const": "filing-triangulation" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "eight_k_scanner": { "type": ["object", "null"] },
+    "risk_factor_delta": { "type": ["object", "null"] },
+    "filing_sentiment": { "type": ["object", "null"] },
+    "insider_flow": { "type": ["object", "null"] },
+    "analyst_tracker": { "type": ["object", "null"] },
+    "sub_skill_errors": { "type": "object" },
+    "triangulation": {
+      "type": "object",
+      "properties": {
+        "verdict": {
+          "type": "string",
+          "enum": ["predominantly_constructive", "predominantly_concerning", "mixed", "no_clear_signal"]
+        },
+        "bullish_signals": { "type": "array", "items": { "type": "string" } },
+        "concerns": { "type": "array", "items": { "type": "string" } },
+        "other_signals": { "type": "array", "items": { "type": "string" } },
+        "n_bullish": { "type": "integer" },
+        "n_concerns": { "type": "integer" }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

@@ -1,0 +1,71 @@
+name: filing-triangulation
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic + Benzinga Analyst Ratings"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_analyst_ratings
+        tier: addon
+    enables: [full_triangulation]
+  B:
+    label: "Stocks Basic without Analyst Ratings"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [four_source_triangulation]
+    loses: [analyst_lens]
+endpoints:
+  - GET /stocks/filings/8-K/vX/disclosures
+  - GET /stocks/filings/vX/risk-factors
+  - GET /stocks/filings/10-K/vX/sections
+  - GET /stocks/filings/vX/form-4
+  - GET /benzinga/v1/ratings
+auth: bearer
+notes: |
+  Workflow composite chaining five fundamental skills:
+    - 8-k-scanner (material events)
+    - risk-factor-delta (10-K risk categories YoY)
+    - filing-sentiment (LM tone shift on 10-K narrative)
+    - insider-flow (Form 4 signal vs noise)
+    - analyst-tracker (sell-side ratings + consensus PT)
+
+  Each sub-skill runs independently with error catching. When
+  analyst-tracker returns NOT_AUTHORIZED (no Benzinga entitlement),
+  the workflow completes with a four-source triangulation.
+
+  Verdict rules:
+    predominantly_constructive: >=2 bullish signals, <=1 concern
+    predominantly_concerning:   >=3 concerns, 0 bullish
+    mixed:                      >=1 bullish AND >=2 concerns
+    no_clear_signal:            everything else
+
+  Bullish signals surfaced from:
+    - insider cluster buys
+    - net-bullish insider flow
+    - analyst net upgrades > net downgrades
+    - materially changed retained risk categories (management engaged
+      with the risks)
+    - M&A / leadership news
+
+  Concerns surfaced from:
+    - >5 new risk categories added YoY
+    - negative / uncertain / litigious tone up (material or dramatic)
+    - modal_strong tone down (management hedging)
+    - net-bearish insider flow
+    - analyst net downgrades > net upgrades
+    - Sell rating count > Buy rating count
+    - restatement / restructuring filings
+fallbacks:
+  - 8-k-scanner
+  - risk-factor-delta
