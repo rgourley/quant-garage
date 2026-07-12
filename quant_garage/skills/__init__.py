@@ -22,6 +22,7 @@ from . import pairs_scanner  # noqa: F401
 from . import risk_factor_delta  # noqa: F401
 from . import insider_flow  # noqa: F401
 from . import eight_k_scanner  # noqa: F401
+from . import guidance_tracker  # noqa: F401
 from . import news_scanner  # noqa: F401
 from . import event_study  # noqa: F401
 from . import pitch_comps  # noqa: F401

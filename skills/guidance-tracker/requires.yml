@@ -1,0 +1,49 @@
+name: guidance-tracker
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+  - product: benzinga_earnings
+    tier: addon
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic + Benzinga Corporate Guidance add-on"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_earnings
+        tier: addon
+    enables: [guidance_history, raise_cut_classification]
+  B:
+    label: "Stocks Basic without add-on"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [not_authorized_caveat]
+    loses: [guidance_history, raise_cut_classification]
+endpoints:
+  - GET /benzinga/v1/guidance
+auth: bearer
+notes: |
+  Requires Benzinga Corporate Guidance add-on. Without the entitlement
+  the endpoint returns NOT_AUTHORIZED and the skill emits a clean
+  caveat rather than a raw error.
+
+  Classification:
+    - Compare current midpoint (estimated_ or (min+max)/2) to prior
+      midpoint (previous_min/max averaged).
+    - <0.5% |delta| = reaffirmed.
+    - >0 = raised. <0 = lowered.
+    - No prior on record = initiation.
+    - EPS + revenue labels combine: matching = that label; opposing
+      (raised + lowered) = mixed.
+
+  For actual-vs-guided reads, chain with earnings-drilldown.
+fallbacks:
+  - earnings-drilldown

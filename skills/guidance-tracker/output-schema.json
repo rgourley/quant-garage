@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "guidance-tracker output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "entitled", "lookback_days", "from_date", "n_events", "events", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "guidance-tracker" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "entitled": {
+      "type": "boolean",
+      "description": "False when the account lacks the Benzinga Corporate Guidance add-on."
+    },
+    "lookback_days": { "type": "integer" },
+    "from_date": { "type": "string", "format": "date" },
+    "n_events": { "type": "integer" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "date": { "type": "string", "format": "date" },
+          "release_type": { "type": ["string", "null"] },
+          "fiscal_year": { "type": ["integer", "null"] },
+          "fiscal_period": { "type": ["string", "null"] },
+          "importance": { "type": ["integer", "null"] },
+          "eps_method": { "type": ["string", "null"] },
+          "revenue_method": { "type": ["string", "null"] },
+          "label": {
+            "type": "string",
+            "enum": ["raised", "lowered", "reaffirmed", "initiation", "mixed", "unclear"]
+          },
+          "eps_current_midpoint": { "type": ["number", "null"] },
+          "eps_prior_midpoint": { "type": ["number", "null"] },
+          "eps_direction": { "type": ["string", "null"] },
+          "eps_delta_pct": { "type": ["number", "null"] },
+          "revenue_current_midpoint": { "type": ["number", "null"] },
+          "revenue_prior_midpoint": { "type": ["number", "null"] },
+          "revenue_direction": { "type": ["string", "null"] },
+          "revenue_delta_pct": { "type": ["number", "null"] },
+          "notes": { "type": ["string", "null"] }
+        }
+      }
+    },
+    "by_period": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "events": { "type": "array" },
+          "trajectory": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "properties": {
+        "n_events": { "type": "integer" },
+        "counts_by_label": { "type": "object", "additionalProperties": { "type": "integer" } },
+        "last_event_date": { "type": ["string", "null"] },
+        "last_event_label": { "type": ["string", "null"] },
+        "n_periods": { "type": "integer" }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "object" } }
+  }
+}
