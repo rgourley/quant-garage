@@ -152,6 +152,128 @@ def spearman_ic(scores: Sequence[float], forward_returns: Sequence[float]) -> tu
     return float(rho), float(se), n
 
 
+def sharpe_ratio(returns: Sequence[float], annualize_factor: float = 252.0) -> float:
+    """
+    Annualized Sharpe ratio (excess return divided by std, scaled by
+    sqrt(annualize_factor)). No risk-free adjustment; the caller is
+    expected to pass excess returns if that matters.
+
+    Raises ValueError on fewer than 2 valid observations or zero std.
+    """
+    arr = np.asarray([float(v) for v in returns if v is not None and math.isfinite(float(v))], dtype=float)
+    if arr.size < 2:
+        raise ValueError(f"sharpe_ratio: need at least 2 returns, got {arr.size}")
+    mu = float(np.mean(arr))
+    sigma = float(np.std(arr, ddof=1))
+    if sigma <= 0:
+        raise ValueError("sharpe_ratio: zero variance")
+    return (mu / sigma) * math.sqrt(annualize_factor)
+
+
+def deflated_sharpe_ratio(
+    returns: Sequence[float],
+    n_trials: int = 1,
+    annualize_factor: float = 252.0,
+) -> dict:
+    """
+    Bailey and Lopez de Prado's Deflated Sharpe Ratio (DSR).
+
+    Corrects the observed Sharpe for two biases:
+    1. Non-normality of returns via observed skew and excess kurtosis
+       (Mertens 2002 adjustment to the Sharpe standard error).
+    2. Multiple-testing bias: when a researcher tries `n_trials`
+       candidate strategies and reports the best Sharpe, the naive
+       Sharpe overstates skill. The expected maximum Sharpe under a
+       null of zero skill grows with n_trials.
+
+    Reference: Bailey and Lopez de Prado (2014, JPM),
+    *The Deflated Sharpe Ratio: Correcting for Selection Bias,
+    Backtest Overfitting, and Non-Normality*.
+
+    Args:
+        returns: sequence of daily (or same-frequency) returns.
+        n_trials: number of candidate strategies the researcher tried
+            before picking this one. n_trials=1 collapses to the pure
+            non-normality correction. Default 1.
+        annualize_factor: sqrt scaling for the annualized Sharpe.
+            Default 252 (daily returns).
+
+    Returns:
+        {
+            "sharpe_ratio_naive": annualized SR from the sample,
+            "sharpe_ratio_daily": per-period SR (not annualized),
+            "n_obs": observation count,
+            "skew": observed skew,
+            "excess_kurtosis": observed excess kurtosis,
+            "expected_max_sharpe_under_null_daily": E[SR_max | null] per period,
+            "deflated_sharpe_pvalue": one-sided p-value that the true SR > 0,
+            "deflated_sharpe_significant": True when p-value < 0.05,
+            "n_trials": n_trials,
+        }
+    """
+    from scipy import stats as _stats
+
+    arr = np.asarray([float(v) for v in returns if v is not None and math.isfinite(float(v))], dtype=float)
+    n = arr.size
+    if n < 30:
+        raise ValueError(f"deflated_sharpe_ratio: need at least 30 returns, got {n}")
+    if n_trials < 1:
+        raise ValueError(f"n_trials must be >= 1, got {n_trials}")
+
+    mu = float(np.mean(arr))
+    sigma = float(np.std(arr, ddof=1))
+    if sigma <= 0:
+        raise ValueError("deflated_sharpe_ratio: zero variance")
+
+    z = (arr - mu) / sigma
+    skew = float(np.mean(z ** 3))
+    excess_kurt = float(np.mean(z ** 4) - 3.0)
+
+    sr_daily = mu / sigma
+    sr_annual = sr_daily * math.sqrt(annualize_factor)
+
+    # Expected maximum Sharpe under null: for N iid trials, the max of
+    # standard normal draws is approximately Phi^-1(1 - 1/N) with an
+    # Euler-Mascheroni correction. See Bailey and Lopez de Prado, eq. 5.
+    if n_trials <= 1:
+        e_max = 0.0
+    else:
+        e_max_z = (
+            (1 - _EULER_MASCHERONI) * _stats.norm.ppf(1 - 1.0 / n_trials)
+            + _EULER_MASCHERONI * _stats.norm.ppf(1 - 1.0 / (n_trials * math.e))
+        )
+        # e_max is a per-observation SR (not annualized) relative to the
+        # null of iid N(0,1); scale to match the observed SR frequency.
+        e_max = float(e_max_z) / math.sqrt(n)
+
+    # DSR: probability that the true SR > 0 given the observed one,
+    # corrected for skew, kurtosis, and multiple testing. Equation 8 in
+    # Bailey and Lopez de Prado.
+    denom = math.sqrt(
+        (1 - skew * sr_daily + (excess_kurt / 4.0) * sr_daily * sr_daily) / (n - 1)
+    )
+    if denom <= 0 or not math.isfinite(denom):
+        pvalue = float("nan")
+    else:
+        zscore = (sr_daily - e_max) / denom
+        pvalue = 1.0 - float(_stats.norm.cdf(zscore))
+
+    return {
+        "sharpe_ratio_naive": round(sr_annual, 4),
+        "sharpe_ratio_daily": round(sr_daily, 6),
+        "n_obs": n,
+        "skew": round(skew, 4),
+        "excess_kurtosis": round(excess_kurt, 4),
+        "expected_max_sharpe_under_null_daily": round(e_max, 6),
+        "deflated_sharpe_pvalue": round(pvalue, 6) if math.isfinite(pvalue) else None,
+        "deflated_sharpe_significant": (pvalue < 0.05) if math.isfinite(pvalue) else False,
+        "n_trials": n_trials,
+    }
+
+
+_EULER_MASCHERONI = 0.5772156649015329
+
+
 def gaussian_kde(
     sample: Sequence[float],
     n_grid: int = 100,
