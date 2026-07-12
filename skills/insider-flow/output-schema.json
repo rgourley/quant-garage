@@ -1,0 +1,120 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "insider-flow output",
+  "description": "Canonical structured output for the insider-flow skill. Layer 1 (the data); Layer 2 (rendered note) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill", "as_of", "fetched_at", "ticker", "lookback_days",
+    "from_date", "n_rows", "tier_caveats", "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "insider-flow" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "lookback_days": { "type": "integer" },
+    "from_date": { "type": "string", "format": "date" },
+    "exclude_directors": {
+      "type": "boolean",
+      "description": "Whether pure-director rows (is_director AND NOT is_officer AND NOT is_ten_percent_owner) were dropped before classification. Useful for VC/PE-heavy boards."
+    },
+    "n_pure_director_rows_excluded": {
+      "type": "integer",
+      "description": "Number of pure-director rows dropped when exclude_directors is true (0 otherwise)."
+    },
+    "n_rows": { "type": "integer" },
+    "summary": {
+      "type": ["object", "null"],
+      "properties": {
+        "sentiment": {
+          "type": "string",
+          "enum": ["strong_bullish", "bullish", "neutral", "bearish", "strong_bearish"]
+        },
+        "sentiment_reasons": { "type": "array", "items": { "type": "string" } },
+        "conviction_buy_dollars": { "type": "number" },
+        "discretionary_sale_dollars": { "type": "number" },
+        "scheduled_sale_dollars": { "type": "number" },
+        "net_conviction_dollars": {
+          "type": "number",
+          "description": "conviction_buy_dollars - discretionary_sale_dollars. Scheduled 10b5-1 sales excluded."
+        },
+        "n_conviction_buys": { "type": "integer" },
+        "n_discretionary_sales": { "type": "integer" },
+        "n_scheduled_sales": { "type": "integer" },
+        "n_routine_comp": { "type": "integer" },
+        "n_non_informative": { "type": "integer" },
+        "n_cluster_buys": { "type": "integer" }
+      }
+    },
+    "clusters": {
+      "type": "array",
+      "description": "Rolling 14-day windows where >= 2 distinct insiders made open-market buys totaling >= $100k. Sorted by total_dollars descending.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "window_start": { "type": "string", "format": "date" },
+          "window_end": { "type": "string", "format": "date" },
+          "n_insiders": { "type": "integer" },
+          "n_transactions": { "type": "integer" },
+          "total_dollars": { "type": "number" },
+          "insider_names": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "notable_buys": {
+      "type": "array",
+      "description": "Top 5 open-market buys (code P) by dollar_value, descending.",
+      "items": { "$ref": "#/definitions/transactionRow" }
+    },
+    "notable_sales": {
+      "type": "array",
+      "description": "Top 5 discretionary sales (code S, aff_10b5_one=false) by dollar_value, descending.",
+      "items": { "$ref": "#/definitions/transactionRow" }
+    },
+    "by_role": {
+      "type": "object",
+      "description": "Per-role aggregation. Keys are the role labels (Officer (title), Director, 10% owner, Other).",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "conviction_buy_usd": { "type": "number" },
+          "discretionary_sale_usd": { "type": "number" },
+          "scheduled_sale_usd": { "type": "number" },
+          "n_transactions": { "type": "integer" }
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "transactionRow": {
+      "type": "object",
+      "properties": {
+        "owner_name": { "type": "string" },
+        "role": { "type": "string" },
+        "transaction_date": { "type": "string", "format": "date" },
+        "transaction_code": { "type": "string" },
+        "shares": { "type": "number" },
+        "price_per_share": { "type": "number" },
+        "dollar_value": { "type": "number" },
+        "aff_10b5_one": { "type": "boolean" },
+        "filing_url": { "type": "string" }
+      }
+    }
+  }
+}

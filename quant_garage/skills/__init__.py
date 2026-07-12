@@ -20,6 +20,7 @@ from . import stock_one_pager  # noqa: F401
 from . import relative_strength  # noqa: F401
 from . import pairs_scanner  # noqa: F401
 from . import risk_factor_delta  # noqa: F401
+from . import insider_flow  # noqa: F401
 from . import news_scanner  # noqa: F401
 from . import event_study  # noqa: F401
 from . import pitch_comps  # noqa: F401

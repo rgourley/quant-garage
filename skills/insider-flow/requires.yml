@@ -1,0 +1,60 @@
+name: insider-flow
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [form4_taxonomy, rule_10b5_1_flag, cluster_detection]
+endpoints:
+  - GET /stocks/filings/vX/form-4
+auth: bearer
+notes: |
+  Note-mode skill that pulls Form 4 filings for a caller-supplied
+  ticker, classifies each transaction by SEC transaction code and
+  Rule 10b5-1 status, detects cluster buys, and emits a sentiment
+  label backed by net conviction dollar flow.
+
+  Signal classification:
+    conviction_buy: code P, non-derivative. Clean bullish signal.
+    discretionary_sale: code S, aff_10b5_one = false. Noisier
+      than P (diversification, taxes) but still informative.
+    scheduled_sale: code S, aff_10b5_one = true. 10b5-1 plan,
+      pre-committed. Near-neutral signal, filtered from sentiment.
+    routine_comp: codes A, M, F (grants, exercises, tax
+      withholding). Non-informative.
+    non_informative: gifts, expiries, swaps, trust movements, etc.
+
+  Cluster buy detection:
+    Rolling 14-day windows over conviction_buy rows sorted by
+    transaction_date. Cluster reported when a window contains >= 2
+    distinct owner CIKs (fallback: distinct owner names) with
+    aggregate dollars >= $100k. Consecutive clusters do not
+    overlap; the walk advances past the last row of a detected
+    cluster before starting the next window.
+
+  Sentiment buckets (on net conviction dollars = buys - discretionary sales):
+    strong_bullish: cluster detected AND net > 0, OR net > $250k
+    bullish: net > $50k
+    neutral: -$250k <= net <= $50k
+    bearish: net < -$250k
+    strong_bearish: net < -$1M
+
+  Caveats surfaced in every run:
+    - Form 4 filed within 2 business days of the transaction; the
+      data is days-to-weeks fresh, not real-time.
+    - Discretionary sales are noisier than open-market buys.
+    - When scheduled 10b5-1 sales are present, note that they were
+      filtered from the sentiment calculation.
+fallbacks:
+  - corporate-actions-scanner
