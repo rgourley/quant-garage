@@ -1,0 +1,61 @@
+name: 8-k-scanner
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [taxonomy_grouping, signal_bucket_ranking, watchlist_scan]
+endpoints:
+  - GET /stocks/filings/8-K/vX/disclosures
+auth: bearer
+notes: |
+  Note-mode skill that pulls 8-K disclosures for a caller-supplied
+  ticker or watchlist over a lookback window, groups rows by
+  accession_number (one 8-K carries N tagged Items), and ranks
+  filings by a signal-priority bucket ordering.
+
+  Signal bucket order (highest to lowest):
+    M&A / Strategic          primary_categories: strategic_transactions
+    Restatement / Restructuring  primary_categories: accounting_and_restatement, restructuring_and_bankruptcy
+    Material agreement       primary_categories: material_agreements
+    Regulatory / Legal       primary_categories: regulatory_actions, legal_and_regulatory, litigation
+    Leadership change        primary_categories: leadership_and_governance
+    Capital / Debt           primary_categories: capital_and_financing, debt_and_credit_agreements
+    Earnings / Guidance      primary_categories: financial_results
+    Corporate housekeeping   primary_categories: corporate_governance, shareholder_matters, auditor_matters
+    Other                    primary_categories: other
+
+  A filing's headline bucket is the FIRST bucket it hits in the
+  ranked list based on the union of its primary_categories. Within
+  a bucket, filings sort by filing_date descending.
+
+  Massive's actual primary_category names may differ from the exact
+  strings above (taxonomy evolves). The bucket assignment is a
+  best-effort mapping; unrecognized primaries default to "Other".
+  When a rendered filing lands in "Uncategorized" or "Other" but
+  the reader expects it elsewhere, the primary_category name in
+  the JSON is authoritative.
+
+  Caveats surfaced in every run:
+    - 8-K disclosures come from Massive's pre-parsed taxonomy;
+      category shifts reflect real edits and reclassification.
+      Read the supporting_text to confirm.
+    - Silent tickers (no 8-K activity in the window) are named
+      explicitly.
+
+  Not for full-text 8-K reads (use the 8-K text endpoint) or
+  sentiment scoring (queued as filing-sentiment).
+fallbacks:
+  - corporate-actions-scanner
+  - risk-factor-delta

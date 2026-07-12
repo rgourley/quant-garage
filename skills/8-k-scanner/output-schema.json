@@ -1,0 +1,106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "8-k-scanner output",
+  "description": "Canonical structured output for the 8-k-scanner skill. Layer 1 (the data); Layer 2 (rendered note) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill", "as_of", "fetched_at", "tickers", "lookback_days",
+    "from_date", "n_rows", "n_filings", "filings", "tier_caveats", "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "8-k-scanner" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "tickers": { "type": "array", "items": { "type": "string" } },
+    "lookback_days": { "type": "integer" },
+    "from_date": { "type": "string", "format": "date" },
+    "category_filter": {
+      "type": ["array", "null"],
+      "items": { "type": "string" },
+      "description": "Primary categories the caller filtered to. Null when no filter was applied."
+    },
+    "n_rows": {
+      "type": "integer",
+      "description": "Raw disclosure rows returned by the endpoint before grouping."
+    },
+    "n_filings": {
+      "type": "integer",
+      "description": "Unique filings (accession_numbers) after grouping."
+    },
+    "filings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/filing" }
+    },
+    "by_ticker": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "n_filings": { "type": "integer" },
+          "buckets": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "by_primary_category": {
+      "type": "object",
+      "additionalProperties": { "type": "integer" }
+    },
+    "by_bucket": {
+      "type": "object",
+      "additionalProperties": { "type": "integer" }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "filing": {
+      "type": "object",
+      "required": [
+        "accession_number", "cik", "tickers", "filing_date",
+        "filing_url", "categories", "primary_categories", "headline_bucket"
+      ],
+      "properties": {
+        "accession_number": { "type": "string" },
+        "cik": { "type": "string" },
+        "tickers": { "type": "array", "items": { "type": "string" } },
+        "filing_date": { "type": "string", "format": "date" },
+        "filing_url": { "type": "string" },
+        "primary_categories": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "headline_bucket": {
+          "type": "string",
+          "description": "The highest-priority bucket the filing hits. See references/methodology.md for the ranking."
+        },
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["primary_category", "secondary_category", "tertiary_category", "supporting_text"],
+            "properties": {
+              "primary_category": { "type": "string" },
+              "secondary_category": { "type": "string" },
+              "tertiary_category": { "type": "string" },
+              "supporting_text": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}
