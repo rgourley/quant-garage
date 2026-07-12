@@ -253,20 +253,109 @@ def run(
     pt_cuts = [e for e in events if e["pt_direction"] == "cut"]
 
     # Current PT consensus (median of most recent non-null PT per firm)
+    # Also collect per-firm event history for weighting purposes below.
     latest_pt_by_firm: dict[str, float] = {}
+    latest_event_by_firm: dict[str, dict] = {}
+    firm_event_history: dict[str, list[dict]] = defaultdict(list)
     for e in events:  # events are newest first
         firm = e.get("firm")
-        if firm and firm not in latest_pt_by_firm and e.get("price_target"):
+        if not firm:
+            continue
+        firm_event_history[firm].append(e)
+        if firm not in latest_pt_by_firm and e.get("price_target"):
             latest_pt_by_firm[firm] = float(e["price_target"])
+        if firm not in latest_event_by_firm:
+            latest_event_by_firm[firm] = e
     consensus_pt = None
     consensus_pt_lo = None
     consensus_pt_hi = None
+    consensus_pt_iqr = None
     if latest_pt_by_firm:
         pts = sorted(latest_pt_by_firm.values())
         mid = len(pts) // 2
         consensus_pt = pts[mid] if len(pts) % 2 == 1 else (pts[mid - 1] + pts[mid]) / 2
         consensus_pt_lo = min(pts)
         consensus_pt_hi = max(pts)
+        if len(pts) >= 4:
+            q1 = pts[len(pts) // 4]
+            q3 = pts[(len(pts) * 3) // 4]
+            consensus_pt_iqr = round(q3 - q1, 2)
+
+    # Firm-weighted ensemble consensus.
+    #
+    # Without a formal historical accuracy backtest, we build a proxy
+    # quality score per firm from three signals the endpoint exposes:
+    # - importance: Benzinga's 0-5 subjective importance rating on the
+    #   most recent event (higher = more market-moving firm)
+    # - recency: firms that filed within the last 30 days weight higher
+    #   (their PT is fresh, not stale)
+    # - PT stability: firms whose PTs have been consistent over the
+    #   window (low std of PT changes) weight higher (churning firms
+    #   are typically noise-followers)
+    ensemble_weighted_pt = None
+    firm_weights_out: list[dict] = []
+    if latest_pt_by_firm:
+        firm_weights: dict[str, float] = {}
+        for firm, pt in latest_pt_by_firm.items():
+            latest = latest_event_by_firm.get(firm, {})
+            importance = float(latest.get("importance") or 3)
+            importance_score = importance / 5.0  # in [0, 1]
+
+            # Recency: fraction of window since firm's latest event
+            days_since = None
+            latest_date = latest.get("date")
+            if latest_date:
+                try:
+                    from datetime import date as _date_cls
+                    latest_dt = _date_cls.fromisoformat(latest_date)
+                    days_since = (today() - latest_dt).days
+                except ValueError:
+                    days_since = None
+            if days_since is None:
+                recency_score = 0.5
+            elif days_since <= 30:
+                recency_score = 1.0
+            elif days_since <= 90:
+                recency_score = 0.6
+            else:
+                recency_score = 0.3
+
+            # Stability: within-firm PT variability. Fewer recent
+            # revisions = higher weight. std relative to mean captures
+            # "how much has this firm bounced around?"
+            history = firm_event_history.get(firm, [])
+            pts_in_history = [float(h["price_target"]) for h in history if h.get("price_target")]
+            if len(pts_in_history) >= 3:
+                pt_mean = sum(pts_in_history) / len(pts_in_history)
+                if pt_mean > 0:
+                    variance = sum((p - pt_mean) ** 2 for p in pts_in_history) / len(pts_in_history)
+                    cv = (variance ** 0.5) / pt_mean
+                    stability_score = 1.0 - min(1.0, cv)
+                else:
+                    stability_score = 0.5
+            else:
+                stability_score = 0.5
+
+            weight = (
+                0.4 * importance_score
+                + 0.4 * recency_score
+                + 0.2 * stability_score
+            )
+            firm_weights[firm] = weight
+
+        total_w = sum(firm_weights.values())
+        if total_w > 0:
+            ensemble_weighted_pt = round(
+                sum(latest_pt_by_firm[f] * w for f, w in firm_weights.items()) / total_w,
+                2,
+            )
+        # Emit per-firm weights for transparency
+        for firm, w in sorted(firm_weights.items(), key=lambda kv: -kv[1])[:15]:
+            firm_weights_out.append({
+                "firm": firm,
+                "weight": round(w, 4),
+                "price_target": round(latest_pt_by_firm[firm], 2),
+            })
 
     # Ratings distribution (latest per firm)
     latest_rating_by_firm: dict[str, str] = {}
@@ -290,6 +379,9 @@ def run(
         "consensus_price_target_median": consensus_pt,
         "consensus_price_target_low": consensus_pt_lo,
         "consensus_price_target_high": consensus_pt_hi,
+        "consensus_price_target_iqr": consensus_pt_iqr,
+        "ensemble_weighted_price_target": ensemble_weighted_pt,
+        "top_firms_by_weight": firm_weights_out,
         "rating_distribution_latest_per_firm": rating_counts,
     }
 
@@ -398,6 +490,20 @@ def render(payload: dict) -> str:
                 f"(low ${summary['consensus_price_target_low']:.2f}, "
                 f"high ${summary['consensus_price_target_high']:.2f})"
             )
+        if summary.get("ensemble_weighted_price_target"):
+            lines.append(
+                f"Ensemble-weighted PT (importance × recency × stability): "
+                f"${summary['ensemble_weighted_price_target']:.2f}"
+            )
+            top_firms = summary.get("top_firms_by_weight") or []
+            if top_firms:
+                lines.append(
+                    "  Top-weighted firms: "
+                    + ", ".join(
+                        f"{f['firm']} ({f['weight']*100:.0f}%, PT ${f['price_target']:.0f})"
+                        for f in top_firms[:5]
+                    )
+                )
     lines.append("")
 
     if not payload["events"]:
