@@ -16,12 +16,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Thirty-four tools plus eight one-command workflows. One framework.
+Thirty-seven tools plus eight one-command workflows. One framework.
 Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs twelve of the tools plus most workflows end-to-end; $29/month
-Stocks Starter opens thirty-two of the thirty-four tools and every
+tier runs fifteen of the tools plus most workflows end-to-end; $29/month
+Stocks Starter opens thirty-five of the thirty-seven tools and every
 workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
@@ -30,7 +30,7 @@ workflow.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having thirty-four that
+Each tool is useful on its own. The point of having thirty-seven that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -197,9 +197,9 @@ Concrete situations, mapped to the workflow that solves them.
 | "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
 | "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
 
-For the 34 individual primitives (compose your own workflow), scroll down.
+For the 37 individual primitives (compose your own workflow), scroll down.
 
-## The 34 building-block tools, with real use cases
+## The 37 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -316,6 +316,15 @@ Tradeable pairs surface at the top (widest spreads first); the
 considered-but-rejected list shows why the others didn't make it.
 Screen, not strategy.
 
+**[`hurst-exponent`](skills/hurst-exponent)**
+Companion to pairs-scanner but single-name. Runs rescaled-range
+(R/S) analysis on 2 years of daily log returns and reports the Hurst
+exponent with a bootstrap confidence band. Classifies the name as
+mean-reverting (H < 0.45), random walk (H in [0.45, 0.55]), or
+trending (H > 0.55). Answers "is this name a mean-reversion setup or
+a momentum setup?" Utilities and staples cluster on the low side,
+growth names in strong runs on the high side.
+
 ### Market context
 
 **[`market-regime`](skills/market-regime)**
@@ -421,7 +430,21 @@ lookback window with peak/trough dates, the five worst historical
 days with per-name loss attribution, every position's share of the
 variance budget, and a Herfindahl-based concentration read. Pairs
 with `portfolio-mark`: marks tell you what the book is worth right
-now; this skill tells you what could happen to that value.
+now; this skill tells you what could happen to that value. Pass
+`--mc` for path-VaR: 10,000 correlated return paths simulated from
+the fitted covariance matrix, with normal or student-t innovations
+for fatter tails, over a configurable horizon. Emits cumulative
+return percentiles, path max-drawdown distribution, and P(loss > X%)
+at 5/10/20% thresholds.
+
+**[`mc-portfolio-simulator`](skills/mc-portfolio-simulator)**
+Standalone Monte Carlo forward P&L simulator. Give it a book and a
+horizon; get back the distribution of outcomes, tail scenarios, path
+max-drawdown, and probability of loss / gain at 5/10/20/30%
+thresholds. Uses the same covariance-matrix pipeline as
+`position-sizer` and `risk-report --mc`, so results are directly
+comparable across the three tools. Answers "given my proposed
+weights, what's the 5th percentile 60-day portfolio outcome?"
 
 **[`portfolio-rebalancer`](skills/portfolio-rebalancer)**
 `risk-report` tells you which name is driving the risk. This skill
@@ -539,6 +562,18 @@ fiscal period, and reports trajectory. Requires the Benzinga
 Corporate Guidance add-on (approx $99/month); the skill emits a
 clean NOT_AUTHORIZED caveat when the entitlement is missing.
 
+**[`analyst-tracker`](skills/analyst-tracker)**
+Track sell-side positioning on a name. Uses Benzinga analyst ratings
+to pull every rating event over the lookback window, classifies each
+as upgrade / downgrade / initiation / reiteration / PT-change /
+drop-coverage, aggregates the latest per firm, and reports the
+consensus median price target plus buy/hold/sell distribution. This
+is the sell-side lens pair with `insider-flow` (internal vs external
+sentiment on the same name). Live NVDA run over 180 days: 26 firms
+all Buy, consensus PT $308.50, big May 21 PT-raise cluster (15+
+firms) right after the Q1 print. Requires the Benzinga Analyst
+Ratings add-on.
+
 ### Backtesting and infrastructure
 
 **[`backtest-data-prep`](skills/backtest-data-prep)**
@@ -574,9 +609,10 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirty-two of the thirty-four
+that powers the universe screeners. Thirty-five of the thirty-seven
 tools run on this tier (crypto-vol-scanner, full-fidelity
-options-structure-analyzer, and guidance-tracker need separate plans). Every workflow
+options-structure-analyzer, guidance-tracker, and analyst-tracker
+need separate plans; the latter two are Benzinga add-ons). Every workflow
 composite runs on Starter.
 
 Specific tools need specific add-ons:
@@ -607,7 +643,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-twelve tools end to end; Stocks Starter ($29/month) opens thirty-two.
+fifteen tools end to end; Stocks Starter ($29/month) opens thirty-five.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here

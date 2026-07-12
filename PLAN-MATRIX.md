@@ -83,6 +83,10 @@ A few things to know up front:
 | `8-k-scanner` | REST | Stocks Basic | 8-K disclosure taxonomy scan across a ticker or watchlist; free tier |
 | `manager-portfolio-diff` | REST | Stocks Basic | 13-F quarterly diff for a fund manager (alias or CIK); free tier |
 | `guidance-tracker` | REST | Stocks Basic + Benzinga Corporate Guidance | Guidance raise/cut/reaffirm trajectory; add-on required (approx $99/mo) |
+| `analyst-tracker` | REST | Stocks Basic + Benzinga Analyst Ratings | Sell-side rating events + consensus PT; add-on required |
+| `hurst-exponent` | REST | Stocks Basic | R/S Hurst estimator on daily returns; single-name persistence classifier; free tier |
+| `mc-portfolio-simulator` | REST | Stocks Basic | Monte Carlo forward P&L simulator; free tier |
+| `risk-report` (with --mc) | REST | Stocks Basic | Adds path-VaR MC block to existing risk-report; normal or student-t innovations |
 
 ## The workflow composites
 
