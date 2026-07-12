@@ -1,0 +1,47 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "change-point-detector output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "lookback_days", "n_returns", "n_change_points", "change_points", "segments", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "change-point-detector" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "lookback_days": { "type": "integer" },
+    "n_returns": { "type": "integer" },
+    "lambda_run_prior": { "type": "number" },
+    "change_point_probability_threshold": { "type": "number" },
+    "n_change_points": { "type": "integer" },
+    "change_points": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "index": { "type": "integer" },
+          "date": { "type": ["string", "null"], "format": "date" },
+          "confidence": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "segments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "start_index": { "type": "integer" },
+          "end_index": { "type": "integer" },
+          "n_obs": { "type": "integer" },
+          "mean_daily_return": { "type": "number" },
+          "std_daily_return": { "type": "number" },
+          "annualized_return": { "type": "number" },
+          "annualized_vol": { "type": "number" }
+        }
+      }
+    },
+    "current_run_length_obs": { "type": ["integer", "null"] },
+    "current_segment_start_date": { "type": ["string", "null"] },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}

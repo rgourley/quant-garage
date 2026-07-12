@@ -1,0 +1,48 @@
+name: change-point-detector
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [bocpd, segment_stats, regime_labeling]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Note-mode skill implementing Adams and MacKay (2007) Bayesian
+  Online Change-Point Detection on a ticker's daily log returns.
+
+  Model:
+    - Returns drawn from Normal(mu, tau^-1).
+    - Normal-Gamma prior on (mu, tau) with hyperparameters
+      (mu0=0, kappa0=1, alpha0=0.1, beta0=0.01).
+    - Student-t predictive distribution with closed-form updates.
+    - Geometric hazard with rate 1/lambda_run (default lambda=250).
+
+  Detection:
+    Time t is flagged when P(r_t=0 | x_{1:t}) >= 0.5. Consecutive
+    detections within 20 observations are merged.
+
+  Not for real-time entries: BOCPD lags real change points by 5-20
+  observations because the posterior needs enough post-shift data
+  to update.
+
+  Caveats surfaced in every run:
+    - Prior sensitivity: lambda_run controls detection cadence.
+    - Detection lag of 5-20 observations.
+    - Zero detections could mean stable regime or too-long prior.
+    - Many detections could mean noise fitting; raise lambda_run.
+fallbacks:
+  - market-regime
+  - hurst-exponent

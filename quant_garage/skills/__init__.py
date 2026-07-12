@@ -28,6 +28,7 @@ from . import manager_portfolio_diff  # noqa: F401
 from . import mc_portfolio_simulator  # noqa: F401
 from . import analyst_tracker  # noqa: F401
 from . import hurst_exponent  # noqa: F401
+from . import change_point_detector  # noqa: F401
 from . import news_scanner  # noqa: F401
 from . import event_study  # noqa: F401
 from . import pitch_comps  # noqa: F401
