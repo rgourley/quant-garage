@@ -1,0 +1,71 @@
+name: analyst-tracker
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+  - product: benzinga_analyst_ratings
+    tier: addon
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic + Benzinga Analyst Ratings"
+    needs:
+      - product: stocks
+        tier: basic
+      - product: benzinga_analyst_ratings
+        tier: addon
+    enables: [rating_events, pt_tracking, consensus_aggregation]
+  B:
+    label: "Stocks Basic without Analyst Ratings"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [not_authorized_caveat]
+    loses: [rating_events, pt_tracking, consensus_aggregation]
+endpoints:
+  - GET /benzinga/v1/ratings
+auth: bearer
+notes: |
+  Note-mode skill that pulls every analyst rating event for a ticker
+  over the lookback window and reports the sell-side positioning
+  trajectory.
+
+  Rating buckets:
+    buy: buy, strong buy, outperform, overweight, positive,
+         add, accumulate, top pick, market outperform, sector outperform,
+         conviction buy
+    hold: hold, neutral, market perform, sector perform,
+          equal-weight, in-line, mixed, peer perform
+    sell: sell, underperform, underweight, reduce, negative,
+          market underperform, sector underperform
+    other: anything not in the above sets
+    unknown: null / empty rating string
+
+  Event classification:
+    - initiation: rating_action contains "initiat"
+    - drop_coverage: rating_action contains "drop", "cease", "suspend"
+    - upgrade: rating_action = "upgrade" OR bucket rank went up
+    - downgrade: rating_action = "downgrade" OR bucket rank went down
+    - price_target_change_only: maintain/reiterate + PT changed
+    - reiteration: maintain/reiterate + PT unchanged
+    - other: fallback
+
+  Consensus math:
+    Aggregate latest rating and PT per firm (rows sorted newest-first
+    so first-seen wins), then take median across firms for consensus
+    PT and count firms per rating bucket.
+
+  Caveats surfaced in every run:
+    - Analyst ratings reflect what firms said, not what the market
+      believed. Track record varies enormously by firm.
+    - Sell-side upgrades tend to lag price into strength; downgrades
+      tend to lag into weakness. Direction-of-flow signal is often
+      already priced in.
+fallbacks:
+  - insider-flow
+  - guidance-tracker

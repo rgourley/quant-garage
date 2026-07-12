@@ -1,0 +1,20 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "analyst-tracker output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "entitled", "lookback_days", "from_date", "n_events", "events", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "analyst-tracker" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "entitled": { "type": "boolean" },
+    "lookback_days": { "type": "integer" },
+    "from_date": { "type": "string", "format": "date" },
+    "n_events": { "type": "integer" },
+    "events": { "type": "array" },
+    "summary": { "type": ["object", "null"] },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}
