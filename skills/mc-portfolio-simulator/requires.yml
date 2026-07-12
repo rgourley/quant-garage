@@ -1,0 +1,47 @@
+name: mc-portfolio-simulator
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [mc_path_simulation, path_var, drawdown_distribution]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Note-mode standalone Monte Carlo simulator for a book. Fits per-name
+  vol (realized or EWMA) on the historical window, shrinks correlation
+  toward identity, Cholesky-factors the covariance, and simulates
+  n_paths correlated return trajectories over simulation_days.
+
+  Tail options:
+    normal: multivariate Gaussian innovations.
+    student_t: scaled by sqrt(df/chi2(df)) so marginals match the
+      target cov but tails are fatter than normal. Default df=4.
+
+  Reports:
+    - Cumulative return distribution (p5/p10/p25/p50/p75/p90/p95,
+      mean, std)
+    - Path max-drawdown distribution
+    - Path VaR + ES at 95/99 (implicitly via the loss distribution)
+    - P(loss > 5/10/20/30%) and P(gain > 5/10/20%)
+
+  Companion to risk-report --mc (which includes the same MC block
+  alongside historical VaR, drawdown, stress days).
+
+  Not for options / non-linear payoffs. Not for regime shifts.
+  Constant covariance over horizon. See references/methodology.md.
+fallbacks:
+  - risk-report
+  - position-sizer

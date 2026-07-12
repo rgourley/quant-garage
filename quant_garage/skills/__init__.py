@@ -25,6 +25,7 @@ from . import eight_k_scanner  # noqa: F401
 from . import guidance_tracker  # noqa: F401
 from . import filing_sentiment  # noqa: F401
 from . import manager_portfolio_diff  # noqa: F401
+from . import mc_portfolio_simulator  # noqa: F401
 from . import news_scanner  # noqa: F401
 from . import event_study  # noqa: F401
 from . import pitch_comps  # noqa: F401

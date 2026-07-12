@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "mc-portfolio-simulator output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "tickers_used", "weights_used", "simulation_days", "n_paths", "tail", "cumulative_return_distribution", "max_drawdown_distribution", "loss_probabilities", "gain_probabilities", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "mc-portfolio-simulator" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "tickers_used": { "type": "array", "items": { "type": "string" } },
+    "weights_used": { "type": "object", "additionalProperties": { "type": "number" } },
+    "excluded_weight": { "type": "number" },
+    "lookback_days": { "type": "integer" },
+    "n_obs_aligned": { "type": "integer" },
+    "vol_method": { "type": "string", "enum": ["realized", "ewma"] },
+    "ewma_lambda": { "type": ["number", "null"] },
+    "shrinkage": { "type": "number" },
+    "simulation_days": { "type": "integer" },
+    "n_paths": { "type": "integer" },
+    "tail": { "type": "string", "enum": ["normal", "student_t"] },
+    "tail_df": { "type": ["number", "null"] },
+    "seed": { "type": ["integer", "null"] },
+    "annualized_vols": { "type": "object", "additionalProperties": { "type": "number" } },
+    "cumulative_return_distribution": {
+      "type": "object",
+      "properties": {
+        "n": { "type": "integer" },
+        "mean": { "type": "number" },
+        "std": { "type": "number" },
+        "p5": { "type": "number" },
+        "p10": { "type": "number" },
+        "p25": { "type": "number" },
+        "p50": { "type": "number" },
+        "p75": { "type": "number" },
+        "p90": { "type": "number" },
+        "p95": { "type": "number" }
+      }
+    },
+    "max_drawdown_distribution": {
+      "type": "object",
+      "properties": {
+        "n": { "type": "integer" },
+        "mean": { "type": "number" },
+        "std": { "type": "number" },
+        "p5": { "type": "number" },
+        "p10": { "type": "number" },
+        "p25": { "type": "number" },
+        "p50": { "type": "number" },
+        "p75": { "type": "number" },
+        "p90": { "type": "number" },
+        "p95": { "type": "number" }
+      }
+    },
+    "loss_probabilities": {
+      "type": "object",
+      "properties": {
+        "P_loss_gt_5pct": { "type": "number" },
+        "P_loss_gt_10pct": { "type": "number" },
+        "P_loss_gt_20pct": { "type": "number" },
+        "P_loss_gt_30pct": { "type": "number" }
+      }
+    },
+    "gain_probabilities": {
+      "type": "object",
+      "properties": {
+        "P_gain_gt_5pct": { "type": "number" },
+        "P_gain_gt_10pct": { "type": "number" },
+        "P_gain_gt_20pct": { "type": "number" }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array", "items": { "type": "object" } }
+  }
+}
