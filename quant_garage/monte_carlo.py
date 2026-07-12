@@ -189,6 +189,204 @@ def simulate_correlated_paths(
     return mu[None, None, :] + correlated
 
 
+def rough_vol_series(
+    log_returns: Sequence[float],
+    hurst: float | None = None,
+    trading_days_per_year: int = 252,
+) -> tuple[float, float]:
+    """
+    Rough volatility scaling per Bayer-Friz-Gatheral (2016).
+
+    Estimates the roughness of the realized volatility process. If
+    hurst is provided, uses it directly; otherwise estimates via
+    rescaled range on |log returns|.
+
+    Rough volatility research (Bayer-Friz-Gatheral 2016, Livieri et al.
+    2018) documented that realized vol has Hurst H ~ 0.1 (very rough),
+    not H = 0.5 (Brownian). The rough vol scaling makes short-horizon
+    vol forecasts more responsive than sqrt-time scaling while dampening
+    the long horizon.
+
+    Returns (H, sigma_annualized) where sigma is scaled to be
+    comparable to annualized_vol on the same series.
+    """
+    arr = np.asarray([float(v) for v in log_returns if v is not None and math.isfinite(float(v))], dtype=float)
+    n = arr.size
+    if n < 60:
+        raise ValueError(f"rough_vol_series: need at least 60 returns, got {n}")
+
+    if hurst is None:
+        # R/S on |log(|r_t|)| following the rBergomi-style H estimator.
+        abs_rets = np.abs(arr)
+        abs_rets = abs_rets[abs_rets > 1e-8]
+        if abs_rets.size < 60:
+            hurst = 0.5
+        else:
+            log_abs = np.log(abs_rets)
+            block_sizes = np.unique(np.round(np.logspace(1, np.log10(max(30, len(log_abs) // 4)), num=8)).astype(int))
+            block_sizes = block_sizes[block_sizes >= 5]
+            log_n: list[float] = []
+            log_rs: list[float] = []
+            for b in block_sizes:
+                nb = len(log_abs) // b
+                if nb < 2:
+                    continue
+                blocks = log_abs[: nb * b].reshape(nb, b)
+                # R/S per block
+                rs_vals = []
+                for block in blocks:
+                    m = float(np.mean(block))
+                    centered = block - m
+                    cum = np.cumsum(centered)
+                    R = float(np.max(cum) - np.min(cum))
+                    S = float(np.std(block, ddof=1))
+                    if S > 0:
+                        rs_vals.append(R / S)
+                if rs_vals:
+                    log_n.append(math.log(b))
+                    log_rs.append(math.log(float(np.mean(rs_vals))))
+            if len(log_n) >= 4:
+                x = np.array(log_n)
+                y = np.array(log_rs)
+                mx = float(np.mean(x))
+                my = float(np.mean(y))
+                num = float(np.sum((x - mx) * (y - my)))
+                den = float(np.sum((x - mx) ** 2))
+                hurst = num / den if den > 0 else 0.5
+                # Clamp to plausible range
+                hurst = float(np.clip(hurst, 0.05, 0.95))
+            else:
+                hurst = 0.5
+
+    sigma_daily = float(np.std(arr, ddof=1))
+    sigma_ann = sigma_daily * math.sqrt(trading_days_per_year)
+    return float(hurst), sigma_ann
+
+
+def rough_vol_annualized(
+    log_returns: Sequence[float],
+    hurst: float | None = None,
+    trading_days_per_year: int = 252,
+    forecast_horizon_days: int = 20,
+) -> float:
+    """
+    Rough-volatility annualized forecast.
+
+    Under rough vol, vol scales like h^H rather than h^(1/2). This
+    matters most when forecasting horizons far from 1 day: for short
+    horizons the estimate is more responsive; for long horizons it
+    damps the sqrt(t) blow-up. Returns the annualized-scale forecast
+    for the given horizon.
+
+    Args:
+        log_returns: recent daily log returns.
+        hurst: optional pre-computed Hurst exponent. If None, estimated
+            from the returns.
+        trading_days_per_year: annualization factor. Default 252.
+        forecast_horizon_days: forecast horizon in trading days.
+            Default 20 (~1 month).
+    """
+    H, sigma_ann_traditional = rough_vol_series(log_returns, hurst=hurst, trading_days_per_year=trading_days_per_year)
+    # Under Brownian (H=0.5), sigma_horizon = sigma_daily * sqrt(h). Under
+    # rough vol (H<0.5), sigma_horizon = sigma_daily * h^H. Rescale so the
+    # 20-day forecast is comparable to the traditional annualized number.
+    # Ratio (h^H) / (h^0.5) for h = horizon_days.
+    if forecast_horizon_days <= 0:
+        return sigma_ann_traditional
+    rescale = (forecast_horizon_days ** H) / (forecast_horizon_days ** 0.5)
+    return float(sigma_ann_traditional * rescale)
+
+
+def simulate_rough_vol_paths(
+    mean_daily: Sequence[float],
+    cov_annualized: np.ndarray,
+    n_paths: int,
+    n_days: int,
+    hurst: float = 0.1,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Correlated return paths with rough-volatility (fractional Brownian)
+    increments.
+
+    Under rBergomi (Bayer-Friz-Gatheral 2016), the vol process is
+    driven by fractional Brownian motion with Hurst H ~ 0.1. This
+    simulator uses the Cholesky method on the FBM covariance matrix
+    K[i, j] = 0.5 * (i^(2H) + j^(2H) - |i-j|^(2H)) to generate
+    fractional increments, then scales into the specified covariance
+    structure for the multi-asset correlation.
+
+    Args:
+        mean_daily: per-asset mean daily log return.
+        cov_annualized: annualized covariance matrix (K x K).
+        n_paths: number of paths.
+        n_days: horizon.
+        hurst: Hurst exponent for the vol path. Default 0.1 (Bayer-Friz-
+            Gatheral standard). H=0.5 recovers standard Brownian.
+        seed: rng seed.
+
+    Returns:
+        (n_paths, n_days, K) array of daily returns.
+
+    Note: this is a simplified rBergomi variant. Full rBergomi uses a
+    forward variance curve and Volterra kernel; this uses the Cholesky-
+    factored fBM covariance to generate rough vol increments and then
+    correlates via the observed cov. Adequate for path-VaR use; not a
+    calibration-quality options pricing engine.
+    """
+    mu = np.asarray(mean_daily, dtype=float).reshape(-1)
+    cov_ann = np.asarray(cov_annualized, dtype=float)
+    k = mu.shape[0]
+    if cov_ann.shape != (k, k):
+        raise ValueError(f"simulate_rough_vol_paths: cov shape {cov_ann.shape} vs mu length {k}")
+    if not (0.01 <= hurst <= 0.99):
+        raise ValueError(f"hurst must be in [0.01, 0.99], got {hurst}")
+
+    # FBM covariance matrix over n_days
+    idx = np.arange(1, n_days + 1)
+    two_h = 2.0 * hurst
+    fbm_cov = 0.5 * (idx[:, None] ** two_h + idx[None, :] ** two_h - np.abs(idx[:, None] - idx[None, :]) ** two_h)
+    # Cholesky of FBM
+    try:
+        L_fbm = np.linalg.cholesky(fbm_cov + 1e-10 * np.eye(n_days))
+    except np.linalg.LinAlgError:
+        # Fall back to eigen decomposition
+        w, v = np.linalg.eigh(fbm_cov)
+        w = np.maximum(w, 0)
+        L_fbm = v @ np.diag(np.sqrt(w))
+
+    cov_daily = cov_ann / 252.0
+    try:
+        L_asset = np.linalg.cholesky(cov_daily + 1e-10 * np.eye(k))
+    except np.linalg.LinAlgError:
+        w, v = np.linalg.eigh(cov_daily)
+        w = np.maximum(w, 0)
+        L_asset = v @ np.diag(np.sqrt(w))
+
+    rng = np.random.default_rng(seed)
+    # White noise: (n_paths, n_days, k)
+    z = rng.standard_normal(size=(n_paths, n_days, k))
+    # Rough time structure via FBM: transform along the day axis.
+    # z_rough[p, :, i] = L_fbm @ z[p, :, i]
+    # But we want fBM increments, not fBM values. Increments of fBM with
+    # H!=0.5 have long-range dependence. To get a per-day increment
+    # process with rough covariance, we generate fBM values and take
+    # first differences.
+    z_time = np.einsum("dj,pjk->pdk", L_fbm, z)
+    # First differences to get increments
+    if n_days >= 2:
+        increments = np.concatenate([z_time[:, :1, :], np.diff(z_time, axis=1)], axis=1)
+    else:
+        increments = z_time
+    # Standardize increments to unit std (per-column)
+    inc_std = np.std(increments, axis=(0, 1), keepdims=True)
+    inc_std = np.where(inc_std > 0, inc_std, 1.0)
+    increments = increments / inc_std
+    # Correlate: increments @ L_asset.T
+    correlated = np.einsum("pdi,ji->pdj", increments, L_asset)
+    return mu[None, None, :] + correlated
+
+
 def percentile_summary(values: np.ndarray) -> dict:
     """Return {n, mean, std, p5, p10, p25, p50, p75, p90, p95}.
 
