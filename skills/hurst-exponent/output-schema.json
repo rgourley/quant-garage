@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "hurst-exponent output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "lookback_days", "n_returns", "hurst_exponent", "classification", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "hurst-exponent" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "lookback_days": { "type": "integer" },
+    "n_returns": { "type": "integer" },
+    "hurst_exponent": { "type": "number" },
+    "classification": {
+      "type": "string",
+      "enum": ["mean_reverting", "random_walk", "trending"]
+    },
+    "reasoning": { "type": "string" },
+    "bootstrap": {
+      "type": ["object", "null"],
+      "properties": {
+        "p5": { "type": ["number", "null"] },
+        "p50": { "type": ["number", "null"] },
+        "p95": { "type": ["number", "null"] },
+        "n_bootstrap_valid": { "type": "integer" }
+      }
+    },
+    "per_block_rs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "block_size": { "type": "integer" },
+          "rs_mean": { "type": "number" }
+        }
+      }
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}

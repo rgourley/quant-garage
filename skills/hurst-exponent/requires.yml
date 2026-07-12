@@ -1,0 +1,47 @@
+name: hurst-exponent
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [hurst_rs, persistence_classification, bootstrap_band]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Note-mode skill that estimates the Hurst exponent for a single
+  ticker's daily log returns via rescaled-range (R/S) analysis.
+
+  Classification thresholds:
+    H < 0.45         mean_reverting
+    0.45 <= H <= 0.55 random_walk
+    H > 0.55         trending
+
+  Methodology:
+    1. Log returns on daily closes.
+    2. 12 log-spaced block sizes from min=10 to max=N/4.
+    3. Per block size, mean R/S across non-overlapping blocks.
+    4. OLS on log(R/S) vs log(n); slope = H.
+    5. Block-bootstrap (length 20, default 100 iterations) for the
+       p5/p50/p95 confidence band.
+
+  Caveats surfaced in every run:
+    - Small-sample H estimates are noisy; directional not literal.
+    - Regime shifts break persistence estimates; 2-year H may not
+      reflect a recent structural change.
+    - Extreme H (<0.35 or >0.65) triggers a data-quality warning.
+    - Wide bootstrap band (> 0.20) triggers a noise warning.
+fallbacks:
+  - pairs-scanner
+  - technical-briefing
