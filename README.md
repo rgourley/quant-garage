@@ -16,13 +16,13 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Forty-one tools plus eight one-command workflows. One framework.
-Built in the garage, not the trading floor.
+Forty-one primitives plus thirteen one-command workflows. One
+framework. Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs eighteen of the tools plus most workflows end-to-end; $29/month
-Stocks Starter opens forty-one of the forty-one tools and every
-workflow.
+tier runs twenty of the primitives plus most workflows end-to-end;
+$29/month Stocks Starter opens thirty-eight of the forty-one primitives
+and every workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
 [issue](https://github.com/rgourley/quant-garage/issues) or send a
@@ -30,7 +30,7 @@ workflow.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having forty-one that
+Each primitive is useful on its own. The point of having forty-one that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -115,7 +115,7 @@ you want production alpha, you build on top of this.
 
 ![34 skills, one framework](./assets/skills.png)
 
-## Eight one-command workflows
+## Thirteen one-command workflows
 
 Start here. Workflows are chains of the 26 building-block tools
 below, wired for specific cadences. Each takes a watchlist or a

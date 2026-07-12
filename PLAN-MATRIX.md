@@ -91,6 +91,11 @@ A few things to know up front:
 | `signal-decay` | REST | Stocks Basic | Rolling IC + exponential decay fit + tearsheet on candidate signals; free tier |
 | `rough-vol-forecast` | REST | Stocks Basic | Rough-volatility (Bayer-Friz-Gatheral 2016) multi-horizon vol forecast; free tier |
 | `zero-dte-gamma` | REST | Stocks Basic + Options Developer | Dealer gamma exposure aggregation for near-expiry SPY/SPX/QQQ options |
+| `filing-triangulation` | Workflow | Stocks Basic | Chains 8-k + risk-factor-delta + filing-sentiment + insider-flow + analyst-tracker |
+| `regime-audit` | Workflow | Stocks Basic | change-point-detector + hurst-exponent on SPY + 11 SPDR sector ETFs |
+| `vs-benchmark-audit` | Workflow | Stocks Basic | Full tearsheet with DSR correction + rolling IC vs benchmark |
+| `smart-money-cluster` | Workflow | Stocks Basic | manager-portfolio-diff across curated cohort of well-known filers |
+| `pre-earnings-full-stack` | Workflow | Stocks Basic | earnings-blackout + event-study + guidance + analyst + MC sizing |
 
 ## The workflow composites
 
