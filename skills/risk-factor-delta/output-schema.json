@@ -1,0 +1,135 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "risk-factor-delta output",
+  "description": "Canonical structured output for the risk-factor-delta skill. Layer 1 (the data); Layer 2 (rendered narrative) is described in references/rendering.md.",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "ticker", "tier_caveats", "sources"],
+  "properties": {
+    "skill": { "type": "string", "const": "risk-factor-delta" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "ticker": { "type": "string" },
+    "filings": {
+      "type": ["object", "null"],
+      "description": "The two filings compared. Null when no filings on record.",
+      "properties": {
+        "current": {
+          "type": ["object", "null"],
+          "properties": {
+            "filing_date": { "type": "string", "format": "date" },
+            "n_categories": { "type": "integer" }
+          }
+        },
+        "prior": {
+          "type": ["object", "null"],
+          "properties": {
+            "filing_date": { "type": "string", "format": "date" },
+            "n_categories": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "summary": {
+      "type": ["object", "null"],
+      "properties": {
+        "n_added": { "type": ["integer", "null"] },
+        "n_removed": { "type": ["integer", "null"] },
+        "n_materially_changed": { "type": ["integer", "null"] },
+        "n_retained_unchanged": { "type": ["integer", "null"] },
+        "n_current_categories": { "type": "integer" },
+        "n_prior_categories": { "type": "integer" },
+        "largest_new_primary_category": {
+          "type": ["string", "null"],
+          "description": "The primary_category with the most 'added' entries. Null when no additions."
+        },
+        "by_primary_category": {
+          "type": ["object", "null"],
+          "description": "Per-primary-category counts of added/removed/materially_changed (present when both filings are compared).",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "added": { "type": "integer" },
+              "removed": { "type": "integer" },
+              "materially_changed": { "type": "integer" }
+            }
+          }
+        },
+        "by_primary_category_current": {
+          "type": ["object", "null"],
+          "description": "Per-primary-category count of current-filing categories (present only when no prior filing on record).",
+          "additionalProperties": { "type": "integer" }
+        }
+      }
+    },
+    "changes": {
+      "type": ["object", "null"],
+      "description": "Per-entry lists of what changed. Null when only one filing is on record.",
+      "properties": {
+        "added": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/addedRemovedEntry" }
+        },
+        "removed": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/addedRemovedEntry" }
+        },
+        "materially_changed": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/materiallyChangedEntry" }
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "addedRemovedEntry": {
+      "type": "object",
+      "required": ["primary_category", "secondary_category", "tertiary_category", "supporting_text"],
+      "properties": {
+        "primary_category": { "type": "string" },
+        "secondary_category": { "type": "string" },
+        "tertiary_category": { "type": "string" },
+        "supporting_text": {
+          "type": "string",
+          "description": "The supporting snippet from the filing that motivated the category label."
+        }
+      }
+    },
+    "materiallyChangedEntry": {
+      "type": "object",
+      "required": [
+        "primary_category", "secondary_category", "tertiary_category",
+        "prior_text_length", "current_text_length", "length_delta_pct",
+        "current_supporting_text", "prior_supporting_text"
+      ],
+      "properties": {
+        "primary_category": { "type": "string" },
+        "secondary_category": { "type": "string" },
+        "tertiary_category": { "type": "string" },
+        "prior_text_length": { "type": "integer" },
+        "current_text_length": { "type": "integer" },
+        "length_delta_pct": {
+          "type": "number",
+          "description": "|current - prior| / max(current, prior). Decimal, not percent. 0.25 = 25%."
+        },
+        "current_supporting_text": { "type": "string" },
+        "prior_supporting_text": { "type": "string" }
+      }
+    }
+  }
+}

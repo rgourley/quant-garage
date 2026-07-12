@@ -1,0 +1,66 @@
+name: risk-factor-delta
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [categorized_risk_factors, taxonomy_diff]
+endpoints:
+  - GET /stocks/filings/vX/risk-factors
+auth: bearer
+notes: |
+  Note-mode skill that diffs Item 1A Risk Factors between the two
+  most recent 10-K filings for a caller-supplied ticker using
+  Massive's pre-parsed and taxonomy-classified risk-factor endpoint.
+
+  Three-tier taxonomy:
+    - primary_category: top-level risk axis (e.g. financial_and_market,
+      strategic_and_competitive, technology_and_information)
+    - secondary_category: mid-level grouping under the primary
+    - tertiary_category: most specific classification
+
+  Diff logic on (primary, secondary, tertiary) tuple:
+    - In current not in prior → added
+    - In prior not in current → removed
+    - In both → check supporting_text length delta
+      - >= 25% length change → materially_changed
+      - otherwise → retained_unchanged
+
+  25% length threshold is judgment, not statistics. Rewrites of the
+  SEC's typical two-sentence category snippet at that magnitude are
+  real edits, not paraphrase drift. The percentile chosen matches the
+  "does a reader notice on skim" threshold.
+
+  Grouping in the render:
+    All three sections (NEW / DROPPED / MATERIALLY CHANGED) group by
+    primary_category and sort primary sections by count descending.
+    Secondary + tertiary render as bullets under the primary. Each
+    NEW / MATERIALLY CHANGED entry quotes the supporting_text (200
+    char cap) so the reader can confirm the taxonomy call.
+
+  Caveats surfaced in every run:
+    - Categorization is Massive's taxonomy applied per-filing
+      (methodology paper linked in endpoint docs). Category shifts
+      reflect real edits and reclassification, not just new prose.
+      Read supporting_text for confirmation.
+    - Only 10-K annual filings are diffed. 10-Q amendments to Item 1A
+      are a separate lane.
+    - When only one 10-K is on record for a ticker, the skill falls
+      back to a single-filing risk catalog with a caveat.
+
+  Not for word-level text diff, cross-ticker roll-ups, historical
+  trajectory across N filings, or peer comparison. Those are queued
+  as separate skills.
+fallbacks:
+  - corporate-actions-scanner
