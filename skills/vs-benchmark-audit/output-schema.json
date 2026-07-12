@@ -1,0 +1,27 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "vs-benchmark-audit output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "positions_used", "benchmark", "tearsheet", "verdict", "tier_caveats"],
+  "properties": {
+    "skill": { "type": "string", "const": "vs-benchmark-audit" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "positions_requested": { "type": "object" },
+    "positions_used": { "type": "object" },
+    "benchmark": { "type": "string" },
+    "lookback_days": { "type": "integer" },
+    "ic_window": { "type": "integer" },
+    "n_obs_aligned": { "type": "integer" },
+    "n_trials_dsr": { "type": "integer" },
+    "tearsheet": { "type": "object" },
+    "rolling_ic_mean": { "type": ["number", "null"] },
+    "rolling_ic_std": { "type": ["number", "null"] },
+    "verdict": {
+      "type": "string",
+      "enum": ["real_alpha", "possibly_alpha", "essentially_beta", "underperforming", "no_edge_evident"]
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": { "type": "array" }
+  }
+}

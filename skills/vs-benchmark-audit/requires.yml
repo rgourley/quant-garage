@@ -1,0 +1,37 @@
+name: vs-benchmark-audit
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [tearsheet, dsr_correction, rolling_ic]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Composite reusing quant_garage.performance.tearsheet and
+  quant_garage.backtest.rolling_ic_series to answer "is this actually
+  alpha?"
+
+  Verdict thresholds:
+    real_alpha: DSR p < 0.05 AND alpha_annualized > 0.02
+    possibly_alpha: alpha > 0 AND sharpe > 0.5 (but DSR not sig)
+    essentially_beta: beta > 0.8 AND |alpha| < 0.02
+    underperforming: annualized_return < 0
+    no_edge_evident: everything else
+
+  Rolling IC of portfolio returns vs benchmark returns is emitted so
+  the reader can see periods of divergence.
+fallbacks:
+  - risk-report
