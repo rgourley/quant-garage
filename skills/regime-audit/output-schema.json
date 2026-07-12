@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "regime-audit output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "tickers", "per_ticker", "summary_verdict", "tier_caveats"],
+  "properties": {
+    "skill": { "type": "string", "const": "regime-audit" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "tickers": { "type": "array", "items": { "type": "string" } },
+    "lookback_days": { "type": "integer" },
+    "n_tickers": { "type": "integer" },
+    "n_valid": { "type": "integer" },
+    "per_ticker": { "type": "array" },
+    "n_shifted_recently": { "type": "integer" },
+    "by_regime": { "type": "object" },
+    "summary_verdict": {
+      "type": "string",
+      "enum": ["broad_regime_shift", "localized_regime_shift", "trend_dominated_regime", "mean_reversion_dominated_regime", "mixed_stable_regime"]
+    },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } }
+  }
+}

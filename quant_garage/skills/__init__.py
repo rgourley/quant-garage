@@ -33,6 +33,7 @@ from . import signal_decay  # noqa: F401
 from . import rough_vol_forecast  # noqa: F401
 from . import zero_dte_gamma  # noqa: F401
 from . import filing_triangulation  # noqa: F401
+from . import regime_audit  # noqa: F401
 from . import news_scanner  # noqa: F401
 from . import event_study  # noqa: F401
 from . import pitch_comps  # noqa: F401

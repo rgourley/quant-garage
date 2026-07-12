@@ -1,0 +1,37 @@
+name: regime-audit
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [multi_ticker_regime_map]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Composite that chains change-point-detector and hurst-exponent
+  across SPY + 11 SPDR sector ETFs.
+
+  Verdict rules:
+    broad_regime_shift: >=3 tickers with change point in last 60 days
+    localized_regime_shift: >=1 ticker with change point in last 60 days
+    trend_dominated_regime: n_trending > 2 * n_mean_reverting
+    mean_reversion_dominated_regime: n_mean_reverting > 2 * n_trending
+    mixed_stable_regime: everything else
+
+  Each ticker requires ~2 API calls (aggs pulls). Full 12-ticker run
+  is ~24 calls; runs comfortably on Stocks Basic tier.
+fallbacks:
+  - market-regime
+  - sector-rotation-signal
