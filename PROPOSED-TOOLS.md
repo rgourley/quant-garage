@@ -24,7 +24,13 @@ The existing 20 lean toward earnings, valuation, technicals, screening,
 risk, and execution. The gaps below are signals and structures a
 serious desk expects that the set doesn't cover yet.
 
-### `pairs-cointegration`
+### `pairs-cointegration` — SHIPPED as `pairs-scanner` (2026-07-10)
+
+Shipped: `skills/pairs-scanner/` + `quant_garage/skills/pairs_scanner.py`.
+Uses Engle-Granger two-step on log prices, MacKinnon 2010 critical
+values for the ADF t-stat, OU half-life via OLS of Δresidual on lagged
+residual, and a 70/30 in-sample vs out-of-sample stability split.
+Johansen test and `--sector` input deferred to v2.
 
 **Gap:** no mean-reversion / statistical-arb tool anywhere in the set.
 
@@ -76,7 +82,13 @@ caveat that bi-monthly settlement data lags reality.
 **Output mode:** exception-report (surface only the crowded names).
 **Plan:** Stocks Starter, plus a short-interest data entitlement.
 
-### `insider-flow`
+### `insider-flow` — SHIPPED (2026-07-12)
+
+Shipped: `skills/insider-flow/` + `quant_garage/skills/insider_flow.py`.
+Uses Massive's pre-parsed Form 4 endpoint (Stocks Basic, free tier),
+adds a `--exclude-directors` flag for filtering pure director rows
+(VC/PE unwinds). Cluster buy detection at 14 days / 2 insiders /
+$100k threshold.
 
 **Gap:** no fundamental / insider signal at all.
 
@@ -100,7 +112,15 @@ buys are the cleaner signal.
 **Output mode:** stream (per-filing blocks with a sentiment tag).
 **Plan:** Stocks Starter, plus an SEC/insider data source.
 
-### `institutional-ownership-delta`
+### `institutional-ownership-delta` — PARTIAL SHIP as `manager-portfolio-diff` (2026-07-12)
+
+The Massive 13-F endpoint is filer-oriented, not issuer-oriented (no
+ticker or CUSIP filter). So instead of "who owns AAPL and how did
+that change QoQ" the shipped skill is "what did fund X do QoQ." Same
+data source, different axis. Shipped: `skills/manager-portfolio-diff/`
+with aliases for Berkshire, Baupost, Scion, Pershing Square, etc.
+The issuer-oriented version stays queued (would need a bulk pull +
+client-side filter, cost/scope trade-off).
 
 **Gap:** no institutional-flow lens (13F quarter-over-quarter changes).
 

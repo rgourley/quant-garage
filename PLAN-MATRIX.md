@@ -54,6 +54,7 @@ A few things to know up front:
 | `technical-briefing` | REST | Stocks Starter | Daily aggs + snapshot for one name; runs on free Basic too, slower |
 | `market-regime` | REST | Stocks Starter | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower |
 | `relative-strength` | REST | Stocks Starter | Daily aggs per ticker + benchmark; runs on free Basic too, slower |
+| `pairs-scanner` | REST | Stocks Starter | Daily aggs per ticker; every pair tested for Engle-Granger cointegration + OU half-life. Runs on free Basic too, slower |
 | `earnings-blackout` | REST | Stocks Basic | Watchlist scanner; Benzinga earnings if entitled, SEC EDGAR fallback otherwise |
 | `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |
 | `earnings-drilldown` (lite, Tier A) | REST | Stocks Starter + Benzinga Earnings | Adds consensus EPS, surprise %, beat/miss bucketing |
@@ -76,6 +77,12 @@ A few things to know up front:
 | `historical-analog-finder` | REST | Stocks Starter | K nearest historical regime analogs + forward SPY return distribution |
 | `portfolio-rebalancer` | REST | Stocks Starter | Variance-share-cap solver on top of risk-report; outputs trade tickets |
 | `options-structure-analyzer` | REST | Stocks Starter + Options Developer | Rank options structures for direction/vol/hedge views |
+| `risk-factor-delta` | REST | Stocks Basic | 10-K Item 1A category diff via pre-parsed Massive taxonomy; free tier |
+| `filing-sentiment` | REST | Stocks Basic | Loughran-McDonald scoring on 10-K sections; free tier |
+| `insider-flow` | REST | Stocks Basic | Form 4 classification + 10b5-1 filter + cluster buy detection; free tier |
+| `8-k-scanner` | REST | Stocks Basic | 8-K disclosure taxonomy scan across a ticker or watchlist; free tier |
+| `manager-portfolio-diff` | REST | Stocks Basic | 13-F quarterly diff for a fund manager (alias or CIK); free tier |
+| `guidance-tracker` | REST | Stocks Basic + Benzinga Corporate Guidance | Guidance raise/cut/reaffirm trajectory; add-on required (approx $99/mo) |
 
 ## The workflow composites
 

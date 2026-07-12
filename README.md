@@ -16,12 +16,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Twenty-six tools plus eight one-command workflows. One framework.
+Thirty-four tools plus eight one-command workflows. One framework.
 Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs six of the tools plus most workflows end-to-end; $29/month
-Stocks Starter opens twenty-four of the twenty-six tools and every
+tier runs twelve of the tools plus most workflows end-to-end; $29/month
+Stocks Starter opens thirty-two of the thirty-four tools and every
 workflow.
 
 **Feedback welcome.** Found a bug or have an idea? Open an
@@ -30,7 +30,7 @@ workflow.
 
 ## What the collection does
 
-Each tool is useful on its own. The point of having twenty-six that
+Each tool is useful on its own. The point of having thirty-four that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -197,9 +197,9 @@ Concrete situations, mapped to the workflow that solves them.
 | "My friend asked about a stock. Give me the plain-language read." | [`stock-one-pager`](skills/stock-one-pager) | ~10s |
 | "Screen for candidates in this regime." | [`scan-and-frame`](skills/scan-and-frame) | ~30s (or ~90s with the factor pass) |
 
-For the 26 individual primitives (compose your own workflow), scroll down.
+For the 34 individual primitives (compose your own workflow), scroll down.
 
-## The 26 building-block tools, with real use cases
+## The 34 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -304,6 +304,17 @@ window, a composite percentile rank within the basket, and a trend
 label (stable_leader, improving, deteriorating, stable_laggard,
 mixed). Pass --include-sectors to add the 11 SPDR sector ETFs into
 the ranking and see whether NVDA's strength is the name or just XLK.
+
+**[`pairs-scanner`](skills/pairs-scanner)**
+You have a sector basket and want to know which two names are
+statistically tethered right now. Run the tool. Every pair gets an
+Engle-Granger cointegration test on log prices, the ADF t-stat
+bucketed against MacKinnon 2010 critical values, an
+Ornstein-Uhlenbeck half-life of the spread, the current z-score, and
+a 70/30 out-of-sample stability check that flags regime shifts.
+Tradeable pairs surface at the top (widest spreads first); the
+considered-but-rejected list shows why the others didn't make it.
+Screen, not strategy.
 
 ### Market context
 
@@ -454,6 +465,80 @@ dividend date? The tool walks each trade against the US holiday and
 corporate-action calendar and flags six failure modes, with a
 suggested next action per flag.
 
+### Filings and ownership
+
+**[`8-k-scanner`](skills/8-k-scanner)**
+You have a watchlist. What material events hit those names this week?
+Run the tool. It pulls every 8-K disclosure across the basket, groups
+the tagged Items by filing, ranks by signal bucket (M&A / Strategic
+above Restatement above Material agreement above Regulatory above
+Leadership change above Capital above Earnings above Corporate
+housekeeping), and puts the highest-signal filings at the top with
+the supporting text quoted. Last live run caught RKLB's Iridium
+merger agreement, NVDA's Ajay Puri retirement + Nicholas Parker hire
+package, MSFT's Reid Hoffman board departure, ALLO's CEO succession,
+and NVDA's $11B notes issuance. One 45-day scan across 6 mega caps.
+
+**[`risk-factor-delta`](skills/risk-factor-delta)**
+Did management add anything new to Item 1A this year? Run the tool.
+It diffs the last two 10-K risk-factor disclosures using Massive's
+pre-parsed three-tier taxonomy (primary/secondary/tertiary category
+per risk). Reports categories added, categories dropped, and
+categories where the supporting text materially changed (>= 25%
+length shift). Live run on AAPL's 2024 vs 2023 10-K surfaced 13 new
+risk categories concentrated in technology_and_information (AI risk,
+third-party data security, tech-vendor dependence), plus new
+trade/tariff and credit risk categories. Also caught 7 retained
+categories where AAPL trimmed language (pricing pressure -46%,
+IP -42%, ESG -39%): a defensive language shift the sentiment
+scorer independently confirmed.
+
+**[`filing-sentiment`](skills/filing-sentiment)**
+Score the Business and Risk Factors sections of a company's last two
+10-Ks using the Loughran-McDonald finance dictionary. Reports rate
+per 10,000 tokens by category (negative, uncertain, litigious,
+constraining, modal-weak, modal-strong) prior vs current with a
+shift label. Answers "did management's language get more defensive?"
+Live run on AAPL showed negative language up 33% in the Business
+section and modal-strong ("must", "will", "always") language down
+38% in Risk Factors: management getting less assertive and more
+hedged. Pair with `risk-factor-delta` for the structural view; this
+handles the tone.
+
+**[`insider-flow`](skills/insider-flow)**
+Are insiders buying or selling this name? Run the tool. It pulls
+every Form 4 for the ticker over the lookback window, classifies
+each transaction (conviction buy P, discretionary sale S,
+scheduled 10b5-1 sale, routine comp A/M/F, non-informative),
+filters 10b5-1 out of sentiment, detects cluster buys (>= 2
+insiders in a 14-day window worth >= $100k), and emits a bullish/
+bearish label backed by net conviction dollar flow. `--exclude-
+directors` cuts out VC/PE board reps unwinding fund positions
+(which structurally look bearish but carry no operator signal).
+Live run on RKLB showed a $27M director sale from a VC rep that,
+once excluded, still left the general counsel and president as
+net sellers.
+
+**[`manager-portfolio-diff`](skills/manager-portfolio-diff)**
+What did Buffett/Klarman/Burry do last quarter? Run the tool with
+an alias (`--filer berkshire`) or a CIK. It pulls the two most
+recent 13-F snapshots for the fund, aggregates by CUSIP across
+joint filings, and reports initiations, exits, adds (>= 25% share
+change), trims (<= -25%), and portfolio value delta. Live run on
+Berkshire caught Buffett exiting Visa, Mastercard, UNH, Dominos in
+Q1 2026 while adding Alphabet +204% and initiating Delta Air Lines
+at $2.65B. Alias set: berkshire, baupost, renaissance, bridgewater,
+third-point, pershing, tiger-global, scion, appaloosa.
+
+**[`guidance-tracker`](skills/guidance-tracker)**
+Has management been raising or cutting guidance this cycle? Run the
+tool. Uses Benzinga Corporate Guidance to compare each event's
+midpoint against the prior figure for the same fiscal period,
+labels as raised / lowered / reaffirmed / initiation, groups by
+fiscal period, and reports trajectory. Requires the Benzinga
+Corporate Guidance add-on (approx $99/month); the skill emits a
+clean NOT_AUTHORIZED caveat when the entitlement is missing.
+
 ### Backtesting and infrastructure
 
 **[`backtest-data-prep`](skills/backtest-data-prep)**
@@ -489,9 +574,9 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Twenty-four of the twenty-six
-tools run on this tier (only crypto-vol-scanner and full-fidelity
-options-structure-analyzer need separate plans). Every workflow
+that powers the universe screeners. Thirty-two of the thirty-four
+tools run on this tier (crypto-vol-scanner, full-fidelity
+options-structure-analyzer, and guidance-tracker need separate plans). Every workflow
 composite runs on Starter.
 
 Specific tools need specific add-ons:
@@ -522,7 +607,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-six tools end to end; Stocks Starter ($29/month) opens twenty-four.
+twelve tools end to end; Stocks Starter ($29/month) opens thirty-two.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here
