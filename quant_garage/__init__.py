@@ -60,6 +60,7 @@ from .monte_carlo import (
     sample_normal,
     spearman_sensitivity,
     percentile_summary,
+    simulate_correlated_paths,
     DistributionKind,
 )
 from .sizing import (
@@ -128,6 +129,7 @@ __all__ = [
     "sample_normal",
     "spearman_sensitivity",
     "percentile_summary",
+    "simulate_correlated_paths",
     "DistributionKind",
     "annualized_vol",
     "ewma_vol",

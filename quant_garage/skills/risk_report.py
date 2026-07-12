@@ -38,6 +38,8 @@ from .. import (
     position_variance_contributions,
     concentration_stats,
     worst_n_days,
+    simulate_correlated_paths,
+    percentile_summary,
 )
 
 
@@ -241,6 +243,12 @@ def run(
     shrinkage: float = 0.05,
     vol_method: str = "realized",
     ewma_lambda: float = 0.94,
+    mc: bool = False,
+    mc_simulation_days: int = 20,
+    mc_n_paths: int = 10_000,
+    mc_tail: str = "normal",
+    mc_tail_df: float = 4.0,
+    mc_seed: int | None = 42,
     client_: MassiveClient | None = None,
 ) -> dict:
     """Compute a full risk report for a fixed book.
@@ -553,6 +561,98 @@ def run(
         "n_positions": len(positions_out),
     }
 
+    # ----- Monte Carlo path VaR (optional) -----
+
+    mc_block = None
+    if mc:
+        if mc_tail not in ("normal", "student_t"):
+            raise ValueError(f"mc_tail must be 'normal' or 'student_t', got {mc_tail!r}")
+        weight_vec = np.array([weights_used[t] for t in ordered_tickers], dtype=float)
+        mean_daily = np.array(
+            [float(np.mean(aligned_returns[t])) for t in ordered_tickers],
+            dtype=float,
+        )
+        paths = simulate_correlated_paths(
+            mean_daily=mean_daily,
+            cov_annualized=cov,
+            n_paths=int(mc_n_paths),
+            n_days=int(mc_simulation_days),
+            tail=mc_tail,
+            df=float(mc_tail_df),
+            seed=mc_seed,
+        )
+        # Sum daily returns to a portfolio cumulative return per path.
+        # port_daily[p, d] = weight_vec @ paths[p, d, :]
+        port_daily = np.einsum("pdk,k->pd", paths, weight_vec)
+        cum_ret = port_daily.sum(axis=1)  # (n_paths,) total return over horizon
+        # Path-max drawdown per path
+        nav_paths = np.cumprod(np.exp(port_daily), axis=1)  # (n_paths, n_days)
+        running_peak = np.maximum.accumulate(nav_paths, axis=1)
+        dd = (nav_paths / running_peak) - 1.0
+        max_dd_per_path = dd.min(axis=1)
+
+        summary = percentile_summary(cum_ret)
+        dd_summary = percentile_summary(max_dd_per_path)
+
+        var_by_conf_mc: dict[str, dict] = {}
+        for c in confidences:
+            var_c = float(-np.quantile(cum_ret, 1.0 - c))
+            below = cum_ret[cum_ret <= -var_c]
+            es_c = float(-np.mean(below)) if below.size > 0 else var_c
+            var_by_conf_mc[f"{c:.2f}"] = {
+                "path_var": round(var_c, 6),
+                "path_expected_shortfall": round(es_c, 6),
+            }
+
+        p_loss_5 = float(np.mean(cum_ret < -0.05))
+        p_loss_10 = float(np.mean(cum_ret < -0.10))
+        p_loss_20 = float(np.mean(cum_ret < -0.20))
+        p_gain_5 = float(np.mean(cum_ret > 0.05))
+        p_gain_10 = float(np.mean(cum_ret > 0.10))
+
+        mc_block = {
+            "enabled": True,
+            "n_paths": int(mc_n_paths),
+            "simulation_days": int(mc_simulation_days),
+            "tail": mc_tail,
+            "tail_df": float(mc_tail_df) if mc_tail == "student_t" else None,
+            "seed": mc_seed,
+            "cumulative_return_distribution": {
+                "mean": round(summary["mean"], 6),
+                "std": round(summary["std"], 6),
+                "p5": round(summary["p5"], 6),
+                "p10": round(summary["p10"], 6),
+                "p25": round(summary["p25"], 6),
+                "p50": round(summary["p50"], 6),
+                "p75": round(summary["p75"], 6),
+                "p90": round(summary["p90"], 6),
+                "p95": round(summary["p95"], 6),
+            },
+            "max_drawdown_distribution": {
+                "p5": round(dd_summary["p5"], 6),
+                "p10": round(dd_summary["p10"], 6),
+                "p25": round(dd_summary["p25"], 6),
+                "p50": round(dd_summary["p50"], 6),
+                "p75": round(dd_summary["p75"], 6),
+            },
+            "path_var_by_confidence": var_by_conf_mc,
+            "loss_probabilities": {
+                "P_loss_gt_5pct": round(p_loss_5, 4),
+                "P_loss_gt_10pct": round(p_loss_10, 4),
+                "P_loss_gt_20pct": round(p_loss_20, 4),
+            },
+            "gain_probabilities": {
+                "P_gain_gt_5pct": round(p_gain_5, 4),
+                "P_gain_gt_10pct": round(p_gain_10, 4),
+            },
+        }
+        tier_caveats.append(
+            f"Monte Carlo: {mc_n_paths:,} paths × {mc_simulation_days}-day horizon under "
+            f"{mc_tail} innovations (df={mc_tail_df if mc_tail == 'student_t' else 'n/a'}). "
+            "Simulates from the fitted covariance; does not model regime shifts, jumps, "
+            "or correlation breaks beyond what the sample already captured."
+        )
+
     stats_block = {
         "annualized_vol": round(float(port_vol_ann), 6),
         "annualized_return": round(float(port_mean_ann), 6),
@@ -587,6 +687,7 @@ def run(
         },
         "position_risk": position_risk,
         "concentration": conc,
+        "monte_carlo": mc_block,
         "tier_caveats": tier_caveats,
         "sources": sources,
     }
@@ -711,6 +812,46 @@ def render(payload: dict) -> str:
         f"(effective N = {conc_b['effective_n']:.1f})"
     )
     lines.append("")
+
+    # Monte Carlo (optional)
+    mc_b = payload.get("monte_carlo")
+    if mc_b:
+        lines.append(
+            f"Monte Carlo path VaR ({mc_b['n_paths']:,} paths × {mc_b['simulation_days']}d, "
+            f"{mc_b['tail']}{' df='+str(mc_b['tail_df']) if mc_b['tail'] == 'student_t' else ''})"
+        )
+        cum = mc_b["cumulative_return_distribution"]
+        lines.append(
+            f"  Cumulative return: p5 {fmt_pct(cum['p5'], signed=True)} · "
+            f"p50 {fmt_pct(cum['p50'], signed=True)} · "
+            f"p95 {fmt_pct(cum['p95'], signed=True)} "
+            f"(mean {fmt_pct(cum['mean'], signed=True)}, σ {fmt_pct(cum['std'])})"
+        )
+        dd = mc_b["max_drawdown_distribution"]
+        lines.append(
+            f"  Path max-drawdown: median {fmt_pct(dd['p50'])} · "
+            f"p10 (bad case) {fmt_pct(dd['p10'])} · "
+            f"p5 (tail case) {fmt_pct(dd['p5'])}"
+        )
+        lines.append("  Path VaR by confidence:")
+        for c_str, v in sorted(mc_b["path_var_by_confidence"].items()):
+            c_pct = float(c_str) * 100
+            lines.append(
+                f"    {c_pct:.0f}%: VaR {fmt_pct(v['path_var'])} · "
+                f"ES {fmt_pct(v['path_expected_shortfall'])}"
+            )
+        loss = mc_b["loss_probabilities"]
+        gain = mc_b["gain_probabilities"]
+        lines.append(
+            f"  P(loss > 5%): {loss['P_loss_gt_5pct']*100:.1f}% · "
+            f"P(loss > 10%): {loss['P_loss_gt_10pct']*100:.1f}% · "
+            f"P(loss > 20%): {loss['P_loss_gt_20pct']*100:.1f}%"
+        )
+        lines.append(
+            f"  P(gain > 5%): {gain['P_gain_gt_5pct']*100:.1f}% · "
+            f"P(gain > 10%): {gain['P_gain_gt_10pct']*100:.1f}%"
+        )
+        lines.append("")
 
     # Take
     lines.append(generate_take(payload))

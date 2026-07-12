@@ -121,6 +121,74 @@ def spearman_sensitivity(driver_samples: dict[str, np.ndarray], output_samples: 
     return results
 
 
+def simulate_correlated_paths(
+    mean_daily: Sequence[float],
+    cov_annualized: np.ndarray,
+    n_paths: int,
+    n_days: int,
+    tail: Literal["normal", "student_t"] = "normal",
+    df: float = 4.0,
+    seed: int | None = None,
+) -> np.ndarray:
+    """
+    Multivariate correlated daily return paths.
+
+    Args:
+        mean_daily: per-asset mean daily return (length K).
+        cov_annualized: annualized covariance matrix (K x K). Divided by
+            252 internally to get daily cov.
+        n_paths: number of paths to simulate.
+        n_days: horizon length in trading days.
+        tail: "normal" for multivariate Gaussian, "student_t" for a
+            multivariate Student-t with `df` degrees of freedom
+            (fatter tails than normal).
+        df: student-t degrees of freedom. Default 4 gives noticeably
+            fatter tails than normal; ignored for tail="normal".
+        seed: rng seed.
+
+    Returns:
+        (n_paths, n_days, K) array of daily log returns.
+
+    Under student-t, we scale a standard multivariate normal by
+    sqrt(df / chi2(df)) so the marginal std matches the target cov.
+    See Ruppert & Matteson, *Statistics and Data Analysis for Financial
+    Engineering*, 2nd ed., Ch. 7.
+    """
+    mu = np.asarray(mean_daily, dtype=float).reshape(-1)
+    cov_ann = np.asarray(cov_annualized, dtype=float)
+    k = mu.shape[0]
+    if cov_ann.shape != (k, k):
+        raise ValueError(
+            f"simulate_correlated_paths: cov shape {cov_ann.shape} vs mu length {k}"
+        )
+    if n_paths <= 0 or n_days <= 0:
+        raise ValueError("n_paths and n_days must be positive")
+    if tail not in ("normal", "student_t"):
+        raise ValueError(f"tail must be 'normal' or 'student_t', got {tail!r}")
+
+    cov_daily = cov_ann / 252.0
+    # Cholesky requires PD. Add tiny ridge to be safe against numerical
+    # PD issues on empirically-fit matrices.
+    try:
+        L = np.linalg.cholesky(cov_daily)
+    except np.linalg.LinAlgError:
+        L = np.linalg.cholesky(cov_daily + np.eye(k) * 1e-10)
+
+    rng = np.random.default_rng(seed)
+    z = rng.standard_normal(size=(n_paths, n_days, k))
+
+    if tail == "student_t":
+        if df <= 2:
+            raise ValueError(f"student_t df must be > 2, got {df}")
+        chi = rng.chisquare(df, size=(n_paths, n_days))
+        scaling = np.sqrt(df / chi)
+        z = z * scaling[:, :, None]
+
+    # Correlate: z @ L.T (using standard batch matmul)
+    correlated = np.einsum("pdi,ji->pdj", z, L)
+    return mu[None, None, :] + correlated
+
+
 def percentile_summary(values: np.ndarray) -> dict:
     """Return {n, mean, std, p5, p10, p25, p50, p75, p90, p95}.
 

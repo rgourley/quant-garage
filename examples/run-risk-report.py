@@ -35,6 +35,17 @@ def main() -> int:
                     help="Vol estimator. 'realized' = trailing-window std; 'ewma' = RiskMetrics EWMA (responds faster to recent regime). Default realized.")
     ap.add_argument("--ewma-lambda", type=float, default=0.94,
                     help="EWMA decay when --vol ewma. 0.94 is the RiskMetrics daily convention. Default 0.94.")
+    ap.add_argument("--mc", action="store_true",
+                    help="Enable Monte Carlo path VaR simulation from the fitted covariance matrix.")
+    ap.add_argument("--mc-simulation-days", type=int, default=20,
+                    help="MC horizon in trading days. Default 20 (~1 month).")
+    ap.add_argument("--n-paths", type=int, default=10_000,
+                    help="MC path count. Default 10,000.")
+    ap.add_argument("--mc-tail", choices=["normal", "student_t"], default="normal",
+                    help="Innovation distribution. 'student_t' gives fatter tails than 'normal'.")
+    ap.add_argument("--mc-tail-df", type=float, default=4.0,
+                    help="Student-t degrees of freedom (ignored for --mc-tail normal). Default 4.")
+    ap.add_argument("--mc-seed", type=int, default=42, help="MC RNG seed. Default 42.")
     ap.add_argument("--format", choices=["render", "json", "both"], default=None)
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
@@ -54,6 +65,12 @@ def main() -> int:
             shrinkage=args.shrinkage,
             vol_method=args.vol,
             ewma_lambda=args.ewma_lambda,
+            mc=args.mc,
+            mc_simulation_days=args.mc_simulation_days,
+            mc_n_paths=args.n_paths,
+            mc_tail=args.mc_tail,
+            mc_tail_df=args.mc_tail_df,
+            mc_seed=args.mc_seed,
         )
     except (ValueError, RuntimeError) as e:
         print(f"ERROR: {e}", file=sys.stderr)
