@@ -152,6 +152,198 @@ def spearman_ic(scores: Sequence[float], forward_returns: Sequence[float]) -> tu
     return float(rho), float(se), n
 
 
+def gaussian_kde(
+    sample: Sequence[float],
+    n_grid: int = 100,
+    bandwidth: float | None = None,
+    x_min: float | None = None,
+    x_max: float | None = None,
+) -> tuple[list[float], list[float]]:
+    """
+    Gaussian kernel density estimate on a fixed grid.
+
+    Bandwidth defaults to Silverman's rule of thumb:
+        h = 1.06 * σ * n^(-1/5)
+    which is fine for unimodal-ish distributions and only mildly
+    over-smooths bimodals. Callers who want more resolution can pass
+    an explicit `bandwidth` (in the same units as the sample).
+
+    Grid defaults to `[min - 0.5·h, max + 0.5·h]` so kernels near the
+    edges don't get clipped. Returns two same-length lists (grid, density)
+    so the caller can render or serialize both.
+
+    Failures raise (n<5, zero std): callers should check sample size and
+    surface a "distribution too small" caveat instead of calling this.
+    """
+    arr = np.asarray([v for v in sample if v is not None and math.isfinite(float(v))], dtype=float)
+    if arr.size < 5:
+        raise ValueError(f"gaussian_kde: need at least 5 finite values, got {arr.size}")
+    sigma = float(np.std(arr, ddof=1))
+    if sigma <= 0:
+        raise ValueError("gaussian_kde: sample has zero variance")
+
+    if bandwidth is None:
+        bandwidth = 1.06 * sigma * arr.size ** (-1.0 / 5.0)
+    if bandwidth <= 0:
+        raise ValueError(f"gaussian_kde: bandwidth must be > 0, got {bandwidth}")
+
+    lo = float(arr.min()) - 0.5 * bandwidth if x_min is None else x_min
+    hi = float(arr.max()) + 0.5 * bandwidth if x_max is None else x_max
+    if hi <= lo:
+        raise ValueError(f"gaussian_kde: x_max must exceed x_min, got {lo} and {hi}")
+
+    grid = np.linspace(lo, hi, n_grid)
+    # Broadcast the Gaussian kernel over every sample point.
+    diffs = (grid[:, None] - arr[None, :]) / bandwidth
+    dens = np.exp(-0.5 * diffs * diffs).sum(axis=1) / (arr.size * bandwidth * math.sqrt(2 * math.pi))
+    return grid.tolist(), dens.tolist()
+
+
+def find_peaks(density: Sequence[float], min_prominence: float = 0.05) -> list[int]:
+    """
+    Simple local-maximum finder on a KDE density array.
+
+    A peak is an index where density[i] > density[i-1] AND density[i] >
+    density[i+1], and its prominence (peak height minus the deeper of
+    its two adjacent valleys) exceeds `min_prominence * max_density`.
+    Prominence filter kills spurious wobbles from Silverman
+    over-smoothing.
+
+    Returns peak indices sorted by density descending (tallest first).
+    """
+    d = list(density)
+    n = len(d)
+    if n < 3:
+        return []
+    max_d = max(d) or 1.0
+    peaks: list[int] = []
+    for i in range(1, n - 1):
+        if d[i] <= d[i - 1] or d[i] <= d[i + 1]:
+            continue
+        # Walk left to the deeper valley
+        left_min = d[i]
+        for j in range(i - 1, -1, -1):
+            if d[j] > d[i]:
+                break
+            left_min = min(left_min, d[j])
+        # Walk right
+        right_min = d[i]
+        for j in range(i + 1, n):
+            if d[j] > d[i]:
+                break
+            right_min = min(right_min, d[j])
+        valley = max(left_min, right_min)
+        prominence = d[i] - valley
+        if prominence >= min_prominence * max_d:
+            peaks.append(i)
+    peaks.sort(key=lambda idx: d[idx], reverse=True)
+    return peaks
+
+
+def analyze_distribution_shape(sample: Sequence[float]) -> dict:
+    """
+    Distribution shape summary for a 1-D sample.
+
+    Computes the KDE, finds prominent modes, classifies as unimodal /
+    bimodal / multimodal, reports skew and excess kurtosis, and labels
+    the tail as fat / normal / thin using an excess-kurtosis threshold
+    of ±1.5 (heuristic, honest given typical event-study n).
+
+    Returns a JSON-serializable dict:
+
+        {
+          "n": int,
+          "mean": float,
+          "median": float,
+          "std": float,
+          "skew": float,
+          "excess_kurtosis": float,
+          "tail_label": "fat" | "normal" | "thin",
+          "n_modes": int,
+          "modes": [{"x": float, "density": float}, ...],
+          "modality_label": "unimodal" | "bimodal" | "multimodal",
+          "warn_mean_misleading": bool,
+        }
+
+    Raises on n<10: the shape read is unreliable below that and the
+    caller should not present it as a signal.
+    """
+    arr = np.asarray([v for v in sample if v is not None and math.isfinite(float(v))], dtype=float)
+    if arr.size < 10:
+        raise ValueError(f"analyze_distribution_shape: need at least 10 finite values, got {arr.size}")
+
+    grid, dens = gaussian_kde(arr.tolist())
+    peaks = find_peaks(dens, min_prominence=0.10)
+    modes = [{"x": round(float(grid[i]), 4), "density": round(float(dens[i]), 4)} for i in peaks]
+    n_modes = len(modes)
+    if n_modes <= 1:
+        modality = "unimodal"
+    elif n_modes == 2:
+        modality = "bimodal"
+    else:
+        modality = "multimodal"
+
+    mean = float(np.mean(arr))
+    med = float(np.median(arr))
+    sigma = float(np.std(arr, ddof=1))
+    if sigma > 0:
+        z = (arr - mean) / sigma
+        skew = float(np.mean(z ** 3))
+        excess_kurt = float(np.mean(z ** 4) - 3.0)
+    else:
+        skew = 0.0
+        excess_kurt = 0.0
+
+    if excess_kurt >= 1.5:
+        tail = "fat"
+    elif excess_kurt <= -1.5:
+        tail = "thin"
+    else:
+        tail = "normal"
+
+    return {
+        "n": int(arr.size),
+        "mean": round(mean, 6),
+        "median": round(med, 6),
+        "std": round(sigma, 6),
+        "skew": round(skew, 3),
+        "excess_kurtosis": round(excess_kurt, 3),
+        "tail_label": tail,
+        "n_modes": n_modes,
+        "modes": modes,
+        "modality_label": modality,
+        "warn_mean_misleading": modality in ("bimodal", "multimodal") or tail == "fat" or abs(skew) >= 1.0,
+    }
+
+
+def sparkline(density: Sequence[float], width: int = 40, min_height: int = 0) -> str:
+    """
+    Compact ASCII sparkline of a density array. Uses 8 block characters
+    for granularity. Downsamples to `width` columns via averaging.
+    """
+    d = list(density)
+    if not d:
+        return ""
+    if len(d) > width:
+        # Bucket into `width` groups and take the mean of each
+        step = len(d) / width
+        cols = []
+        for i in range(width):
+            lo = int(i * step)
+            hi = int((i + 1) * step)
+            hi = max(hi, lo + 1)
+            cols.append(sum(d[lo:hi]) / (hi - lo))
+        d = cols
+    top = max(d) or 1.0
+    chars = "▁▂▃▄▅▆▇█"
+    out = []
+    for v in d:
+        norm = max(0.0, v / top)
+        idx = min(len(chars) - 1, int(round(norm * (len(chars) - 1))))
+        out.append(chars[idx])
+    return "".join(out)
+
+
 def winsorize(
     values: Sequence[float],
     lower_pct: float = 0.01,

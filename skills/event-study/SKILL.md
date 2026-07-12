@@ -105,8 +105,11 @@ Two output layers from one analysis.
 `output_mode`: `single`, `cross_section`, or `aggregate`. Each mode
 exposes the per-subject `event_window_returns`, `abnormal_returns`,
 and `t_stat_vs_history`. Cross-section and aggregate add the
-cross-sectional `summary` block. UIs and downstream agents consume
-this.
+cross-sectional `summary` block, which includes `distribution_shape`
+(KDE-derived n_modes, modality label, tail label, skew, excess
+kurtosis, sparkline) when n_subjects >= 10 so bimodal or fat-tailed
+reactions surface instead of hiding behind a benign mean. UIs and
+downstream agents consume this.
 
 **Layer 2: rendered output** in hybrid mode:
 - `single` → sell-side note

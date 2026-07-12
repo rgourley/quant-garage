@@ -28,7 +28,17 @@ from .client import MassiveClient, FetchError, RateLimited
 from .timezones import ET, utc_to_et, et_now, is_market_hours_et
 from .as_of import today, utcnow_iso
 from .snapshot import resolve_price, PriceResolution
-from .stats import critical_t, is_significant, newey_west_se, spearman_ic, winsorize
+from .stats import (
+    critical_t,
+    is_significant,
+    newey_west_se,
+    spearman_ic,
+    winsorize,
+    gaussian_kde,
+    find_peaks,
+    analyze_distribution_shape,
+    sparkline,
+)
 from .universe import (
     Universe,
     TickerSnapshot,
@@ -94,6 +104,10 @@ __all__ = [
     "newey_west_se",
     "spearman_ic",
     "winsorize",
+    "gaussian_kde",
+    "find_peaks",
+    "analyze_distribution_shape",
+    "sparkline",
     "Universe",
     "TickerSnapshot",
     "build_universe",

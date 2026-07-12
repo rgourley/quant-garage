@@ -1012,6 +1012,18 @@ def build_summary(subjects: list[dict[str, Any]], mode: str) -> dict[str, Any] |
             ),
         }
 
+    # Distribution shape via KDE (n >= 10 gate matches the helper).
+    distribution_shape = None
+    if len(cars) >= 10:
+        try:
+            from quant_garage import analyze_distribution_shape, gaussian_kde, sparkline
+            shape = analyze_distribution_shape(cars)
+            _, dens = gaussian_kde(cars)
+            shape["sparkline"] = sparkline(dens, width=40)
+            distribution_shape = shape
+        except (ValueError, ImportError):
+            distribution_shape = None
+
     return {
         "n_subjects": n,
         "n_tickers": len({sub["ticker"] for sub in subjects}),
@@ -1032,6 +1044,7 @@ def build_summary(subjects: list[dict[str, Any]], mode: str) -> dict[str, Any] |
         },
         "surprise_reaction_correlation": surprise_block,
         "regime_check": regime_block,
+        "distribution_shape": distribution_shape,
     }
 
 
@@ -1153,7 +1166,19 @@ def generate_take_cross_section(summary: dict[str, Any], event_class: str) -> st
     t = summary["t_stat_avg_vs_zero"]
     n = summary["n_subjects"]
     surprise = summary.get("surprise_reaction_correlation")
+    shape = summary.get("distribution_shape")
     parts = []
+    if shape and shape.get("modality_label") == "bimodal":
+        modes_str = ", ".join(f"{m['x']*100:+.1f}%" for m in shape["modes"])
+        parts.append(
+            f"Bimodal reaction (peaks at {modes_str}): mean is misleading, "
+            f"split the take by direction."
+        )
+    elif shape and shape.get("tail_label") == "fat":
+        parts.append(
+            f"Fat-tailed reaction (excess kurt {shape['excess_kurtosis']:+.1f}): "
+            f"a few large moves drive the mean; median is the safer read."
+        )
     if surprise and abs(surprise["rho"]) > 0.5 and surprise["n"] >= 5:
         parts.append(
             f"Surprise explains {surprise['r_squared'] * 100:.0f}% "
@@ -1183,6 +1208,14 @@ def generate_take_aggregate(summary: dict[str, Any], event_class: str) -> str:
     t = summary["t_stat_avg_vs_zero"]
     n = summary["n_subjects"]
     regime = summary.get("regime_check")
+    shape = summary.get("distribution_shape")
+    if shape and shape.get("modality_label") == "bimodal":
+        modes_str = ", ".join(f"{m['x']*100:+.1f}%" for m in shape["modes"])
+        return (
+            f"Bimodal reaction (peaks at {modes_str}, n={n}): the mean "
+            f"({mean_car * 100:+.1f}%) is misleading. This event class "
+            f"has two regimes; classify each observation before quoting the average."
+        )
     if regime and regime["regime_shift_flag"]:
         return (
             f"Regime has shifted: recent 4 events avg "
@@ -1448,6 +1481,19 @@ def render_cross_section(payload: dict[str, Any]) -> str:
                 f"- Surprise vs reaction ρ: {sc['rho']:+.2f} "
                 f"(R² = {sc['r_squared'] * 100:.0f}%, n={sc['n']})"
             )
+        shape = summary.get("distribution_shape")
+        if shape:
+            modes_str = ", ".join(f"{m['x']*100:+.2f}%" for m in shape["modes"])
+            lines.append(
+                f"- Shape: {shape['modality_label']} "
+                f"({shape['n_modes']} mode{'s' if shape['n_modes'] != 1 else ''} at {modes_str or 'n/a'}), "
+                f"tail {shape['tail_label']}"
+            )
+            lines.append(f"- Density: {shape['sparkline']}")
+            if shape.get("warn_mean_misleading"):
+                lines.append(
+                    "- Mean is misleading (bimodal, fat-tailed, or skewed); read the shape."
+                )
         lines.append("")
 
     lines.append(f"Take: {payload['take']}")
@@ -1500,6 +1546,22 @@ def render_aggregate(payload: dict[str, Any]) -> str:
             f"p75 {fmt_signed_pct(p['p75_pct'])} "
             f"p90 {fmt_signed_pct(p['p90_pct'])}"
         )
+
+        shape = summary.get("distribution_shape")
+        if shape:
+            modes_str = ", ".join(f"{m['x']*100:+.2f}%" for m in shape["modes"])
+            lines.append(
+                f"- T+5 shape: {shape['modality_label']} "
+                f"({shape['n_modes']} mode{'s' if shape['n_modes'] != 1 else ''} at {modes_str or 'n/a'}), "
+                f"tail {shape['tail_label']} "
+                f"(skew {shape['skew']:+.2f}, excess kurt {shape['excess_kurtosis']:+.2f})"
+            )
+            lines.append(f"- T+5 density: {shape['sparkline']}")
+            if shape.get("warn_mean_misleading"):
+                lines.append(
+                    "- Shape warning: mean is misleading (bimodal, fat-tailed, or skewed); "
+                    "read the shape before quoting the mean."
+                )
         lines.append("")
 
         regime = summary.get("regime_check")

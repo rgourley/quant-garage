@@ -195,6 +195,33 @@
               "description": "True when |recent_mean - full_mean| > 1 standard error of the full mean."
             }
           }
+        },
+        "distribution_shape": {
+          "type": ["object", "null"],
+          "description": "KDE-derived shape summary of the T+5 CAR distribution. Only populated when n_subjects >= 10. Surfaces bimodality and fat tails that mean/median/t-stat hide.",
+          "properties": {
+            "n": { "type": "integer" },
+            "mean": { "type": "number" },
+            "median": { "type": "number" },
+            "std": { "type": "number" },
+            "skew": { "type": "number" },
+            "excess_kurtosis": { "type": "number" },
+            "tail_label": { "type": "string", "enum": ["fat", "normal", "thin"] },
+            "n_modes": { "type": "integer" },
+            "modes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "x": { "type": "number", "description": "CAR value in decimal (e.g. 0.028 = +2.8%) where the KDE has a prominent local maximum." },
+                  "density": { "type": "number" }
+                }
+              }
+            },
+            "modality_label": { "type": "string", "enum": ["unimodal", "bimodal", "multimodal"] },
+            "warn_mean_misleading": { "type": "boolean" },
+            "sparkline": { "type": "string", "description": "40-char UTF-8 block sparkline of the KDE density on a uniform grid across [min(sample) - 0.5h, max(sample) + 0.5h]." }
+          }
         }
       }
     },
