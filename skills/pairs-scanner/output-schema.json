@@ -1,0 +1,195 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "pairs-scanner output",
+  "description": "Canonical structured output for the pairs-scanner skill. Layer 1 (the data); Layer 2 (rendered table) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "basket",
+    "lookback_days",
+    "n_aligned_bars",
+    "parameters",
+    "n_pairs_total",
+    "n_pairs_considered",
+    "n_pairs_tradeable",
+    "tradeable",
+    "considered_but_rejected",
+    "skipped_correlation",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "pairs-scanner" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "basket": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Tickers the caller passed via --basket (uppercased, dedup'd)."
+    },
+    "lookback_days": {
+      "type": "integer",
+      "description": "Trading-day window for the cointegration fit."
+    },
+    "n_aligned_bars": {
+      "type": "integer",
+      "description": "Number of dates on which every basket ticker had a close."
+    },
+    "parameters": {
+      "type": "object",
+      "description": "Every filter / threshold used for this run so the payload is self-contained.",
+      "properties": {
+        "min_correlation": { "type": "number" },
+        "min_pvalue": { "type": "number" },
+        "min_halflife_days": { "type": "number" },
+        "max_halflife_days": { "type": "number" },
+        "z_entry": { "type": "number" },
+        "os_split_fraction": { "type": "number" },
+        "os_instability_threshold": { "type": "number" }
+      }
+    },
+    "n_pairs_total": { "type": "integer" },
+    "n_pairs_considered": { "type": "integer" },
+    "n_pairs_tradeable": { "type": "integer" },
+    "tradeable": {
+      "type": "array",
+      "description": "Pairs that passed every filter. Sorted by |z_current| descending.",
+      "items": { "$ref": "#/definitions/consideredPair" }
+    },
+    "considered_but_rejected": {
+      "type": "array",
+      "description": "Pairs that passed the correlation prefilter and had full diagnostics computed but failed one or more tradeable filters. Sorted by ADF t-stat (most stationary first).",
+      "items": { "$ref": "#/definitions/consideredPair" }
+    },
+    "skipped_correlation": {
+      "type": "array",
+      "description": "Pairs skipped before the cointegration test (correlation prefilter or insufficient history).",
+      "items": {
+        "type": "object",
+        "required": ["pair", "considered", "reason"],
+        "properties": {
+          "pair": { "type": "string" },
+          "considered": { "type": "boolean", "const": false },
+          "reason": { "type": "string" },
+          "correlation_log_returns": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Human-readable caveats: methodology limits, regime-shift warnings, missing data."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string", "format": "date-time" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "consideredPair": {
+      "type": "object",
+      "required": [
+        "pair",
+        "considered",
+        "dependent",
+        "independent",
+        "n_observations",
+        "correlation_log_returns",
+        "hedge_ratio_beta",
+        "intercept_alpha",
+        "adf_tstat",
+        "cointegration_bucket",
+        "pvalue_upper_bound",
+        "half_life_days",
+        "spread_mean",
+        "spread_std",
+        "z_current",
+        "os_std_ratio",
+        "stability_label",
+        "tradeable",
+        "tradeable_rejections"
+      ],
+      "properties": {
+        "pair": {
+          "type": "string",
+          "description": "'{dependent}-{independent}'. Dependent is the ticker on the left of log(y) = alpha + beta*log(x)."
+        },
+        "considered": { "type": "boolean", "const": true },
+        "dependent": { "type": "string" },
+        "independent": { "type": "string" },
+        "n_observations": {
+          "type": "integer",
+          "description": "Aligned trading-day observations used to fit the pair."
+        },
+        "correlation_log_returns": {
+          "type": "number",
+          "description": "Pearson rho of the two tickers' daily log returns."
+        },
+        "hedge_ratio_beta": {
+          "type": "number",
+          "description": "Slope from OLS log(dependent) = alpha + beta * log(independent)."
+        },
+        "intercept_alpha": {
+          "type": "number",
+          "description": "Intercept from the same OLS."
+        },
+        "adf_tstat": {
+          "type": "number",
+          "description": "Dickey-Fuller t-statistic on the residual, no constant, lag=1. More negative means more stationary."
+        },
+        "cointegration_bucket": {
+          "type": "string",
+          "enum": [
+            "significant_1pct",
+            "significant_5pct",
+            "significant_10pct",
+            "not_significant"
+          ],
+          "description": "MacKinnon 2010 critical value bucket for N=2 cointegration with constant."
+        },
+        "pvalue_upper_bound": {
+          "type": "number",
+          "description": "Approximate upper bound on the EG p-value implied by the bucket (0.01, 0.05, 0.10, or 0.50)."
+        },
+        "half_life_days": {
+          "type": ["number", "null"],
+          "description": "Ornstein-Uhlenbeck half-life in trading days from OLS of Δresidual on lagged residual. Null when the residual is not mean-reverting (slope >= 0) or the estimate falls outside [0.5, 365]."
+        },
+        "spread_mean": { "type": "number" },
+        "spread_std": { "type": "number" },
+        "z_current": {
+          "type": "number",
+          "description": "(residual_last - spread_mean) / spread_std."
+        },
+        "os_std_ratio": {
+          "type": ["number", "null"],
+          "description": "Ratio of out-of-sample residual std to in-sample residual std under a 70/30 split with the IS hedge ratio applied to the OS chunk. Null when the OS chunk is too small."
+        },
+        "stability_label": {
+          "type": "string",
+          "enum": ["stable", "regime_shift", "insufficient_os_sample"],
+          "description": "'stable' when os_std_ratio < 1.5, 'regime_shift' when >= 1.5, 'insufficient_os_sample' when the OS chunk was too small to compute."
+        },
+        "tradeable": {
+          "type": "boolean",
+          "description": "True when every filter passed. False when one or more filters rejected the pair; see tradeable_rejections[]."
+        },
+        "tradeable_rejections": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Human-readable reasons the tradeable flag is False (empty when tradeable is True)."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,66 @@
+name: pairs-scanner
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_basket_pull]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_basket_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Table-mode skill that screens every pair in a caller-supplied basket
+  for cointegration and mean reversion. Runs Engle-Granger two-step on
+  log prices, tests residuals with a Dickey-Fuller t-stat against
+  MacKinnon 2010 critical values, estimates the Ornstein-Uhlenbeck
+  half-life, and flags out-of-sample regime shifts via a 70/30
+  residual std ratio.
+
+  Direction selection:
+    For each unordered pair (A, B), fits log(B) = alpha + beta * log(A)
+    and log(A) = alpha + beta * log(B), then picks whichever direction
+    produces the more negative ADF t-stat (more stationary residual).
+    Pair label reads dependent-independent.
+
+  Tradeable filter (all must hold):
+    - p-value bucket <= min_pvalue (default 0.05)
+    - min_halflife_days <= half_life <= max_halflife_days (default 2 to 60)
+    - |z_current| >= z_entry (default 2.0)
+    - stability_label != "regime_shift"
+
+  Any pair failing the log-return correlation prefilter (default |rho|
+  < 0.6) lands in skipped_correlation[] without a cointegration test.
+  Any pair failing a tradeable filter lands in considered_but_rejected[]
+  with the specific reasons surfaced in tradeable_rejections[].
+
+  Caveats surfaced in every run:
+    - Cointegration is a linear property that breaks in regime shifts
+      (M&A, earnings, sector rotation).
+    - Half-life is the historical mean-reversion tempo, not a forecast.
+    - When any pair carries the regime_shift label, an extra warning
+      caveat fires.
+
+  For universe-wide screens (100+ names, O(n^2) pair count), this skill
+  is not the right shape. For higher-dimensional cointegration
+  (triples, quads), Johansen would be needed and is queued for v2.
+fallbacks:
+  - factor-research
+  - relative-strength
