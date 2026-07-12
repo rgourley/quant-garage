@@ -1,0 +1,34 @@
+name: smart-money-cluster
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: basic
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Basic or higher"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [cross_fund_clustering]
+endpoints:
+  - GET /stocks/filings/vX/13-F
+auth: bearer
+notes: |
+  Composite that runs manager-portfolio-diff across a curated cohort
+  (default: 9 well-known filers) and aggregates by issuer.
+
+  Clustering thresholds:
+    min_funds: default 2. A name must appear in >= min_funds' new
+    positions to surface in the clustered_initiations table.
+
+  Fund-alias set uses the manager-portfolio-diff alias resolver.
+  Aliases without a resolvable CIK skip gracefully with an error in
+  the errors dict.
+fallbacks:
+  - manager-portfolio-diff

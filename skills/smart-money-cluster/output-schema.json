@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "smart-money-cluster output",
+  "type": "object",
+  "required": ["skill", "as_of", "fetched_at", "aliases", "min_funds", "per_fund", "clustered_initiations", "clustered_adds", "clustered_exits", "tier_caveats"],
+  "properties": {
+    "skill": { "type": "string", "const": "smart-money-cluster" },
+    "as_of": { "type": "string", "format": "date" },
+    "fetched_at": { "type": "string", "format": "date-time" },
+    "aliases": { "type": "array" },
+    "min_funds": { "type": "integer" },
+    "n_funds_queried": { "type": "integer" },
+    "n_funds_success": { "type": "integer" },
+    "per_fund": { "type": "array" },
+    "clustered_initiations": { "type": "array" },
+    "clustered_adds": { "type": "array" },
+    "clustered_exits": { "type": "array" },
+    "n_clustered_initiations": { "type": "integer" },
+    "n_clustered_adds": { "type": "integer" },
+    "n_clustered_exits": { "type": "integer" },
+    "errors": { "type": "object" },
+    "tier_caveats": { "type": "array" }
+  }
+}
