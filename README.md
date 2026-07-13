@@ -857,8 +857,22 @@ Not a regulated advisor. None of the outputs are investment advice.
 
 ## License
 
-MIT. Fork it, ship it, charge for it. Attribution appreciated, not
-required.
+AGPL v3 as of 2026-07-13. See [`LICENSE`](./LICENSE) and
+[`NOTICE`](./NOTICE).
+
+Fork it, ship it, improve it. If you host it as a service or build a
+product on top, the source of your modifications must be published
+back. If you use it internally at a firm, hedge fund, or anywhere
+else without exposing it as a service, the AGPL is essentially
+transparent to you (same as GPL). Individual quants, researchers,
+and academic use are unaffected.
+
+Versions through commit `7c2a3ab` (2026-07-12) were released under
+the MIT License and remain available under those terms; anyone who
+already has an MIT-licensed version can continue using it under MIT.
+
+For commercial licensing outside the AGPL terms (proprietary SaaS
+product, closed-source fork), contact Rob directly.
 
 ## Contributing
 
