@@ -2,9 +2,12 @@
 
 <img width="1200" height="630" alt="og" src="./assets/og.png" />
 
+> **Trade like a pro. Without the terminal.**
+> [View the full landing page →](https://www.robertcreative.com/projects/quant-garage)
+
 Quant and equity research tools that run inside Claude, or behind your
 own UI. You ask Claude "preview NVDA earnings" or "screen for momentum
-names that pulled back this week" and you get back what a sell-side
+names that pulled back this week" and you get back what a professional
 analyst would write at 6am, with the supporting numbers and citations
 to the API calls underneath.
 
