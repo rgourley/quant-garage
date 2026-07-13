@@ -18,3 +18,6 @@ examples/scratch/
 examples/.cache/
 examples/backtest-data/
 examples/backtest-*/
+
+# Claude Code project skill (canonical copy lives in ~/.claude/skills/quant-garage/)
+/SKILL.md
