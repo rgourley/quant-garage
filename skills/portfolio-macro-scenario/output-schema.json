@@ -1,0 +1,186 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "portfolio-macro-scenario output",
+  "description": "Canonical structured output for the portfolio-macro-scenario skill. Layer 1 (the data); Layer 2 (rendered sensitivity table + book P&L with CI + dominant contributors + take) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "lookback_days",
+    "factors",
+    "tlt_duration",
+    "scenario",
+    "book",
+    "sensitivities",
+    "book_pnl",
+    "dominant_positions",
+    "dominant_factors",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "portfolio-macro-scenario" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "lookback_days": { "type": "integer", "description": "Trading days of daily returns used in the regression." },
+    "factors": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The four macro factor ETF tickers in design-matrix column order: TLT (rates), UUP (dollar), USO (oil), GLD (gold)."
+    },
+    "tlt_duration": {
+      "type": "number",
+      "description": "Assumed TLT effective duration (years) used to convert the rate shock to a TLT return."
+    },
+    "scenario": {
+      "type": "object",
+      "required": ["rates_bp", "dxy_pct", "oil_pct", "gld_pct", "factor_shocks", "phrase"],
+      "properties": {
+        "rates_bp": { "type": "number", "description": "Parallel rate shock in basis points." },
+        "dxy_pct": { "type": "number", "description": "Dollar (DXY) shock in percent." },
+        "oil_pct": { "type": "number", "description": "Oil shock in percent." },
+        "gld_pct": { "type": "number", "description": "Gold shock in percent." },
+        "factor_shocks": {
+          "type": "object",
+          "description": "The scenario translated into per-factor ETF return shocks (decimal).",
+          "additionalProperties": { "type": "number" }
+        },
+        "phrase": { "type": "string", "description": "Human-readable one-line description of the non-zero shocks." }
+      }
+    },
+    "book": {
+      "type": "object",
+      "required": ["n_positions", "n_excluded", "book_value_usd"],
+      "properties": {
+        "n_positions": { "type": "integer", "description": "Positions that survived the history filter." },
+        "n_excluded": { "type": "integer", "description": "Positions excluded for missing price or insufficient history." },
+        "book_value_usd": { "type": "number", "description": "Sum of position values (shares * latest close) across surviving positions." }
+      }
+    },
+    "sensitivities": {
+      "type": "array",
+      "description": "Per-position regression betas and scenario P&L.",
+      "items": {
+        "type": "object",
+        "required": [
+          "ticker",
+          "shares",
+          "price",
+          "position_value_usd",
+          "n_obs",
+          "betas",
+          "r_squared",
+          "residual_std",
+          "expected_return",
+          "pnl_usd",
+          "pnl_std_usd",
+          "factor_contributions_usd"
+        ],
+        "properties": {
+          "ticker": { "type": "string" },
+          "shares": { "type": "number" },
+          "price": { "type": "number", "description": "Latest close used to value the position." },
+          "position_value_usd": { "type": "number", "description": "shares * price." },
+          "n_obs": { "type": "integer", "description": "Aligned observations used in the regression." },
+          "betas": {
+            "type": "object",
+            "description": "OLS beta of the position return to each factor return, keyed by factor ticker.",
+            "additionalProperties": { "type": "number" }
+          },
+          "r_squared": { "type": "number", "description": "Regression R^2 over the lookback." },
+          "residual_std": { "type": "number", "description": "Daily residual std of the regression (return units)." },
+          "expected_return": { "type": "number", "description": "sum(beta_factor * factor_shock) under the scenario." },
+          "pnl_usd": { "type": "number", "description": "position_value * expected_return." },
+          "pnl_std_usd": { "type": "number", "description": "position_value * residual_std (one-step P&L uncertainty)." },
+          "factor_contributions_usd": {
+            "type": "object",
+            "description": "P&L attributed to each factor: position_value * beta_factor * factor_shock.",
+            "additionalProperties": { "type": "number" }
+          }
+        }
+      }
+    },
+    "book_pnl": {
+      "type": "object",
+      "required": [
+        "expected_pnl_usd",
+        "expected_return_pct",
+        "ci_confidence",
+        "ci_std_usd",
+        "ci_low_usd",
+        "ci_high_usd"
+      ],
+      "properties": {
+        "expected_pnl_usd": { "type": "number", "description": "Aggregate expected P&L across surviving positions." },
+        "expected_return_pct": { "type": "number", "description": "expected_pnl / book_value, decimal." },
+        "ci_confidence": { "type": "number", "description": "Nominal confidence of the band (0.90)." },
+        "ci_std_usd": { "type": "number", "description": "Book-level P&L std, sqrt of summed squared per-position P&L stds (independence assumed)." },
+        "ci_low_usd": { "type": "number", "description": "expected_pnl - 1.64 * ci_std." },
+        "ci_high_usd": { "type": "number", "description": "expected_pnl + 1.64 * ci_std." },
+        "ci_return_low_pct": { "type": ["number", "null"] },
+        "ci_return_high_pct": { "type": ["number", "null"] }
+      }
+    },
+    "dominant_positions": {
+      "type": "array",
+      "description": "Positions ranked by absolute contribution to book P&L.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "pnl_usd"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "pnl_usd": { "type": "number" },
+          "contribution_pct": { "type": ["number", "null"], "description": "pnl_usd / book expected P&L. Null when book P&L is ~0." }
+        }
+      }
+    },
+    "dominant_factors": {
+      "type": "array",
+      "description": "Factors ranked by aggregate contribution to book P&L.",
+      "items": {
+        "type": "object",
+        "required": ["factor", "label", "pnl_usd"],
+        "properties": {
+          "factor": { "type": "string" },
+          "label": { "type": "string" },
+          "shock_return": { "type": "number" },
+          "pnl_usd": { "type": "number" },
+          "contribution_pct": { "type": ["number", "null"] }
+        }
+      }
+    },
+    "excluded": {
+      "type": "array",
+      "description": "Positions dropped for missing price or insufficient history.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "reason"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "reason": { "type": "string" },
+          "n_obs": { "type": "integer" },
+          "min_required": { "type": "integer" }
+        }
+      }
+    },
+    "take": { "type": "string", "description": "One-sentence net-exposure summary of the book under the scenario." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest caveats: rate-limit flags, unstable betas, factor collinearity, linear shock approximation, duration assumption, CI simplification."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
