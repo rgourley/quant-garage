@@ -44,6 +44,7 @@ if _REPO_ROOT not in sys.path:
 from lib.quant_garage import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     resolve_output_format,
@@ -65,6 +66,14 @@ TODAY = today()
 
 # Per-run cache: one daily-aggs pull per ticker.
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers whose pull hit a rate limit even after the client's retries plus one
+# cooldown. They come back empty because the tier throttled us, not because
+# there is no data, so the output must say so loudly rather than sizing a book
+# on a silently truncated ticker set.
+_RATE_LIMITED: set[str] = set()
+_SLEEP_BETWEEN: float = 0.05
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 VALID_METHODS = ("vol_target", "kelly", "risk_parity", "equal_weight")
 
@@ -88,6 +97,21 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError as exc:
+            print(f"  WARN: still failing for {ticker} after cooldown: {exc}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError as exc:
         print(f"  WARN: aggs for {ticker}: {exc}", file=sys.stderr)
         _AGGS_CACHE[ticker] = []
@@ -207,8 +231,18 @@ ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                 help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
 ap.add_argument("--shrinkage", type=float, default=0.05,
                 help="Correlation shrinkage toward identity. Default 0.05.")
+ap.add_argument("--sleep", type=float, default=None,
+                help="Seconds to sleep between aggregate calls. Free Basic "
+                     "tier caps at 5 calls/min; use --sleep 13 to stay under "
+                     "it. Default: minimal spacing (assumes an unmetered tier).")
 args = ap.parse_args()
 fmt = resolve_output_format(args.format)
+
+if args.sleep is not None:
+    if args.sleep < 0:
+        print("ERROR: --sleep cannot be negative", file=sys.stderr)
+        sys.exit(1)
+    _SLEEP_BETWEEN = args.sleep
 
 
 tickers_req = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
@@ -264,7 +298,7 @@ for t in tickers_req:
         )
         continue
     per_ticker_returns[t] = returns
-    time.sleep(0.05)
+    time.sleep(_SLEEP_BETWEEN)
 
 tickers_used_input = sorted(per_ticker_returns.keys())
 if len(tickers_used_input) < 2:
@@ -379,6 +413,23 @@ if "equal_weight" in methods:
         tickers=ordered_tickers,
         cov=cov,
         leverage_cap=args.leverage_cap,
+    )
+
+
+# ----- Rate-limit caveat (loud, goes first) -----
+
+# A ticker throttled out of the pull is excluded from sizing silently unless
+# we say so: the weights would then be computed on a smaller book than the
+# user asked for, which looks like a valid answer but is not the one requested.
+if _RATE_LIMITED:
+    tier_caveats.insert(
+        0,
+        f"RATE LIMIT: {len(_RATE_LIMITED)} ticker(s) "
+        f"({', '.join(sorted(_RATE_LIMITED))}) returned no data because the API "
+        f"rate limit was hit, not because history is missing. They were dropped "
+        f"from the sizing, so the weights cover a smaller book than requested. "
+        f"Free Basic tier caps at 5 calls/min: rerun with --sleep 13 or upgrade "
+        f"to Stocks Starter."
     )
 
 

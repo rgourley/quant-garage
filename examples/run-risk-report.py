@@ -52,6 +52,7 @@ if _REPO_ROOT not in sys.path:
 from lib.quant_garage import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     resolve_output_format,
@@ -79,6 +80,13 @@ TODAY = today()
 # Per-run cache: one daily-aggs pull per ticker.
 _AGGS_CACHE: dict[str, list[dict]] = {}
 
+# Tickers throttled out of the pull (empty because rate-limited, not because
+# there is no data). Flagged loudly so a risk report is never computed on a
+# silently truncated book.
+_RATE_LIMITED: set[str] = set()
+_SLEEP_BETWEEN: float = 0.05
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
+
 N_TRADING_MIN = 60
 
 
@@ -101,6 +109,21 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError as exc:
+            print(f"  WARN: still failing for {ticker} after cooldown: {exc}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError as exc:
         print(f"  WARN: aggs for {ticker}: {exc}", file=sys.stderr)
         _AGGS_CACHE[ticker] = []
@@ -270,8 +293,18 @@ ap.add_argument("--shrinkage", type=float, default=0.05,
                 help="Correlation shrinkage toward identity. Default 0.05.")
 ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                 help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. Default: render.")
+ap.add_argument("--sleep", type=float, default=None,
+                help="Seconds to sleep between aggregate calls. Free Basic "
+                     "tier caps at 5 calls/min; use --sleep 13 to stay under "
+                     "it. Default: minimal spacing (assumes an unmetered tier).")
 args = ap.parse_args()
 fmt = resolve_output_format(args.format)
+
+if args.sleep is not None:
+    if args.sleep < 0:
+        print("ERROR: --sleep cannot be negative", file=sys.stderr)
+        sys.exit(1)
+    _SLEEP_BETWEEN = args.sleep
 
 
 if args.positions is None and args.book is None:
@@ -359,7 +392,7 @@ for t in pull_set:
         )
         continue
     per_ticker_returns[t] = returns
-    time.sleep(0.05)
+    time.sleep(_SLEEP_BETWEEN)
 
 # Position tickers that survived the history filter, in book order
 position_tickers = [t for t in tickers_req if t in per_ticker_returns]
@@ -521,6 +554,23 @@ for t in position_tickers:
 # ----- Concentration -----
 
 conc = concentration_stats(weights_used)
+
+
+# ----- Rate-limit caveat (loud, goes first) -----
+
+# A ticker throttled out of the pull is dropped from the risk math silently
+# unless we say so: VaR, ES, drawdown, and the variance budget would then
+# describe a smaller book than the one on the desk, while looking complete.
+if _RATE_LIMITED:
+    tier_caveats.insert(
+        0,
+        f"RATE LIMIT: {len(_RATE_LIMITED)} ticker(s) "
+        f"({', '.join(sorted(_RATE_LIMITED))}) returned no data because the API "
+        f"rate limit was hit, not because history is missing. They were dropped "
+        f"from the risk math, so VaR, ES, drawdown, and the variance budget "
+        f"cover a smaller book than the one supplied. Free Basic tier caps at 5 "
+        f"calls/min: rerun with --sleep 13 or upgrade to Stocks Starter."
+    )
 
 
 # ----- Always-on caveats -----
