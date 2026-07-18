@@ -1,0 +1,63 @@
+name: macro-basket
+kind: skill
+interface: rest
+output_mode: hybrid
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_basket_pull]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_basket_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Cross-asset companion to market-regime. Pulls a fixed basket of liquid
+  macro ETFs (TLT, IEF, SHY, HYG, LQD, TIP, BND, GLD, SLV, UUP, DBC),
+  ranks each by relative strength versus SPY across configurable windows
+  (default 5/20/60/120 trading days), and derives the cross-asset signals
+  a macro desk watches:
+
+    - rates direction   (TLT: long-duration Treasuries)
+    - curve shape       (SHY vs TLT: 2s10s proxy -> bull/bear
+                         steepening/flattening)
+    - real yields       (TIP vs IEF)
+    - credit stress     (HYG vs LQD)
+    - dollar direction  (UUP)
+    - commodity carry   (DBC)
+    - gold/silver ratio (GLD vs SLV: risk appetite in metals)
+    - gold vs dollar beta (GLD vs UUP, rolling 60d)
+
+  The take line is a one-sentence macro summary: "Rates tightening (bear
+  steepening), strong dollar, widening credit, commodity carry off."
+
+  All basket members are US-listed ETFs, so the whole thing runs on any
+  stocks tier including Free Basic. On Free Basic pass --sleep 13 so the
+  12-series pull stays under the 5-calls/min cap; rate-limited series are
+  flagged loudly rather than silently returned as empty.
+
+  Signals are ETF-return proxies for their asset class, not the underlying
+  cash rate, spread, or index. Directionally correct; not a substitute for
+  the cash market.
+
+  This is the macro-context layer the historical-analog-finder caveats
+  ask for ("add fixed-income-context for a richer analog"). Chains with
+  market-regime (equities), sector-rotation-signal (sectors), and
+  rate-signal (the detailed curve read).
+fallbacks:
+  - market-regime

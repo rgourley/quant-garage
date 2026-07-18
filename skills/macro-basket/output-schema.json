@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "macro-basket output",
+  "description": "Canonical structured output for the macro-basket skill. Layer 1 (the data); Layer 2 (rendered table + derived-signals block + take) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "benchmark",
+    "windows_days",
+    "signal_window_days",
+    "n_instruments",
+    "instruments",
+    "derived_signals",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "macro-basket" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "benchmark": { "type": "string", "description": "Benchmark the basket is measured against. Default SPY." },
+    "windows_days": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "description": "Lookback windows in trading days for RS and returns."
+    },
+    "signal_window_days": {
+      "type": "integer",
+      "description": "Window used for the derived cross-asset signals (default 60)."
+    },
+    "n_instruments": { "type": "integer", "description": "Count of basket members (11)." },
+    "instruments": {
+      "type": "array",
+      "description": "Per-instrument RS, returns, trend, and range position, sorted by longest-window RS descending.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "label", "rs_by_window", "return_by_window", "trend_label", "n_obs_per_window"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "label": { "type": "string", "description": "Asset-class label for the ETF." },
+          "rs_by_window": {
+            "type": "object",
+            "description": "RS vs benchmark in basis points, keyed `{w}d_bps`. Null when history is insufficient.",
+            "additionalProperties": { "type": ["number", "null"] }
+          },
+          "return_by_window": {
+            "type": "object",
+            "description": "Total return (decimal) keyed `{w}d_pct`. Null when history is insufficient.",
+            "additionalProperties": { "type": ["number", "null"] }
+          },
+          "trend_label": {
+            "type": "string",
+            "enum": ["improving", "deteriorating", "stable_leader", "stable_laggard", "mixed"],
+            "description": "Five-bucket trend from RS across windows."
+          },
+          "curve_position_pct": {
+            "type": ["number", "null"],
+            "description": "Percentile (0-100) of the latest close within its trailing max-window range."
+          },
+          "n_obs_per_window": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "derived_signals": {
+      "type": "object",
+      "description": "Cross-asset reads derived from specific ETF pairs over signal_window_days.",
+      "required": ["rates", "curve", "real_yield", "credit", "dollar", "commodity", "gold_silver_ratio", "gold_dxy_beta"],
+      "properties": {
+        "rates": {
+          "type": "object",
+          "description": "Long-rate direction from TLT. TLT up = long rates falling (easing).",
+          "properties": {
+            "label": { "type": "string" },
+            "tlt_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "curve": {
+          "type": "object",
+          "description": "Curve shape from SHY vs TLT combined with rate direction: bull/bear steepening/flattening.",
+          "properties": {
+            "label": { "type": "string" },
+            "shy_minus_tlt_bps": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "real_yield": {
+          "type": "object",
+          "description": "Real-yield direction from TIP vs IEF.",
+          "properties": {
+            "label": { "type": "string" },
+            "tip_minus_ief_bps": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "credit": {
+          "type": "object",
+          "description": "Credit stress from HYG vs LQD. HY underperforming IG = widening spreads = stress.",
+          "properties": {
+            "label": { "type": "string" },
+            "hyg_minus_lqd_bps": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "dollar": {
+          "type": "object",
+          "description": "Dollar direction from UUP.",
+          "properties": {
+            "label": { "type": "string" },
+            "uup_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "commodity": {
+          "type": "object",
+          "description": "Broad commodity carry from DBC.",
+          "properties": {
+            "label": { "type": "string" },
+            "dbc_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "gold_silver_ratio": {
+          "type": "object",
+          "description": "GLD/SLV price ratio and its percentile vs trailing year. Rising = defensive.",
+          "properties": {
+            "value": { "type": ["number", "null"] },
+            "percentile_rank": { "type": ["number", "null"] },
+            "label": { "type": "string" }
+          }
+        },
+        "gold_dxy_beta": {
+          "type": "object",
+          "description": "Rolling 60d beta of GLD daily returns to UUP daily returns. Normally negative.",
+          "properties": {
+            "beta_60d": { "type": ["number", "null"] },
+            "label": { "type": "string" }
+          }
+        }
+      }
+    },
+    "take": { "type": "string", "description": "One-sentence macro summary composed from the derived signals." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest caveats: rate-limit flags, missing history, proxy limitations."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
