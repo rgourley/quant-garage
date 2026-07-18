@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "commodity-cycle output",
+  "description": "Canonical structured output for the commodity-cycle skill. Layer 1 (the data); Layer 2 (rendered drivers block + take) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "ticker",
+    "name",
+    "window_days",
+    "signals",
+    "setup",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "commodity-cycle" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "ticker": { "type": "string", "description": "Target commodity ETF (default GLD)." },
+    "name": { "type": "string", "description": "Human-readable name for the target ETF." },
+    "window_days": { "type": "integer", "description": "Lookback in trading days for returns and rolling correlations (default 60)." },
+    "signals": {
+      "type": "object",
+      "description": "The per-driver reads for the target commodity.",
+      "required": ["dxy_correlation", "real_yield_correlation", "momentum_quintile"],
+      "properties": {
+        "dxy_correlation": {
+          "type": "object",
+          "description": "Rolling window correlation of the commodity's daily returns vs UUP daily returns. Negative is normal for gold.",
+          "properties": {
+            "value": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "n_obs": { "type": "integer" },
+            "uup_return": { "type": ["number", "null"], "description": "UUP total return over the window (decimal)." },
+            "effect": { "type": ["number", "null"], "description": "Directional effect on the commodity: correlation times UUP return. Negative = dollar headwind." },
+            "label": { "type": "string" }
+          }
+        },
+        "real_yield_correlation": {
+          "type": "object",
+          "description": "Rolling window correlation vs the TIP-minus-IEF daily return spread (real-yield proxy).",
+          "properties": {
+            "value": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "n_obs": { "type": "integer" },
+            "tip_minus_ief_return": { "type": ["number", "null"], "description": "TIP return minus IEF return over the window (decimal). Positive = real yields falling." },
+            "real_yield_direction": { "type": "string", "enum": ["rising", "falling", "flat", "unknown"] },
+            "effect": { "type": ["number", "null"], "description": "Directional effect: correlation times the real-yield spread return." },
+            "label": { "type": "string" }
+          }
+        },
+        "momentum_quintile": {
+          "type": "object",
+          "description": "The commodity's window return ranked into a quintile (1..5) vs its trailing-year window returns.",
+          "properties": {
+            "quintile": { "type": ["integer", "null"], "minimum": 1, "maximum": 5 },
+            "percentile": { "type": ["number", "null"] },
+            "window_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "label": { "type": "string" }
+          }
+        },
+        "miner_divergence": {
+          "type": ["object", "null"],
+          "description": "GLD vs GDX relative return over the window (gold only; null otherwise). Miners leading is constructive.",
+          "properties": {
+            "gdx_minus_gld_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "label": { "type": "string" }
+          }
+        },
+        "silver_comovement": {
+          "type": ["object", "null"],
+          "description": "Rolling window correlation GLD vs SLV (gold only; null otherwise). High co-movement means a broad metals move.",
+          "properties": {
+            "value": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "n_obs": { "type": "integer" },
+            "label": { "type": "string" }
+          }
+        },
+        "broad_commodity_comovement": {
+          "type": "object",
+          "description": "Rolling window correlation of the target vs DBC (non-gold commodities only). Present in place of the miner/silver set.",
+          "properties": {
+            "value": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" },
+            "n_obs": { "type": "integer" },
+            "reference": { "type": "string" },
+            "label": { "type": "string" }
+          }
+        }
+      }
+    },
+    "setup": {
+      "type": "string",
+      "enum": ["constructive", "neutral", "headwind"],
+      "description": "The macro setup label for the commodity right now."
+    },
+    "take": { "type": "string", "description": "One or two sentence read naming the dominant macro driver, miner and momentum confirmation." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest caveats: rate-limit flags, missing history, proxy limitations, correlation instability."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
