@@ -261,7 +261,7 @@ def classify(name_vs_sector_avg: float | None,
 
 
 def _pts(bps: float | None) -> float | None:
-    """Basis points to percentage points (bps / 100), rounded to 1 dp."""
+    """Basis points to percentage points (pp = bps / 100), rounded to 1 dp."""
     return round(bps / 100.0, 1) if bps is not None else None
 
 
@@ -302,7 +302,7 @@ def compose_take(payload: dict,
     if sb_w is not None:
         sb_pts = abs(_pts(sb_v))
         sb_dir = "leads" if sb_v >= 0 else "lags"
-        sector_clause = f"{sector} {sb_dir} {benchmark} by {sb_pts:.0f} pts/{sb_w}d"
+        sector_clause = f"{sector} {sb_dir} {benchmark} by {sb_pts:.0f} pp/{sb_w}d"
 
     if cls == "diverging":
         specific = "weakness" if ns_v < 0 else "strength"
@@ -310,7 +310,7 @@ def compose_take(payload: dict,
         tail = f" {joiner} {sector_clause}" if sector_clause else ""
         return (
             f"{ticker} is diverging: {ns_dir} {sector} by {ns_pts:.0f} "
-            f"pts/{ns_w}d{tail}. The {specific} is name-specific, not sector. "
+            f"pp/{ns_w}d{tail}. The {specific} is name-specific, not sector. "
             f"Cross-reference with relative-strength for the watchlist view."
         )
 
@@ -322,7 +322,7 @@ def compose_take(payload: dict,
                      " The strength is name-specific (sector lagging).")
         lead_sec = f" while {sector_clause}" if sector_clause else ""
         return (
-            f"{ticker} is leading {sector} by {ns_pts:.0f} pts/{ns_w}d"
+            f"{ticker} is leading {sector} by {ns_pts:.0f} pp/{ns_w}d"
             f"{lead_sec}.{broad} "
             f"Cross-reference with relative-strength for the watchlist view."
         )
@@ -335,7 +335,7 @@ def compose_take(payload: dict,
                  " The weakness is broad-based (sector lagging too).")
     lag_sec = f" while {sector_clause}" if sector_clause else ""
     return (
-        f"{ticker} is lagging {sector} by {ns_pts:.0f} pts/{ns_w}d"
+        f"{ticker} is lagging {sector} by {ns_pts:.0f} pp/{ns_w}d"
         f"{lag_sec}.{broad} "
         f"Cross-reference with relative-strength for the watchlist view."
     )
