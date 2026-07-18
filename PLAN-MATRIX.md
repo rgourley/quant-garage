@@ -77,6 +77,10 @@ A few things to know up front:
 | `historical-analog-finder` | REST | Stocks Starter | K nearest historical regime analogs + forward SPY return distribution |
 | `portfolio-rebalancer` | REST | Stocks Starter | Variance-share-cap solver on top of risk-report; outputs trade tickets |
 | `options-structure-analyzer` | REST | Stocks Starter + Options Developer | Rank options structures for direction/vol/hedge views |
+| `portfolio-macro-scenario` | REST | Stocks Starter | Per-position OLS on TLT/UUP/USO/GLD; runs on free Basic with `sleep=13` |
+| `hedge-suggester` | REST | Stocks Starter + Options Developer | Prices 5 option overlays against a long; needs the chain with greeks + OI |
+| `single-name-vs-sector` | REST | Stocks Starter | 3 daily aggs pulls (name + sector ETF + benchmark); runs on Free Basic too |
+| `commodity-cycle` | REST | Stocks Starter | 5-6 daily ETF pulls (commodity + UUP/TIP/IEF + GDX/SLV or DBC); runs on Free Basic too |
 | `risk-factor-delta` | REST | Stocks Basic | 10-K Item 1A category diff via pre-parsed Massive taxonomy; free tier |
 | `filing-sentiment` | REST | Stocks Basic | Loughran-McDonald scoring on 10-K sections; free tier |
 | `insider-flow` | REST | Stocks Basic | Form 4 classification + 10b5-1 filter + cluster buy detection; free tier |
