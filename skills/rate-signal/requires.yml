@@ -1,0 +1,61 @@
+name: rate-signal
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_basket_pull]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_basket_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Rates-only deep dive: the detailed Treasury-curve read that macro-basket
+  summarizes in a single line. Pulls four liquid Treasury ETFs (SHY short
+  end, IEF belly, TLT long end, TIP inflation-protected) over one window
+  (default 60 trading days) and decomposes the curve:
+
+    - curve slope    (SHY vs TLT: 2s10s proxy -> four-way bull/bear
+                      steepening/flattening)
+    - real yields    (TIP vs IEF)
+    - break-evens    (IEF vs TIP: nominal minus real, inflation
+                      expectations rising/falling)
+    - momentum       (TLT vs IEF: long end vs belly divergence)
+
+  The four reads resolve into one four-way curve label plus a confidence
+  score. Confidence is high when the curve label, the real-yield read, and
+  the momentum read agree, low when they conflict. The take reads like a
+  one-sentence rates note: "Bear flattening (high confidence): long rates
+  rising faster than short, real yields rising, TLT and IEF aligned."
+
+  All four members are US-listed ETFs, so it runs on any stocks tier
+  including Free Basic. On Free Basic pass --sleep 13 so the 4-series pull
+  stays under the 5-calls/min cap; rate-limited series are flagged loudly
+  rather than silently returned as empty.
+
+  Signals are ETF-return proxies for the cash curve, not the underlying
+  yields. Directionally correct; not a substitute for the actual 2s10s in
+  basis points.
+
+  This is the rates detail behind macro-basket. Use macro-basket for the
+  broad cross-asset dashboard (rates, credit, dollar, gold, commodities)
+  and rate-signal when the question is the curve itself.
+fallbacks:
+  - macro-basket

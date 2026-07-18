@@ -1,0 +1,170 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "rate-signal output",
+  "description": "Canonical structured output for the rate-signal skill. Layer 1 (the data); Layer 2 (rendered return table + signals block + confidence + take) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "window_days",
+    "short_window_days",
+    "n_instruments",
+    "instruments",
+    "signals",
+    "confidence",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "rate-signal" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "window_days": {
+      "type": "integer",
+      "description": "Lookback window in trading days for the curve reads (default 60)."
+    },
+    "short_window_days": {
+      "type": "integer",
+      "description": "Short sub-window (trading days) used by the momentum read. Scales from window as max(5, window // 4)."
+    },
+    "n_instruments": { "type": "integer", "description": "Count of basket members (4: SHY, IEF, TLT, TIP)." },
+    "instruments": {
+      "type": "array",
+      "description": "Per-instrument window return and observation count.",
+      "items": {
+        "type": "object",
+        "required": ["ticker", "label", "return_pct", "n_obs"],
+        "properties": {
+          "ticker": { "type": "string" },
+          "label": { "type": "string", "description": "Curve-position label for the ETF." },
+          "return_pct": {
+            "type": ["number", "null"],
+            "description": "Total return (decimal) over window_days. Null when history is insufficient."
+          },
+          "n_obs": { "type": "integer", "description": "Number of daily bars available." }
+        }
+      }
+    },
+    "signals": {
+      "type": "object",
+      "description": "The four curve reads over window_days.",
+      "required": ["curve", "real_yield", "breakeven", "momentum"],
+      "properties": {
+        "curve": {
+          "type": "object",
+          "description": "Curve slope from SHY vs TLT combined with TLT direction: four-way bull/bear steepening/flattening.",
+          "required": ["label", "rate_direction", "slope", "window_days"],
+          "properties": {
+            "label": {
+              "type": "string",
+              "enum": ["bull steepening", "bull flattening", "bear steepening", "bear flattening", "unknown"],
+              "description": "The four-way curve label."
+            },
+            "rate_direction": {
+              "type": "string",
+              "enum": ["bull", "bear", "unknown"],
+              "description": "bull = long rates falling (TLT up); bear = long rates rising (TLT down)."
+            },
+            "slope": {
+              "type": "string",
+              "enum": ["steepening", "flattening", "unknown"],
+              "description": "steepening = short (SHY) outperforming long (TLT); flattening = long outperforming short."
+            },
+            "shy_minus_tlt_bps": { "type": ["number", "null"] },
+            "tlt_return": { "type": ["number", "null"] },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "real_yield": {
+          "type": "object",
+          "description": "Real-yield direction from TIP alone. TIP is indexed to real yields, so TIP price up = real yields falling, TIP down = rising.",
+          "required": ["label", "direction", "window_days"],
+          "properties": {
+            "label": { "type": "string" },
+            "direction": {
+              "type": "string",
+              "enum": ["rising", "falling", "stable", "unknown"]
+            },
+            "tip_return": { "type": ["number", "null"], "description": "TIP total return over the window (decimal)." },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "breakeven": {
+          "type": "object",
+          "description": "Inflation-expectations proxy: breakevens = nominal minus real, from TIP vs IEF. TIP outperforming IEF = breakevens widening = inflation expectations rising.",
+          "required": ["label", "window_days"],
+          "properties": {
+            "label": {
+              "type": "string",
+              "enum": [
+                "inflation expectations rising",
+                "inflation expectations falling",
+                "inflation expectations stable",
+                "unknown"
+              ]
+            },
+            "tip_minus_ief_bps": { "type": ["number", "null"], "description": "(TIP return - IEF return) over the window, in basis points. Proportional to the change in breakevens." },
+            "window_days": { "type": "integer" }
+          }
+        },
+        "momentum": {
+          "type": "object",
+          "description": "Long end (TLT) vs belly (IEF) momentum over the short sub-window. Divergent when they disagree.",
+          "required": ["label", "short_window_days", "long_window_days"],
+          "properties": {
+            "label": {
+              "type": "string",
+              "enum": ["aligned", "divergent", "unknown"]
+            },
+            "tlt_short_return": { "type": ["number", "null"] },
+            "ief_short_return": { "type": ["number", "null"] },
+            "tlt_long_return": { "type": ["number", "null"] },
+            "ief_long_return": { "type": ["number", "null"] },
+            "tlt_minus_ief_short_bps": { "type": ["number", "null"] },
+            "short_window_days": { "type": "integer" },
+            "long_window_days": { "type": "integer" }
+          }
+        }
+      }
+    },
+    "confidence": {
+      "type": "object",
+      "description": "Confidence in the curve read from cross-signal agreement.",
+      "required": ["level", "agreements", "conflicts"],
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["high", "medium", "low", "unknown"],
+          "description": "high when real-yield and momentum reads both agree with the curve's rate direction; low when they conflict."
+        },
+        "agreements": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "conflicts": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "take": { "type": "string", "description": "One-sentence rates note composed from the curve label and confidence read." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest caveats: rate-limit flags, missing history, proxy limitations."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

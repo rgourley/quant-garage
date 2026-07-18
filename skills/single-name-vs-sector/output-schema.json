@@ -1,0 +1,132 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "single-name-vs-sector output",
+  "description": "Canonical structured output for the single-name-vs-sector skill. Layer 1 (the data); Layer 2 (rendered RS table + divergence block + take) is described in references/rendering.md.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "ticker",
+    "sector",
+    "benchmark",
+    "windows_days",
+    "name_vs_sector_bps",
+    "sector_vs_benchmark_bps",
+    "name_vs_benchmark_bps",
+    "divergence",
+    "classification",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "single-name-vs-sector" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "ticker": { "type": "string", "description": "The single name measured against its sector." },
+    "sector": { "type": "string", "description": "SPDR sector ETF the name is mapped to (or --sector override)." },
+    "sector_label": { "type": "string", "description": "Human-readable sector name for the ETF." },
+    "benchmark": { "type": "string", "description": "Benchmark for the sector-vs-market leg. Default SPY." },
+    "windows_days": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "description": "Lookback windows in trading days for returns and RS."
+    },
+    "name_return_by_window": {
+      "type": "object",
+      "description": "Name total return (decimal) keyed `{w}d_pct`. Null when history is insufficient.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "sector_return_by_window": {
+      "type": "object",
+      "description": "Sector ETF total return (decimal) keyed `{w}d_pct`.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "benchmark_return_by_window": {
+      "type": "object",
+      "description": "Benchmark total return (decimal) keyed `{w}d_pct`.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "name_vs_sector_bps": {
+      "type": "object",
+      "description": "(name_return - sector_return) * 10000, keyed `{w}d_bps`. Null when either leg lacks history.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "sector_vs_benchmark_bps": {
+      "type": "object",
+      "description": "(sector_return - benchmark_return) * 10000, keyed `{w}d_bps`.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "name_vs_benchmark_bps": {
+      "type": "object",
+      "description": "(name_return - benchmark_return) * 10000, keyed `{w}d_bps`.",
+      "additionalProperties": { "type": ["number", "null"] }
+    },
+    "n_obs_per_window": {
+      "type": "object",
+      "description": "Bars available for the name per window, keyed `{w}d`.",
+      "additionalProperties": { "type": "integer" }
+    },
+    "trend_name_vs_sector": {
+      "type": "string",
+      "enum": ["improving", "deteriorating", "stable_leader", "stable_laggard", "mixed"],
+      "description": "Five-bucket trend of the name-vs-sector RS across windows."
+    },
+    "trend_sector_vs_benchmark": {
+      "type": "string",
+      "enum": ["improving", "deteriorating", "stable_leader", "stable_laggard", "mixed"],
+      "description": "Five-bucket trend of the sector-vs-benchmark RS across windows."
+    },
+    "trend_name_vs_benchmark": {
+      "type": "string",
+      "enum": ["improving", "deteriorating", "stable_leader", "stable_laggard", "mixed"],
+      "description": "Five-bucket trend of the name-vs-benchmark RS across windows."
+    },
+    "divergence": {
+      "type": "object",
+      "description": "Summary of how far the name is running from its own sector.",
+      "required": ["score_bps", "composite_bps", "sector_vs_benchmark_avg_bps", "name_vs_benchmark_avg_bps"],
+      "properties": {
+        "score_bps": {
+          "type": ["number", "null"],
+          "description": "Name-vs-sector RS averaged across windows (signed). Positive = name leading its sector, negative = lagging."
+        },
+        "composite_bps": {
+          "type": ["number", "null"],
+          "description": "Mean of the absolute name-vs-sector RS across windows: magnitude of the gap regardless of direction."
+        },
+        "sector_vs_benchmark_avg_bps": {
+          "type": ["number", "null"],
+          "description": "Sector-vs-benchmark RS averaged across windows."
+        },
+        "name_vs_benchmark_avg_bps": {
+          "type": ["number", "null"],
+          "description": "Name-vs-benchmark RS averaged across windows."
+        }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["leading its sector", "lagging its sector", "diverging"],
+      "description": "diverging when the name-vs-sector move and the sector-vs-benchmark move point opposite ways; otherwise the sign of the name-vs-sector average."
+    },
+    "take": { "type": "string", "description": "One-sentence read: is the divergence name-specific or sector-driven, with the driving windows." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Honest caveats: rate-limit flags, missing history, override notes, proxy limitations."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}

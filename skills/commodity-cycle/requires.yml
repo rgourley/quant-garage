@@ -1,0 +1,62 @@
+name: commodity-cycle
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_context_pull]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_context_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Single-commodity macro read. Answers "is this commodity in a winning or
+  losing macro setup right now" and names the macro driver that dominates
+  it. Where macro-basket paints the whole cross-asset tape, commodity-cycle
+  zooms in on one commodity ETF (default GLD; accepts SLV, USO, DBC, or any
+  commodity ETF) and reads the drivers that push it around:
+
+    - DXY correlation     rolling window corr of the commodity vs UUP
+    - real-yield corr     rolling window corr vs the TIP-minus-IEF spread
+    - miner divergence    GLD vs GDX relative return (gold only)
+    - silver co-movement  rolling window corr GLD vs SLV (gold only)
+    - momentum quintile    window return ranked vs the trailing year
+
+  The take reads constructive / neutral / headwind and names the dominant
+  variable: "Gold: headwind. The dominant driver is a strong dollar (60d
+  corr -0.71) plus rising real yields; miners are lagging, confirming
+  weakness. Momentum in the bottom quintile."
+
+  It would have flagged a gold drawdown two weeks early via the dollar and
+  real-yield readings, before price confirmed.
+
+  All instruments are US-listed ETFs, so it runs on any stocks tier
+  including Free Basic. On Free Basic pass --sleep 13 so the pull stays
+  under the 5-calls/min cap; rate-limited series are flagged loudly rather
+  than silently returned as empty.
+
+  Every driver is an ETF-return proxy (UUP for the dollar, TIP minus IEF
+  for real yields, GDX for miners), not the cash rate or the underlying
+  index. Directionally correct; not a substitute for the cash market.
+
+  Chains with macro-basket (the full cross-asset dashboard) and
+  market-regime (the equity side).
+fallbacks:
+  - macro-basket
