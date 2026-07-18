@@ -52,7 +52,7 @@ A few things to know up front:
 | `valuation-sanity-check` | REST | Stocks Starter | Current price + financials |
 | `position-sizer` | REST | Stocks Starter | Daily aggs per name; runs on free Basic too, slower |
 | `technical-briefing` | REST | Stocks Starter | Daily aggs + snapshot for one name; runs on free Basic too, slower |
-| `market-regime` | REST | Stocks Starter | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower |
+| `market-regime` | REST | Stocks Starter (+ Indices for the VIX pillar) | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower. VIX is an index (`I:VIX`) and needs the Indices data entitlement; a Stocks-only plan drops the VIX pillar and computes the regime on trend + breadth + leadership with a caveat. On Free Basic, use `--sleep 13` so the 13-series batch stays under the 5-calls/min cap. |
 | `relative-strength` | REST | Stocks Starter | Daily aggs per ticker + benchmark; runs on free Basic too, slower |
 | `earnings-blackout` | REST | Stocks Basic | Watchlist scanner; Benzinga earnings if entitled, SEC EDGAR fallback otherwise |
 | `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |

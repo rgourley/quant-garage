@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from datetime import datetime, date, timedelta, timezone
 from typing import Optional
 
@@ -36,6 +37,7 @@ if _REPO_ROOT not in sys.path:
 from lib.quant_garage import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     sma,
@@ -69,6 +71,18 @@ DEFENSIVE_SECTORS = {"XLP", "XLU", "XLV"}
 # hit the same ticker twice in different code paths (e.g. SPY for trend
 # AND for the RS benchmark) so a tiny cache keeps the call count honest.
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers that came back empty because the tier throttled us, not because
+# there's no data. Tracked so breadth/leadership caveat the reader loudly
+# instead of silently computing on a partial, inconsistent denominator.
+_RATE_LIMITED: set[str] = set()
+
+# Seconds between aggregate calls. Free Basic caps at 5/min; --sleep 13 keeps
+# the 13-call SPY+VIX+11-sector batch under the ceiling. Set from --sleep.
+_SLEEP_BETWEEN: float = 0.0
+
+# One 429 cooldown: 5/min is a 12s spacing; 13s adds a 1s margin.
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 _SOURCES: list[dict] = []
 
@@ -106,6 +120,14 @@ def parse_args() -> argparse.Namespace:
         help="VIX ticker. Tries this first, falls back to I:VIX. (default VIX)",
     )
     ap.add_argument(
+        "--sleep",
+        type=float,
+        default=0.0,
+        help="Seconds to sleep between aggregate calls. Free Basic caps at 5 "
+             "calls/min and this skill pulls 13+ series (SPY + VIX + 11 "
+             "sectors); use --sleep 13 to stay under the ceiling. Default 0.",
+    )
+    ap.add_argument(
         "--output",
         default=None,
         help="Output markdown path (default: examples/market-regime-output.md)",
@@ -137,11 +159,34 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
         f"/v2/aggs/ticker/{ticker}"
         f"/range/1/day/{from_date.isoformat()}/{to_date.isoformat()}"
     )
+    params = {"adjusted": "true", "sort": "asc", "limit": 50000}
     try:
-        body, fetched_at = _client().get(path, {"adjusted": "true", "sort": "asc", "limit": 50000})
-    except FetchError as e:
+        body, fetched_at = _client().get(path, params)
+    except RateLimited:
+        # Client already retried with backoff and still got 429. One cooldown,
+        # one more try, then flag the ticker so breadth/leadership can caveat
+        # the partial denominator rather than silently shrinking it.
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            body, fetched_at = _client().get(path, params)
+        except FetchError as e:
+            print(f"  WARN: still failing for {ticker} after cooldown: {e}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
+    except FetchError:
         _AGGS_CACHE[ticker] = []
         return []
+    finally:
+        # Space out sequential calls to stay under a metered tier's ceiling.
+        if _SLEEP_BETWEEN > 0:
+            time.sleep(_SLEEP_BETWEEN)
 
     results = body.get("results") or []
     _AGGS_CACHE[ticker] = results
@@ -154,18 +199,37 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
 
 
 def fetch_vix_aggs(vix_ticker: str, lookback_days: int) -> tuple[list[dict], Optional[str]]:
-    """Try `vix_ticker`, then `I:{vix_ticker}` if the bare one comes back empty.
+    """Walk a chain of VIX symbol variants until one returns data.
 
-    Returns (results, source_ticker). source_ticker is None if both failed.
+    VIX is an index, so on Massive/Polygon it lives under the `I:` prefix
+    (`I:VIX`). The bare `VIX` symbol only resolves if the account also has an
+    equities symbol by that name, which it usually doesn't. We try, in order:
+
+      1. Whatever the caller passed (`--vix-ticker`, default "VIX")
+      2. The `I:`-prefixed index form (`I:VIX`)
+      3. A couple of common index aliases (`I:VIXCLS`)
+
+    Returns (results, source_ticker). source_ticker is None if every
+    candidate failed, which on a Stocks-only plan almost always means the
+    Indices data entitlement is missing (see the caveat in build_payload and
+    PLAN-MATRIX.md), not that the symbol is wrong.
     """
-    primary = fetch_daily_aggs(vix_ticker, lookback_days)
-    if primary:
-        return primary, vix_ticker
-    fallback_t = f"I:{vix_ticker}" if not vix_ticker.startswith("I:") else vix_ticker
-    if fallback_t != vix_ticker:
-        fallback = fetch_daily_aggs(fallback_t, lookback_days)
-        if fallback:
-            return fallback, fallback_t
+    seen: set[str] = set()
+    candidates: list[str] = []
+    for cand in (
+        vix_ticker,
+        f"I:{vix_ticker}" if not vix_ticker.startswith("I:") else vix_ticker,
+        "I:VIX",
+        "I:VIXCLS",
+    ):
+        if cand and cand not in seen:
+            seen.add(cand)
+            candidates.append(cand)
+
+    for cand in candidates:
+        aggs = fetch_daily_aggs(cand, lookback_days)
+        if aggs:
+            return aggs, cand
     return [], None
 
 
@@ -678,9 +742,13 @@ def render(payload: dict) -> str:
 # ----- Main -----
 
 def build_payload(args: argparse.Namespace) -> dict:
+    global _SLEEP_BETWEEN
     as_of = today().isoformat()
     lookback = args.lookback_days
     benchmark = args.benchmark
+
+    if getattr(args, "sleep", 0.0) and args.sleep > 0:
+        _SLEEP_BETWEEN = args.sleep
 
     # Fetch SPY first; everything else hangs off it
     spy_aggs = fetch_daily_aggs(benchmark, lookback)
@@ -689,12 +757,44 @@ def build_payload(args: argparse.Namespace) -> dict:
         t: fetch_daily_aggs(t, lookback) for t in SECTOR_ETFS
     }
 
-    tier_caveats: list[str] = [
+    # B2: how many of the 11 sectors actually returned usable data. Breadth is
+    # computed on whatever came back; if that's fewer than 11 the percentage
+    # denominator silently shifts between runs. Surface it explicitly.
+    n_expected_sectors = len(SECTOR_ETFS)
+    n_fetched_sectors = sum(1 for aggs in sector_data.values() if aggs)
+
+    tier_caveats: list[str] = []
+
+    # Rate-limit caveat goes first and loud: an empty series here shrinks the
+    # breadth denominator and can flip the regime read.
+    if _RATE_LIMITED:
+        tier_caveats.append(
+            f"RATE LIMIT: {len(_RATE_LIMITED)} series "
+            f"({', '.join(sorted(_RATE_LIMITED))}) returned no data because "
+            f"the API rate limit was hit, not because history is missing. The "
+            f"regime read below is computed on a PARTIAL set and may be wrong. "
+            f"Free Basic tier caps at 5 calls/min: rerun with --sleep 13 or "
+            f"upgrade to Stocks Starter."
+        )
+
+    if n_fetched_sectors < n_expected_sectors:
+        tier_caveats.append(
+            f"Breadth computed on {n_fetched_sectors} of {n_expected_sectors} "
+            f"sector ETFs; {n_expected_sectors - n_fetched_sectors} did not "
+            f"return data. The breadth percentage denominator is partial, so "
+            f"compare runs by count (n above MA) not just percent."
+        )
+
+    tier_caveats.append(
         "Breadth computed from 11 sector ETFs as a proxy; not the full advance/decline line. Sufficient for regime read, not for fine-grain breadth analysis."
-    ]
+    )
     if vix_source is None:
         tier_caveats.append(
-            "VIX data unavailable; regime read computed without volatility component."
+            "VIX data unavailable (tried VIX, I:VIX, I:VIXCLS); regime read "
+            "computed without the volatility component. VIX is an index, so it "
+            "needs the Indices data entitlement, which Stocks Starter does not "
+            "include. See PLAN-MATRIX.md; a Stocks-only plan will always miss "
+            "this pillar."
         )
 
     spy_trend = compute_spy_trend(spy_aggs)

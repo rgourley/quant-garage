@@ -44,6 +44,7 @@ if _REPO_ROOT not in sys.path:
 from lib.quant_garage import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     resolve_output_format,
@@ -58,6 +59,20 @@ TODAY = today()
 
 # Per-run cache: one daily-aggs pull per ticker.
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers whose pull hit a rate limit even after the client's own retries
+# plus one 13s cooldown. These come back empty NOT because there's no data
+# but because the tier throttled us. Tracked so the output can say so loudly
+# instead of rendering a normal-looking table full of n/a.
+_RATE_LIMITED: set[str] = set()
+
+# Seconds to sleep between aggregate calls. Free Basic caps at 5 calls/min,
+# so --sleep 13 keeps a batch under the ceiling. Default spacing is tiny;
+# set explicitly on a rate-limited tier. Populated from --sleep after parse.
+_SLEEP_BETWEEN: float = 0.05
+
+# One 429 cooldown: 5/min ceiling is a 12s spacing; 13s adds a 1s margin.
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 # The 11 SPDR sector ETFs. Optional ranking context when --include-sectors.
 SECTOR_ETFS = (
@@ -94,6 +109,25 @@ def fetch_daily_aggs(ticker: str, calendar_days: int) -> list[dict]:
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        # The client already retried with backoff and still got 429. Give the
+        # tier one cooldown, then try once more. If it fails again, flag the
+        # ticker as rate-limited so the caller surfaces a loud caveat rather
+        # than silently returning an empty series that looks like "no data".
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError as exc:
+            print(f"  WARN: still failing for {ticker} after cooldown: {exc}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError as exc:
         print(f"  WARN: aggs for {ticker}: {exc}", file=sys.stderr)
         _AGGS_CACHE[ticker] = []
@@ -210,11 +244,21 @@ ap.add_argument("--windows", type=str, default="5,20,60,120",
                      "Default 5,20,60,120.")
 ap.add_argument("--include-sectors", action="store_true",
                 help="Also rank the 11 SPDR sector ETFs alongside the watchlist.")
+ap.add_argument("--sleep", type=float, default=None,
+                help="Seconds to sleep between aggregate calls. Free Basic "
+                     "tier caps at 5 calls/min; use --sleep 13 to stay under "
+                     "it. Default: minimal spacing (assumes an unmetered tier).")
 ap.add_argument("--format", choices=["render", "json", "both"], default=None,
                 help="stdout format. Overrides QUANT_GARAGE_OUTPUT_FORMAT. "
                      "Default: render.")
 args = ap.parse_args()
 fmt = resolve_output_format(args.format)
+
+if args.sleep is not None:
+    if args.sleep < 0:
+        print("ERROR: --sleep cannot be negative", file=sys.stderr)
+        sys.exit(1)
+    _SLEEP_BETWEEN = args.sleep
 
 watchlist_req = [t.strip().upper() for t in args.watchlist.split(",") if t.strip()]
 if len(watchlist_req) < 1:
@@ -263,7 +307,7 @@ for t in to_pull:
         "context": f"daily aggs for {t}",
     })
     all_rows[t] = rows
-    time.sleep(0.05)
+    time.sleep(_SLEEP_BETWEEN)
 
 # Benchmark must have enough history
 bench_rows = all_rows.get(benchmark) or []
@@ -362,6 +406,24 @@ ranked_tickers = [r["ticker"] for r in sorted_results
                   if r.get("composite_rs_percentile") is not None]
 leaders_top_3 = ranked_tickers[:3]
 laggards_bottom_3 = list(reversed(ranked_tickers[-3:])) if len(ranked_tickers) >= 1 else []
+
+
+# ----- Rate-limit caveat (loud, goes first) -----
+
+# If any ticker came back empty because the tier throttled us (not because
+# the data is missing), say so at the top. Otherwise the table renders a
+# normal-looking wall of n/a that reads as a real "no data" answer.
+if _RATE_LIMITED:
+    n_rl = len(_RATE_LIMITED)
+    tier_caveats.insert(
+        0,
+        f"RATE LIMIT: {n_rl} of {len(to_pull)} tickers "
+        f"({', '.join(sorted(_RATE_LIMITED))}) returned no data because the "
+        f"API rate limit was hit, not because history is missing. Their RS "
+        f"shows as n/a but is UNKNOWN, not zero. Free Basic tier caps at 5 "
+        f"calls/min: rerun with --sleep 13, upgrade to Stocks Starter, or run "
+        f"in smaller batches.",
+    )
 
 
 # ----- Always-on caveats -----
