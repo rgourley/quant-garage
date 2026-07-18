@@ -19,12 +19,12 @@ work because every skill ships the same compute as two layers: the
 JSON contract for developers and a rendered note, table, stream, or
 report for humans.
 
-Forty-two primitives plus thirteen one-command workflows. One
+Forty-six primitives plus thirteen one-command workflows. One
 framework. Built in the garage, not the trading floor.
 
 **Needs a [Massive API key](https://massive.com/pricing).** Free Basic
-tier runs twenty-one of the primitives plus most workflows end-to-end;
-$29/month Stocks Starter opens thirty-nine of the forty-two primitives
+tier runs twenty-four of the primitives plus most workflows end-to-end;
+$29/month Stocks Starter opens forty-three of the forty-six primitives
 and every workflow. One primitive (prediction-market-monitor) needs
 no Massive key at all — it uses Kalshi's public read-only API.
 
@@ -34,7 +34,7 @@ no Massive key at all — it uses Kalshi's public read-only API.
 
 ## What the collection does
 
-Each primitive is useful on its own. The point of having forty-two that
+Each primitive is useful on its own. The point of having forty-six that
 share data, methodology, and audit trail is that they chain. The
 eight workflows show what that chaining looks like when someone
 wires the pieces together for a specific cadence.
@@ -117,7 +117,7 @@ encode analyst workflow, not strategy. The takes are pattern-
 matchers grounded in methodology; they aren't a signal engine. If
 you want production alpha, you build on top of this.
 
-![34 skills, one framework](./assets/skills.png)
+![46 skills, one framework](./assets/skills.png)
 
 ## Thirteen one-command workflows
 
@@ -671,7 +671,7 @@ name via the SEC EDGAR fallback. Good place to try the framework.
 Most people end up wanting **Stocks Starter at $29 per month**. That
 unlocks unlimited rate, 15-minute delayed real-time quotes, options
 contract reference data, and the bulk grouped-aggregates endpoint
-that powers the universe screeners. Thirty-nine of the forty-two
+that powers the universe screeners. Forty-three of the forty-six
 tools run on this tier (crypto-vol-scanner, full-fidelity
 options-structure-analyzer, guidance-tracker, and analyst-tracker
 need separate plans; the latter two are Benzinga add-ons). Every workflow
@@ -705,7 +705,7 @@ exact plan + add-ons it needs.
 ## Setup
 
 Get a [Massive API key](https://massive.com/pricing). Free Basic runs
-eighteen tools end to end; Stocks Starter ($29/month) opens thirty-eight.
+twenty-one tools end to end; Stocks Starter ($29/month) opens forty-two.
 
 ```bash
 export MASSIVE_API_KEY=your_key_here
