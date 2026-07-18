@@ -48,7 +48,7 @@
     },
     "vix_state": {
       "type": ["object", "null"],
-      "description": "VIX block. Null when VIX serves under neither `VIX` nor `I:VIX` on the caller's key (regime then computed without volatility component; tier_caveat surfaces it).",
+      "description": "Volatility block. Populated from VIX (`kind`=implied) when the provider carries it, otherwise from a realized-vol proxy computed from the benchmark's own closes (`kind`=realized). Null only when VIX is unavailable AND there is insufficient benchmark history for the proxy; a tier_caveat surfaces which case applies.",
       "required": ["current", "state", "source"],
       "properties": {
         "current": { "type": "number" },
@@ -63,12 +63,25 @@
         "state": {
           "type": "string",
           "enum": ["quiet", "normal", "elevated", "stressed"],
-          "description": "Absolute-level bucket: quiet<15, normal 15-22, elevated 22-30, stressed>=30."
+          "description": "For kind=implied (VIX): absolute-level bucket quiet<15, normal 15-22, elevated 22-30, stressed>=30. For kind=realized (proxy): percentile-rank bucket quiet<25th, normal 25-60th, elevated 60-85th, stressed>=85th, since VIX's absolute levels do not map to a realized scale."
         },
         "avg_20d": { "type": "number" },
         "source": {
           "type": "string",
-          "description": "Which ticker actually served the data: `VIX` or `I:VIX`."
+          "description": "What served the data: `VIX` or `I:VIX` for kind=implied, or e.g. `SPY realized vol (20d, annualized)` for kind=realized."
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["implied", "realized"],
+          "description": "implied = real VIX (forward-looking). realized = backward-looking proxy from benchmark closes, used when the provider does not carry VIX."
+        },
+        "short_label": {
+          "type": "string",
+          "description": "Short label used in reasons[] and the take: 'VIX' or 'Realized vol'."
+        },
+        "metric_label": {
+          "type": "string",
+          "description": "Display label for the rendered stanza: 'VIX' or 'Volatility (realized 20d, annualized)'."
         }
       }
     },

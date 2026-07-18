@@ -52,7 +52,7 @@ A few things to know up front:
 | `valuation-sanity-check` | REST | Stocks Starter | Current price + financials |
 | `position-sizer` | REST | Stocks Starter | Daily aggs per name; runs on free Basic too, slower |
 | `technical-briefing` | REST | Stocks Starter | Daily aggs + snapshot for one name; runs on free Basic too, slower |
-| `market-regime` | REST | Stocks Starter | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower. VIX is an index (`I:VIX`), not an equity; Massive may not expose it, in which case the VIX pillar is permanently absent and the regime is computed on trend + breadth + leadership with a caveat (not a bug, not an add-on you can buy). On Free Basic, use `--sleep 13` so the 13-series batch stays under the 5-calls/min cap. |
+| `market-regime` | REST | Stocks Starter | Daily aggs for SPY + VIX + 11 sector ETFs; runs on free Basic too, slower. VIX is an index (`I:VIX`), not an equity; if Massive does not expose it the tool falls back to a realized-vol proxy (annualized realized volatility of the benchmark's own closes, percentile-ranked vs trailing year, zero extra API calls) and labels it as realized, not VIX. The volatility pillar only goes dark if there is also too little benchmark history for the proxy. On Free Basic, use `--sleep 13` so the 13-series batch stays under the 5-calls/min cap. |
 | `relative-strength` | REST | Stocks Starter | Daily aggs per ticker + benchmark; runs on free Basic too, slower |
 | `earnings-blackout` | REST | Stocks Basic | Watchlist scanner; Benzinga earnings if entitled, SEC EDGAR fallback otherwise |
 | `earnings-drilldown` (lite, Tier B) | REST | Stocks Starter | Works without Benzinga; uses 8-K date as print proxy, reaction-sign bucketing |

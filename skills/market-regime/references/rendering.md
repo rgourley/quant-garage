@@ -45,16 +45,20 @@ Where:
 When SPY data is insufficient, render `{benchmark}: insufficient
 history for trend computation` and skip the second line.
 
-## VIX stanza
+## Volatility stanza
 
 Two lines, blank line after:
 
 ```
-VIX: {current} ({rank}th %ile of trailing year) — {state}
+{metric_label}: {current} ({rank}th %ile of trailing year) — {state}
   20-day avg {avg}. {stress_note}
 ```
 
 Where:
+- `{metric_label}` is `vix_state.metric_label`: `VIX` when the provider
+  carries VIX (`kind`=implied), or `Volatility (realized 20d,
+  annualized)` when the realized-vol proxy is used (`kind`=realized).
+  Never label the proxy as `VIX`.
 - `{current}` is `vix_state.current` to 1 decimal
 - `{rank}` is `percentile_rank` as an integer
 - `{state}` is the state bucket (`quiet`, `normal`, `elevated`, `stressed`)
@@ -62,8 +66,15 @@ Where:
 - `{stress_note}` is `No stress signal.` for quiet/normal, or
   `Stress signal active.` for elevated/stressed
 
-When VIX data is unavailable, render `VIX: data unavailable; regime
-read computed without volatility component` and skip the second line.
+When VIX is unavailable, the tool falls back to a realized-vol proxy
+(annualized realized volatility of the benchmark's own closes,
+percentile-ranked vs the trailing year). This is realized
+(backward-looking), not VIX's implied (forward-looking) reading, so the
+`{state}` bucket is set by percentile rank, not VIX's absolute levels,
+and a tier_caveat says so. Only when VIX is unavailable AND benchmark
+history is too short for the proxy do we render `Volatility: data
+unavailable; regime read computed without volatility component` and skip
+the second line.
 
 ## Breadth stanza
 

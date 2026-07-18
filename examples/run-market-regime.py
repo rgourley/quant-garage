@@ -319,6 +319,77 @@ def compute_vix_state(aggs: list[dict], lookback_days: int, source_ticker: str) 
         "state": state,
         "avg_20d": round(avg_20d, 2),
         "source": source_ticker,
+        "kind": "implied",
+        "short_label": "VIX",
+        "metric_label": "VIX",
+    }
+
+
+# Trailing window (trading days) for the realized-vol proxy used when VIX
+# is unavailable on the data provider.
+REALIZED_VOL_WINDOW = 20
+
+
+def compute_realized_vol_state(
+    spy_aggs: list[dict], lookback_days: int, window: int = REALIZED_VOL_WINDOW
+) -> Optional[dict]:
+    """Volatility pillar fallback when VIX is unavailable on the provider.
+
+    Computes annualized realized volatility from the benchmark's own daily
+    closes (already fetched for the trend block, so this adds zero API
+    calls), then ranks the current reading against its trailing-year
+    distribution. This is REALIZED (backward-looking) volatility, not VIX's
+    IMPLIED (forward-looking) reading, so the state buckets are set by
+    percentile rank against the metric's own history rather than by VIX's
+    absolute levels (15 / 22 / 30), which do not map to a realized scale.
+
+    Returns the same dict shape as compute_vix_state so the composite and
+    renderer consume it unchanged, but with kind="realized" and a distinct
+    label so the output never calls this "VIX".
+    """
+    arr = closes(spy_aggs)
+    if arr.size < window + 5:
+        return None
+    rets = np.diff(arr) / arr[:-1]
+    ann = np.sqrt(252) * 100.0  # express as an annualized percent
+    roll: list[float] = []
+    for i in range(window, len(rets) + 1):
+        roll.append(float(np.std(rets[i - window:i], ddof=1) * ann))
+    if not roll:
+        return None
+    roll_arr = np.array(roll)
+    current = float(roll_arr[-1])
+    distribution = (
+        roll_arr[-lookback_days:].tolist()
+        if roll_arr.size > lookback_days
+        else roll_arr.tolist()
+    )
+    rank = percentile_rank(current, distribution)
+    rank_label = format_rank_label(rank)
+    avg_20d = float(np.mean(roll_arr[-20:]))
+
+    # Percentile-based state (self-relative; absolute VIX bands do not apply).
+    if rank is None:
+        state = "normal"
+    elif rank < 25:
+        state = "quiet"
+    elif rank < 60:
+        state = "normal"
+    elif rank < 85:
+        state = "elevated"
+    else:
+        state = "stressed"
+
+    return {
+        "current": round(current, 2),
+        "percentile_rank": round(rank, 1) if rank is not None else None,
+        "rank_label": rank_label,
+        "state": state,
+        "avg_20d": round(avg_20d, 2),
+        "source": f"{{benchmark}} realized vol ({window}d, annualized)",
+        "kind": "realized",
+        "short_label": "Realized vol",
+        "metric_label": f"Volatility (realized {window}d, annualized)",
     }
 
 
@@ -481,10 +552,10 @@ def compute_composite_regime(
         reasons.append(f"SPY {trend}")
         if vix_state:
             reasons.append(
-                f"VIX {vix_state['state']} at "
+                f"{vix_state['short_label']} {vix_state['state']} at "
                 f"{vix_state['percentile_rank']}th %ile"
                 if vix_state.get("percentile_rank") is not None
-                else f"VIX {vix_state['state']}"
+                else f"{vix_state['short_label']} {vix_state['state']}"
             )
         reasons.append(
             f"{int(pct_50 * 100)}% of sectors above 50-day SMA"
@@ -497,10 +568,10 @@ def compute_composite_regime(
     if is_down and vix_elevated_or_stressed and breadth_narrow and defensive_leads:
         reasons.append(f"SPY {trend}")
         reasons.append(
-            f"VIX {vix_state['state']} at "
+            f"{vix_state['short_label']} {vix_state['state']} at "
             f"{vix_state['percentile_rank']}th %ile"
             if vix_state.get("percentile_rank") is not None
-            else f"VIX {vix_state['state']}"
+            else f"{vix_state['short_label']} {vix_state['state']}"
         )
         reasons.append(f"{int(pct_50 * 100)}% of sectors above 50-day SMA")
         defs_str = ", ".join(sorted(top_tickers & DEFENSIVE_SECTORS))
@@ -514,11 +585,11 @@ def compute_composite_regime(
         if breadth_narrow:
             negatives.append(f"narrow breadth ({int(pct_50 * 100)}% above 50-day)")
         if vix_state and vix_state["state"] in ("elevated", "stressed"):
-            negatives.append(f"VIX {vix_state['state']}")
+            negatives.append(f"{vix_state['short_label']} {vix_state['state']}")
         if defensive_leads:
             negatives.append("defensive leadership")
         if vix_unavailable:
-            negatives.append("VIX data unavailable")
+            negatives.append("volatility data unavailable")
         if negatives:
             reasons.append(f"but {'; '.join(negatives)}")
         elif not growth_leads:
@@ -534,7 +605,7 @@ def compute_composite_regime(
         if breadth_broad:
             positives.append(f"broad breadth ({int(pct_50 * 100)}% above 50-day)")
         if vix_state and vix_state["state"] in ("quiet", "normal"):
-            positives.append(f"VIX {vix_state['state']}")
+            positives.append(f"{vix_state['short_label']} {vix_state['state']}")
         if growth_leads:
             positives.append("growth leadership recovering")
         if positives:
@@ -546,7 +617,7 @@ def compute_composite_regime(
     # SPY in `range` — no clear regime
     reasons.append(f"SPY in {trend}")
     if vix_state:
-        reasons.append(f"VIX {vix_state['state']}")
+        reasons.append(f"{vix_state['short_label']} {vix_state['state']}")
     if pct_50 is not None:
         reasons.append(f"{int(pct_50 * 100)}% of sectors above 50-day SMA")
     return {"label": "neutral", "reasons": reasons}
@@ -579,19 +650,20 @@ def render_take(
     - Mention the *first* thing to watch for a regime change (the
       weakest pillar or the threshold closest to flipping).
     """
+    vlabel = vix_state.get("short_label", "VIX") if vix_state else "volatility"
     if label == "risk_on":
         first_line = "Risk-on regime. SPY uptrend with broad participation and growth sector leadership"
         if vix_state and vix_state.get("percentile_rank") is not None:
-            first_line += f"; VIX at the {format_rank_label(vix_state['percentile_rank'])} signals no immediate fear"
+            first_line += f"; {vlabel} at the {format_rank_label(vix_state['percentile_rank'])} signals no immediate fear"
         first_line += "."
-        watch = "Watch for VIX > 22 or breadth dropping below 50% as the first sign of regime change."
+        watch = "Watch for volatility rising or breadth dropping below 50% as the first sign of regime change."
         return first_line + " " + watch
     if label == "risk_off":
         first_line = "Risk-off regime. SPY downtrend with thin participation and defensive leadership"
         if vix_state:
-            first_line += f"; VIX {vix_state['state']} confirms stress"
+            first_line += f"; {vlabel} {vix_state['state']} confirms stress"
         first_line += "."
-        watch = "Watch for VIX retreat below 22 or growth sectors returning to the top of the RS table for a regime turn."
+        watch = "Watch for volatility easing or growth sectors returning to the top of the RS table for a regime turn."
         return first_line + " " + watch
     if label == "mixed_risk_on":
         first_line = "Mixed risk-on. SPY trend is up but confirmation is incomplete"
@@ -600,12 +672,12 @@ def render_take(
         if pct_50 is not None and pct_50 < 0.50:
             gaps.append("breadth has thinned")
         if vix_state and vix_state["state"] in ("elevated", "stressed"):
-            gaps.append(f"VIX has lifted to {vix_state['state']}")
+            gaps.append(f"{vlabel} has lifted to {vix_state['state']}")
         if gaps:
             first_line += " — " + ", ".join(gaps) + "."
         else:
             first_line += "."
-        watch = "Treat as constructive but reduce trust until breadth and VIX confirm."
+        watch = "Treat as constructive but reduce trust until breadth and volatility confirm."
         return first_line + " " + watch
     if label == "mixed_risk_off":
         first_line = "Mixed risk-off. SPY trend is down but at least one block is recovering"
@@ -614,15 +686,15 @@ def render_take(
         if pct_50 is not None and pct_50 > 0.50:
             offsets.append("breadth still above 50%")
         if vix_state and vix_state["state"] in ("quiet", "normal"):
-            offsets.append(f"VIX {vix_state['state']}")
+            offsets.append(f"{vlabel} {vix_state['state']}")
         if offsets:
             first_line += " — " + ", ".join(offsets) + "."
         else:
             first_line += "."
-        watch = "Treat as a defensive lean but watch for a confirmed bottom (breadth turning + VIX rolling over)."
+        watch = "Treat as a defensive lean but watch for a confirmed bottom (breadth turning + volatility rolling over)."
         return first_line + " " + watch
     # neutral
-    first_line = "Neutral regime. No clear directional read across SPY trend, VIX, breadth, and sector leadership."
+    first_line = "Neutral regime. No clear directional read across SPY trend, volatility, breadth, and sector leadership."
     watch = "Wait for confirmation across two or more blocks before sizing up directional exposure."
     return first_line + " " + watch
 
@@ -668,19 +740,20 @@ def render(payload: dict) -> str:
         lines.append(f"{benchmark}: insufficient history for trend computation")
     lines.append("")
 
-    # VIX block
+    # Volatility block (real VIX, or the realized-vol proxy when VIX is absent)
     if vix_state:
+        metric = vix_state.get("metric_label", "VIX")
         pct_rank = vix_state.get("percentile_rank")
         rank_str = f"{pct_rank:.0f}th %ile" if pct_rank is not None else "rank n/a"
         lines.append(
-            f"VIX: {vix_state['current']:.1f} ({rank_str} of trailing year) — {vix_state['state']}"
+            f"{metric}: {vix_state['current']:.1f} ({rank_str} of trailing year) — {vix_state['state']}"
         )
         avg = vix_state.get("avg_20d")
         if avg is not None:
             stress_note = " No stress signal." if vix_state["state"] in ("quiet", "normal") else " Stress signal active."
             lines.append(f"  20-day avg {avg:.1f}.{stress_note}")
     else:
-        lines.append("VIX: data unavailable; regime read computed without volatility component")
+        lines.append("Volatility: data unavailable; regime read computed without volatility component")
     lines.append("")
 
     # Breadth block
@@ -783,17 +856,35 @@ def build_payload(args: argparse.Namespace) -> dict:
     tier_caveats.append(
         "Breadth computed from 11 sector ETFs as a proxy; not the full advance/decline line. Sufficient for regime read, not for fine-grain breadth analysis."
     )
-    if vix_source is None:
-        tier_caveats.append(
-            "VIX data unavailable (tried VIX and I:VIX); regime read computed "
-            "on trend + breadth + leadership without the volatility component. "
-            "VIX is an index, and Massive may not expose it on any plan, so "
-            "this pillar can be permanently absent (not a bug or a missing "
-            "add-on). See PLAN-MATRIX.md."
-        )
+    # Volatility pillar: prefer real VIX; fall back to a realized-vol proxy
+    # from the benchmark's own closes (already fetched, zero extra calls)
+    # when the provider does not carry VIX.
+    vix_state = (
+        compute_vix_state(vix_aggs, lookback, vix_source)
+        if vix_aggs and vix_source else None
+    )
+    if vix_state is None:
+        vix_state = compute_realized_vol_state(spy_aggs, lookback)
+        if vix_state is not None:
+            vix_state["source"] = vix_state["source"].format(benchmark=benchmark)
+            tier_caveats.append(
+                f"VIX unavailable (tried VIX and I:VIX); volatility pillar uses "
+                f"a realized-vol proxy: {benchmark} annualized "
+                f"{REALIZED_VOL_WINDOW}d realized volatility, percentile-ranked "
+                f"vs the trailing year. This is REALIZED (backward-looking) "
+                f"volatility, not VIX's IMPLIED (forward-looking) reading; state "
+                f"buckets are set by percentile rank, not VIX's absolute "
+                f"15/22/30 levels. See PLAN-MATRIX.md."
+            )
+        else:
+            tier_caveats.append(
+                "Volatility pillar unavailable: VIX not carried by the provider "
+                "(tried VIX and I:VIX) and insufficient benchmark history for a "
+                "realized-vol proxy. Regime computed on trend + breadth + "
+                "leadership only. See PLAN-MATRIX.md."
+            )
 
     spy_trend = compute_spy_trend(spy_aggs)
-    vix_state = compute_vix_state(vix_aggs, lookback, vix_source) if vix_aggs and vix_source else None
     breadth = compute_sector_breadth(sector_data)
     leadership = compute_sector_leadership(sector_data, spy_aggs)
     composite = compute_composite_regime(spy_trend, vix_state, breadth, leadership)
