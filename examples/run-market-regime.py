@@ -199,28 +199,23 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
 
 
 def fetch_vix_aggs(vix_ticker: str, lookback_days: int) -> tuple[list[dict], Optional[str]]:
-    """Walk a chain of VIX symbol variants until one returns data.
+    """Try `vix_ticker`, then its `I:`-prefixed index form.
 
-    VIX is an index, so on Massive/Polygon it lives under the `I:` prefix
-    (`I:VIX`). The bare `VIX` symbol only resolves if the account also has an
-    equities symbol by that name, which it usually doesn't. We try, in order:
+    VIX is an index, not an equity, so where it exists on a data provider it
+    usually lives under an `I:` prefix (`I:VIX`). Massive may not expose VIX at
+    all; when neither candidate returns data the caller drops the volatility
+    pillar and computes the regime on trend + breadth + leadership. We do NOT
+    assume an add-on would fix it (see the caveat in build_payload) because
+    whether VIX is offered at all is provider-dependent.
 
-      1. Whatever the caller passed (`--vix-ticker`, default "VIX")
-      2. The `I:`-prefixed index form (`I:VIX`)
-      3. A couple of common index aliases (`I:VIXCLS`)
-
-    Returns (results, source_ticker). source_ticker is None if every
-    candidate failed, which on a Stocks-only plan almost always means the
-    Indices data entitlement is missing (see the caveat in build_payload and
-    PLAN-MATRIX.md), not that the symbol is wrong.
+    Returns (results, source_ticker). source_ticker is None if neither
+    candidate resolved.
     """
     seen: set[str] = set()
     candidates: list[str] = []
     for cand in (
         vix_ticker,
         f"I:{vix_ticker}" if not vix_ticker.startswith("I:") else vix_ticker,
-        "I:VIX",
-        "I:VIXCLS",
     ):
         if cand and cand not in seen:
             seen.add(cand)
@@ -790,11 +785,11 @@ def build_payload(args: argparse.Namespace) -> dict:
     )
     if vix_source is None:
         tier_caveats.append(
-            "VIX data unavailable (tried VIX, I:VIX, I:VIXCLS); regime read "
-            "computed without the volatility component. VIX is an index, so it "
-            "needs the Indices data entitlement, which Stocks Starter does not "
-            "include. See PLAN-MATRIX.md; a Stocks-only plan will always miss "
-            "this pillar."
+            "VIX data unavailable (tried VIX and I:VIX); regime read computed "
+            "on trend + breadth + leadership without the volatility component. "
+            "VIX is an index, and Massive may not expose it on any plan, so "
+            "this pillar can be permanently absent (not a bug or a missing "
+            "add-on). See PLAN-MATRIX.md."
         )
 
     spy_trend = compute_spy_trend(spy_aggs)
