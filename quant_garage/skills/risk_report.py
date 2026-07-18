@@ -22,6 +22,7 @@ import numpy as np
 from .. import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     annualized_vol,
@@ -49,6 +50,13 @@ TODAY = today()
 
 # Per-run cache: one daily-aggs pull per ticker.
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers that came back empty because the tier throttled us, not because
+# history is missing. Tracked so the caller can surface a loud caveat
+# rather than silently risk-reporting a truncated book.
+_RATE_LIMITED: set[str] = set()
+
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 N_TRADING_MIN = 60
 
@@ -81,6 +89,21 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError as exc:
+            print(f"  WARN: still failing for {ticker} after cooldown: {exc}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError as exc:
         print(f"  WARN: aggs for {ticker}: {exc}", file=sys.stderr)
         _AGGS_CACHE[ticker] = []
@@ -371,6 +394,18 @@ def run(
     if bench not in per_ticker_returns:
         print(f"ERROR: benchmark {bench} missing returns; aborting", file=sys.stderr)
         sys.exit(1)
+
+    rate_limited_in_pull = [t for t in pull_set if t in _RATE_LIMITED]
+    if rate_limited_in_pull:
+        names = ", ".join(rate_limited_in_pull)
+        tier_caveats.append(
+            f"RATE LIMIT: {len(rate_limited_in_pull)} of {len(pull_set)} tickers "
+            f"({names}) returned no data because the API rate limit was hit, not "
+            f"because history is missing. Risk metrics were computed on the "
+            f"remaining names; the throttled positions are NOT in the reported "
+            f"beta, VaR, or drawdown. Free Basic tier caps at 5 calls/min: "
+            f"upgrade to Stocks Starter or run in smaller batches."
+        )
 
     # Drop any excluded weight; surface in caveats. Renormalize? No — preserve
     # the operator's intent. Excluded names just don't contribute to risk math.

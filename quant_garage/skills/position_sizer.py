@@ -22,6 +22,7 @@ import numpy as np
 from .. import (
     MassiveClient,
     FetchError,
+    RateLimited,
     today,
     utcnow_iso,
     annualized_vol,
@@ -42,6 +43,13 @@ TODAY = today()
 
 # Per-run cache: one daily-aggs pull per ticker.
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers that came back empty because the tier throttled us, not because
+# history is missing. Tracked so the caller can surface a loud caveat
+# rather than silently sizing a truncated book.
+_RATE_LIMITED: set[str] = set()
+
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 VALID_METHODS = ("vol_target", "kelly", "risk_parity", "equal_weight")
 
@@ -74,6 +82,21 @@ def fetch_daily_aggs(ticker: str, lookback_days: int) -> list[dict]:
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError as exc:
+            print(f"  WARN: still failing for {ticker} after cooldown: {exc}",
+                  file=sys.stderr)
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError as exc:
         print(f"  WARN: aggs for {ticker}: {exc}", file=sys.stderr)
         _AGGS_CACHE[ticker] = []
@@ -281,6 +304,17 @@ def run(
             continue
         per_ticker_returns[t] = returns
         time.sleep(0.05)
+
+    rate_limited_in_pull = [t for t in tickers_req if t in _RATE_LIMITED]
+    if rate_limited_in_pull:
+        names = ", ".join(rate_limited_in_pull)
+        tier_caveats.append(
+            f"RATE LIMIT: {len(rate_limited_in_pull)} of {len(tickers_req)} tickers "
+            f"({names}) returned no data because the API rate limit was hit, not "
+            f"because history is missing. Book was sized on the remaining names; "
+            f"weights are NOT valid for the throttled positions. Free Basic tier "
+            f"caps at 5 calls/min: upgrade to Stocks Starter or run in smaller batches."
+        )
 
     tickers_used_input = sorted(per_ticker_returns.keys())
     if len(tickers_used_input) < 2:

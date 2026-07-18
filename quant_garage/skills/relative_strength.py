@@ -11,11 +11,12 @@ stable_laggard, mixed).
 """
 from __future__ import annotations
 
+import sys
 import time
 from datetime import datetime, timezone, timedelta
 from typing import Iterable
 
-from .. import MassiveClient, FetchError, today, utcnow_iso, percentile_rank
+from .. import MassiveClient, FetchError, RateLimited, today, utcnow_iso, percentile_rank
 
 
 SECTOR_ETFS = (
@@ -26,6 +27,15 @@ SECTOR_ETFS = (
 # Module-level cache — same-process runs reuse aggs (relative-strength +
 # stock-one-pager both hit SPY, benchmark reuse across watchlist runs, etc.)
 _AGGS_CACHE: dict[str, list[dict]] = {}
+
+# Tickers that came back empty because the tier throttled us, not because
+# history is missing. Tracked per-process so the caller can surface a loud
+# caveat instead of rendering a normal-looking table full of n/a.
+_RATE_LIMITED: set[str] = set()
+
+# One 429 cooldown: Free Basic caps at 5 calls/min (12s spacing); 13s adds
+# a 1s safety margin.
+_RATE_LIMIT_COOLDOWN_SECONDS = 13
 
 
 class _Sources:
@@ -54,6 +64,23 @@ def _fetch_daily_aggs(
     )
     try:
         doc, _ = client.get(path)
+    except RateLimited:
+        # Client already retried with backoff and still got 429. One tier
+        # cooldown, one retry. If still failing, flag the ticker so the
+        # caller can surface a loud caveat rather than silently returning
+        # an empty series that renders as "no data".
+        print(
+            f"  WARN: rate limited on {ticker}; cooling down "
+            f"{_RATE_LIMIT_COOLDOWN_SECONDS}s and retrying once...",
+            file=sys.stderr,
+        )
+        time.sleep(_RATE_LIMIT_COOLDOWN_SECONDS)
+        try:
+            doc, _ = client.get(path)
+        except FetchError:
+            _RATE_LIMITED.add(ticker)
+            _AGGS_CACHE[ticker] = []
+            return []
     except FetchError:
         _AGGS_CACHE[ticker] = []
         return []
@@ -160,6 +187,17 @@ def run(
         time.sleep(0.02)  # gentle throttle for larger watchlists
 
     tier_caveats: list[str] = []
+    rate_limited_in_pull = [t for t in to_pull if t in _RATE_LIMITED]
+    if rate_limited_in_pull:
+        names = ", ".join(rate_limited_in_pull)
+        tier_caveats.append(
+            f"RATE LIMIT: {len(rate_limited_in_pull)} of {len(to_pull)} tickers "
+            f"({names}) returned no data because the API rate limit was hit, "
+            f"not because history is missing. Their RS shows as n/a but is "
+            f"UNKNOWN, not zero. Free Basic tier caps at 5 calls/min: rerun "
+            f"with a longer per-call delay, upgrade to Stocks Starter, or "
+            f"run in smaller batches."
+        )
     bench_rows = all_rows.get(benchmark) or []
     bench_returns: dict[int, float | None] = {}
     bench_n: dict[int, int] = {}
