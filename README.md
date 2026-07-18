@@ -203,7 +203,7 @@ Concrete situations, mapped to the workflow that solves them.
 
 For the 42 individual primitives (compose your own workflow), scroll down.
 
-## The 42 building-block tools, with real use cases
+## The 46 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -424,6 +424,29 @@ analogs to the current tape gave a 75% hit-rate above zero at 60 and
 252 days, median +14.3% at 252d, with mid-2024 and late-2021 pulling
 opposite directions in the K set.
 
+**[`single-name-vs-sector`](skills/single-name-vs-sector)**
+`relative-strength` ranks a name versus SPY, which conflates two
+things: is the name strong because its sector is strong, or is it
+pulling away from its own sector. This one splits them. Three RS
+legs across 5/20/60/120-day windows: name vs sector, sector vs
+benchmark, name vs benchmark. Classifies the name as leading,
+lagging, or diverging (name and sector pointing opposite ways).
+Surfaced when SOFI showed as a stable laggard at -4100bp vs SPY 120d
+while XLF was leading at +377bp 20d. The weakness was name-specific,
+not a financials problem. Divergence takes precedence over sign, so
+the tool catches the important case first.
+
+**[`commodity-cycle`](skills/commodity-cycle)**
+Is this commodity in a winning or losing macro setup, and which
+driver dominates. Rolling correlations against the dollar (UUP), the
+real-yield proxy (TIP minus IEF), and (for gold) miner divergence
+vs GDX and silver co-movement. Plus a momentum quintile ranked
+against the trailing year. Reads constructive, neutral, or headwind
+with the dominant variable named. On GLD 60d: headwind, dominant
+driver a strong dollar (60d corr -0.68) plus rising real yields,
+miners lagging -9%, momentum in the bottom quintile. Would have
+flagged the gold drawdown before price confirmed.
+
 ### Trading and execution
 
 **[`options-flow`](skills/options-flow)**
@@ -475,6 +498,19 @@ structure whose tradeoffs match your view, not just the one your
 platform happened to surface. On hedges, it reports the P&L improvement
 vs unhedged rather than a meaningless "percent of net premium" ratio.
 
+**[`hedge-suggester`](skills/hedge-suggester)**
+`risk-report` flags positions carrying most of the book's variance.
+`options-flow` shows what other traders are doing. Neither proposes
+what to do about a concentrated long. This one takes one long
+position and returns five priced option overlays (covered call,
+protective put, collar, put spread, ratio put spread) from the live
+chain, ranked by cost per dollar of downside protected. IV context
+from ATM implied vs 20-day realized volatility as a variance-risk-
+premium proxy, labelled expensive, fair, or cheap. Take fitted to
+the stated risk tolerance. On an ALLO 90-day run: collar priced as
+a net credit at -1.4% of notional, IV at 1.76x realized (expensive),
+tail-risk flag on the ratio structure. Not investment advice.
+
 ### Risk and operations
 
 **[`portfolio-mark`](skills/portfolio-mark)**
@@ -507,6 +543,20 @@ thresholds. Uses the same covariance-matrix pipeline as
 `position-sizer` and `risk-report --mc`, so results are directly
 comparable across the three tools. Answers "given my proposed
 weights, what's the 5th percentile 60-day portfolio outcome?"
+
+**[`portfolio-macro-scenario`](skills/portfolio-macro-scenario)**
+`risk-report` and `portfolio-review` are descriptive of the past.
+This one is prescriptive under a scenario you name. Per-position OLS
+regression on TLT/UUP/USO/GLD daily returns, applies rates, dollar,
+oil, and gold shocks, aggregates to book P&L with a rough +/-1.64
+sigma band. Ranks positions by absolute P&L contribution and factors
+by aggregate contribution. Rate shocks convert to a TLT return via
+an assumed effective duration of 17 years. On a 12-position book
+with +50bp / +2% dollar / +10% oil / -5% gold: book P&L -$17,130
+(-3.9%), gold factor 40% of the loss, TLT factor 33%. Betas are
+historical and unstable, factors are collinear (rates, dollar, oil,
+gold co-move), and the CI band assumes residual independence, all
+noted in the caveats.
 
 **[`portfolio-rebalancer`](skills/portfolio-rebalancer)**
 `risk-report` tells you which name is driving the risk. This skill
