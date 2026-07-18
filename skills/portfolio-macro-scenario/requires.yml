@@ -1,0 +1,71 @@
+name: portfolio-macro-scenario
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_book_pull]
+  B:
+    label: "Free Basic (rate-limited, runs slowly)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_book_pull]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Prescriptive scenario analysis on a current book. risk-report and
+  portfolio-review are descriptive of the past (what vol/beta/VaR/drawdown
+  have been). portfolio-macro-scenario answers the forward-looking
+  question: "given my book, what happens if rates keep rising, the dollar
+  keeps rallying, oil spikes, or gold falls?"
+
+  Method:
+    - Pull daily aggs per position plus four macro factor ETFs: TLT
+      (rates), UUP (dollar/DXY), USO (oil), GLD (gold). Align daily
+      returns by date.
+    - Per position, run a multivariate OLS regression of the stock's daily
+      returns on the four factor returns over the lookback (numpy lstsq
+      with an intercept), yielding four factor betas, residual std, R^2.
+    - Translate scenario shocks into factor ETF return shocks:
+        dxy_pct  -> UUP return = dxy_pct / 100
+        oil_pct  -> USO return = oil_pct / 100
+        gld_pct  -> GLD return = gld_pct / 100
+        rates_bp -> TLT return = -(rates_bp / 10000) * TLT_DURATION,
+                    TLT_DURATION ~= 17 (a +50bp shock => TLT ~= -8.5%).
+    - Expected position return = sum(beta_factor * factor_shock_return);
+      position P&L = position_value * expected_return; aggregate to a
+      book-level expected P&L with a rough +/-1.64-sigma (~90%) band
+      propagated from the per-position residual std under independence.
+    - Rank positions by absolute P&L contribution and factors by aggregate
+      contribution for the dominant-contributor lists.
+
+  Input is a book CSV (ticker,shares[,cost_basis,as_of_date]) matching
+  examples/sample-book.csv; position value is shares * latest close.
+
+  Caveats surfaced in every run: betas are historical and unstable; the
+  four factors are collinear (individual betas noisy); shocks are applied
+  linearly (no convexity); the TLT duration assumption drifts; the CI band
+  assumes independent residuals so the true band is wider.
+
+  All position and factor tickers are US-listed, so this runs on any stocks
+  tier. On Free Basic pass --sleep 13 to stay under the 5-calls/min cap;
+  rate-limited series are flagged loudly rather than silently returned as
+  empty. Chains with risk-report (the descriptive counterpart),
+  macro-basket (what the cross-asset tape is pricing now), and
+  hedge-suggester (what to put on against the exposure this surfaces).
+fallbacks:
+  - risk-report
