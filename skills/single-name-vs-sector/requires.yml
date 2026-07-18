@@ -1,0 +1,62 @@
+name: single-name-vs-sector
+kind: skill
+interface: rest
+output_mode: note
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+realtime: no
+tick_history: no
+tiers:
+  A:
+    label: "Stocks Starter or higher (unlimited REST)"
+    needs:
+      - product: stocks
+        tier: starter
+    enables: [unlimited_rest, fast_batch]
+  B:
+    label: "Free Basic (rate-limited)"
+    needs:
+      - product: stocks
+        tier: basic
+    enables: [demo_runtime]
+    loses: [fast_batch]
+endpoints:
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Splits a single name's relative strength into two clean legs so you can
+  tell whether the name is strong because its sector is strong, or because
+  it is pulling away from its own sector. Maps the ticker to its SPDR
+  sector ETF (XLK, XLF, XLE, XLV, XLI, XLY, XLP, XLU, XLB, XLRE, XLC) via
+  a built-in map of ~70 large US names, with a --sector override for any
+  ticker not in the map.
+
+  Over each window (default 5/20/60/120 trading days) it computes three
+  relative strengths in basis points:
+
+    - name vs sector      (name_return - sector_return) * 10_000
+    - sector vs benchmark (sector_return - spy_return) * 10_000
+    - name vs benchmark   (name_return - spy_return) * 10_000
+
+  The divergence score is the name-vs-sector RS averaged across windows
+  (how far the name runs from its own sector), plus an unsigned composite
+  (mean absolute name-vs-sector RS). The take classifies the name into
+  leading its sector, lagging its sector, or diverging (name and sector
+  pointing opposite ways), with the magnitude and the windows driving it:
+  "SOFI is diverging: lagging XLF by 41 pts/120d even as XLF leads SPY by
+  4 pts/20d. The weakness is name-specific, not sector."
+
+  Only three series per run (name, sector ETF, benchmark), so it runs on
+  any stocks tier including Free Basic; pass --sleep 13 only when batching
+  many names back to back. Rate-limited series are flagged loudly rather
+  than silently returned empty.
+
+  This is the focused single-name companion to relative-strength: where
+  relative-strength ranks a whole watchlist versus one benchmark, this
+  isolates one name against its own sector to separate name-specific moves
+  from sector moves.
+fallbacks:
+  - relative-strength

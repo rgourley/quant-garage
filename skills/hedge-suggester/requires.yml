@@ -1,0 +1,67 @@
+name: hedge-suggester
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+  - product: options
+    tier: developer
+realtime: preferred
+tick_history: no
+tiers:
+  A:
+    label: "Real-time (Options Business + Stocks Business)"
+    needs:
+      - product: options
+        tier: business
+      - product: stocks
+        tier: business
+    enables: [live_quotes, fresh_greeks, fresh_iv, live_hedge_pricing]
+  B:
+    label: "15-min delayed (Options Developer + Stocks Starter)"
+    needs:
+      - product: options
+        tier: developer
+      - product: stocks
+        tier: starter
+    enables: [hedge_construction, mid_price_pricing, greeks, oi, iv_context]
+    loses: [live_actionable_fills]
+  C:
+    label: "Free Basic (not supported)"
+    needs:
+      - product: stocks
+        tier: basic
+    loses: [options_snapshot, greeks, oi, everything]
+endpoints:
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /v3/snapshot/options/{ticker}
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+auth: bearer
+notes: |
+  Proposes concrete, live-priced option hedges against a single long
+  position and ranks them by cost per dollar of downside protected. The
+  options data (chain snapshot with bid/ask, open interest, implied vol,
+  and greeks) needs the Options Developer add-on exactly like options-flow;
+  the underlying snapshot and the realized-vol aggregate pull ride on
+  Stocks Starter.
+
+  Five structures against a long: covered call, protective put, collar,
+  put spread, and a ratio put spread (whose tail risk is flagged
+  explicitly). Each is priced from chain mids with net cost, breakeven,
+  max loss, max gain, and net delta/gamma/theta at open. The take line
+  recommends the structure that fits the stated risk tolerance.
+
+  This is not advice. Mid-price fills are optimistic, greeks are
+  point-in-time, short legs carry assignment and early-exercise risk, and
+  the earnings calendar is not fetched (the run says so and tells the
+  reader to check manually). See references/methodology.md.
+
+  Chains with risk-report (which flags the concentrated position),
+  options-flow (what other traders are doing on the name), and
+  portfolio-macro-scenario (how the hedged book behaves under macro
+  shocks).
+fallbacks:
+  - options-flow

@@ -1,0 +1,171 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "hedge-suggester output",
+  "description": "Canonical structured output for the hedge-suggester skill. Layer 1 (the data); Layer 2 (rendered structures table + take line) is described in references/rendering.md. Costs are in dollars: debit positive, credit negative.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "ticker",
+    "spot",
+    "position",
+    "risk_tolerance",
+    "horizon_days",
+    "expiry",
+    "structures",
+    "ranking",
+    "iv_context",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "hedge-suggester" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the script ran." },
+    "ticker": { "type": "string", "description": "Underlying ticker of the long position." },
+    "spot": { "type": ["number", "null"], "description": "Resolved underlying price." },
+    "spot_source": { "type": "string", "description": "Which price-fallback step won (lastTrade, min.c, day.c, prevDay.c, no_price)." },
+    "error": { "type": "string", "description": "Present only when the run could not price hedges (e.g. no spot)." },
+    "position": {
+      "type": ["object", "null"],
+      "required": ["shares", "contracts_per_leg", "notional_usd", "sized_from"],
+      "properties": {
+        "shares": { "type": "integer", "description": "Position size in shares." },
+        "contracts_per_leg": { "type": "integer", "description": "Option contracts per hedge leg (shares / 100, floor)." },
+        "notional_usd": { "type": "number", "description": "spot * shares." },
+        "sized_from": { "type": "string", "enum": ["shares", "notional"] }
+      }
+    },
+    "risk_tolerance": { "type": "string", "enum": ["low", "medium", "high"] },
+    "horizon_days": { "type": "integer", "description": "Protection horizon in calendar days." },
+    "expiry": { "type": ["string", "null"], "description": "Chosen expiry: nearest listed expiry at or beyond the horizon." },
+    "days_to_expiry": { "type": ["integer", "null"] },
+    "n_structures": { "type": "integer" },
+    "structures": {
+      "type": "array",
+      "description": "Priced hedge structures. Each carries cost, payoff bounds, protection region, and greeks at open.",
+      "items": {
+        "type": "object",
+        "required": [
+          "name",
+          "legs",
+          "net_cost_usd",
+          "breakeven",
+          "max_loss_usd",
+          "tradeoff",
+          "caveats"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": ["covered_call", "protective_put", "collar", "put_spread", "ratio_put_spread"]
+          },
+          "legs": {
+            "type": "array",
+            "description": "Option legs. Stock is the implicit long underlying, not a leg.",
+            "items": {
+              "type": "object",
+              "required": ["action", "type", "strike", "qty_contracts"],
+              "properties": {
+                "action": { "type": "string", "enum": ["buy", "sell"] },
+                "type": { "type": "string", "enum": ["put", "call"] },
+                "strike": { "type": "number" },
+                "qty_contracts": { "type": "integer" },
+                "occ_ticker": { "type": ["string", "null"] },
+                "mid": { "type": ["number", "null"], "description": "Chain mid used to price the leg." },
+                "bid": { "type": ["number", "null"] },
+                "ask": { "type": ["number", "null"] },
+                "open_interest": { "type": ["integer", "null"] },
+                "iv": { "type": ["number", "null"], "description": "Contract implied volatility (decimal)." },
+                "delta": { "type": ["number", "null"] },
+                "gamma": { "type": ["number", "null"] },
+                "theta": { "type": ["number", "null"] }
+              }
+            }
+          },
+          "net_cost_usd": { "type": "number", "description": "Net premium: debit positive, credit negative." },
+          "net_cost_per_share": { "type": "number" },
+          "net_cost_pct_of_notional": { "type": ["number", "null"], "description": "net_cost_usd / (spot * shares)." },
+          "is_credit": { "type": "boolean" },
+          "breakeven": { "type": "number", "description": "Conventional breakeven price of the combined position." },
+          "protection_ceiling": { "type": ["number", "null"], "description": "Upper edge of the insured downside region (price at which downside protection begins)." },
+          "protection_floor": { "type": ["number", "null"], "description": "Lower edge of the insured downside region (0 for a full put floor)." },
+          "upside_cap": { "type": ["number", "null"], "description": "Strike above which upside is capped (covered call, collar). Null if upside is uncapped." },
+          "downside_protected_usd": { "type": ["number", "null"], "description": "(protection_ceiling - protection_floor) * shares: the insured downside region in dollars." },
+          "cost_per_dollar_protected": { "type": ["number", "null"], "description": "net_cost_usd / downside_protected_usd. Lower (or negative) is cheaper insurance." },
+          "max_loss_usd": { "type": "number", "description": "Worst combined-position P&L over a 0..3x spot grid at expiry." },
+          "max_gain_usd": { "type": ["number", "null"], "description": "Best combined-position P&L at expiry, or null when upside is uncapped." },
+          "max_gain_uncapped": { "type": "boolean" },
+          "net_delta": { "type": ["number", "null"], "description": "Share-equivalent delta of stock + option legs at open." },
+          "net_gamma": { "type": ["number", "null"], "description": "Position gamma (per $1 move) at open." },
+          "net_theta": { "type": ["number", "null"], "description": "Position theta per day (dollars) at open." },
+          "tradeoff": { "type": "string", "description": "One-line plain-language tradeoff of this structure." },
+          "caveats": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Per-structure caveats: liquidity flags (thin OI, wide spread) and tail risk."
+          }
+        }
+      }
+    },
+    "ranking": {
+      "type": "array",
+      "description": "Structures ranked by cost per dollar of downside protected, cheapest first.",
+      "items": {
+        "type": "object",
+        "required": ["rank", "name", "cost_per_dollar_protected"],
+        "properties": {
+          "rank": { "type": "integer" },
+          "name": { "type": "string" },
+          "net_cost_usd": { "type": "number" },
+          "net_cost_pct_of_notional": { "type": ["number", "null"] },
+          "cost_per_dollar_protected": { "type": ["number", "null"] },
+          "downside_protected_usd": { "type": ["number", "null"] },
+          "tradeoff": { "type": "string" }
+        }
+      }
+    },
+    "skipped_structures": {
+      "type": "array",
+      "description": "Structures that could not be priced and why.",
+      "items": {
+        "type": "object",
+        "properties": {
+          "structure": { "type": "string" },
+          "reason": { "type": "string" }
+        }
+      }
+    },
+    "iv_context": {
+      "type": "object",
+      "description": "Is protection expensive right now, proxied by ATM implied vol versus trailing realized vol.",
+      "required": ["label"],
+      "properties": {
+        "atm_iv": { "type": ["number", "null"], "description": "ATM contract implied vol (decimal)." },
+        "realized_vol_20d": { "type": ["number", "null"], "description": "Annualized 20-day close-to-close realized vol." },
+        "iv_to_realized_ratio": { "type": ["number", "null"] },
+        "label": { "type": "string", "enum": ["expensive", "fair", "cheap", "unknown"] },
+        "note": { "type": "string" }
+      }
+    },
+    "take": { "type": "string", "description": "Recommendation of the structure that best fits the stated risk tolerance, with cost and protection. Ends with a not-advice disclaimer." },
+    "tier_caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Run-wide caveats: rate limits, delayed tape, mid-price optimism, earnings not fetched, assignment/early-exercise, IV context."
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  }
+}
