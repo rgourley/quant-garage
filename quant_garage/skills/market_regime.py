@@ -182,6 +182,7 @@ def _compute_vix_state(aggs: list[dict], lookback_days: int, source_ticker: str)
         state = "stressed"
 
     return {
+        "type": "implied",
         "current": round(current, 2),
         "percentile_rank": round(rank, 1) if rank is not None else None,
         "rank_label": rank_label,
@@ -191,11 +192,65 @@ def _compute_vix_state(aggs: list[dict], lookback_days: int, source_ticker: str)
     }
 
 
+def _compute_realized_vol_proxy(spy_aggs: list[dict], lookback_days: int) -> Optional[dict]:
+    """Fallback for the volatility pillar when VIX is unavailable.
+
+    Computes annualized 20-day realized volatility from SPY daily closes and
+    percentile-ranks it against the trailing year. State buckets are
+    percentile-based (not VIX's absolute 15/22/30 thresholds) because a
+    realized-vol series has different units and dynamics than implied VIX.
+    Zero extra API calls: reuses the SPY aggs already pulled for trend.
+    """
+    arr = _closes(spy_aggs)
+    if arr.size < 21:
+        return None
+    # Rolling 20-day annualized realized vol from daily log returns.
+    log_ret = np.diff(np.log(arr))
+    if log_ret.size < 20:
+        return None
+    rolling_std: list[float] = []
+    for i in range(20, log_ret.size + 1):
+        window = log_ret[i - 20:i]
+        rolling_std.append(float(np.std(window, ddof=1)) * np.sqrt(252) * 100.0)
+    if not rolling_std:
+        return None
+    current = rolling_std[-1]
+    trailing = rolling_std[-lookback_days:] if len(rolling_std) > lookback_days else rolling_std
+    rank = percentile_rank(current, trailing)
+    rank_label = format_rank_label(rank)
+    avg_20d = float(np.mean(rolling_std[-20:])) if len(rolling_std) >= 20 else current
+
+    if rank is None:
+        state = "normal"
+    elif rank < 25:
+        state = "quiet"
+    elif rank < 65:
+        state = "normal"
+    elif rank < 85:
+        state = "elevated"
+    else:
+        state = "stressed"
+
+    return {
+        "type": "realized",
+        "current": round(current, 2),
+        "percentile_rank": round(rank, 1) if rank is not None else None,
+        "rank_label": rank_label,
+        "state": state,
+        "avg_20d": round(avg_20d, 2),
+        "source": "spy_realized_vol_20d",
+    }
+
+
 def _compute_sector_breadth(sector_data: dict[str, list[dict]]) -> dict:
+    n_expected = len(SECTOR_ETFS)
     n_above_50 = 0; n_above_200 = 0; n_total = 0
-    for ticker, aggs in sector_data.items():
+    missing: list[str] = []
+    for ticker in SECTOR_ETFS.keys():
+        aggs = sector_data.get(ticker, [])
         arr = _closes(aggs)
         if arr.size < 200:
+            missing.append(ticker)
             continue
         n_total += 1
         s50 = sma(arr, 50)
@@ -210,6 +265,8 @@ def _compute_sector_breadth(sector_data: dict[str, list[dict]]) -> dict:
         return {
             "method": "sector_etf_proxy",
             "n_sector_etfs": 0,
+            "n_expected_sector_etfs": n_expected,
+            "missing_sector_etfs": missing,
             "n_above_sma_50": 0,
             "n_above_sma_200": 0,
             "pct_above_sma_50": None,
@@ -229,6 +286,8 @@ def _compute_sector_breadth(sector_data: dict[str, list[dict]]) -> dict:
     return {
         "method": "sector_etf_proxy",
         "n_sector_etfs": n_total,
+        "n_expected_sector_etfs": n_expected,
+        "missing_sector_etfs": missing,
         "n_above_sma_50": n_above_50,
         "n_above_sma_200": n_above_200,
         "pct_above_sma_50": round(pct_50, 3),
@@ -286,6 +345,7 @@ def _compute_composite_regime(
     vix_quiet_or_normal = vix_state is not None and vix_state["state"] in ("quiet", "normal")
     vix_elevated_or_stressed = vix_state is not None and vix_state["state"] in ("elevated", "stressed")
     vix_unavailable = vix_state is None
+    vol_label = "VIX" if (vix_state and vix_state.get("type", "implied") == "implied") else "vol"
     pct_50 = breadth.get("pct_above_sma_50")
     breadth_broad = pct_50 is not None and pct_50 > 0.50
     breadth_narrow = pct_50 is not None and pct_50 < 0.50
@@ -301,8 +361,8 @@ def _compute_composite_regime(
         reasons.append(f"SPY {trend}")
         if vix_state:
             reasons.append(
-                f"VIX {vix_state['state']} at {vix_state['percentile_rank']}th %ile"
-                if vix_state.get("percentile_rank") is not None else f"VIX {vix_state['state']}"
+                f"{vol_label} {vix_state['state']} at {vix_state['percentile_rank']}th %ile"
+                if vix_state.get("percentile_rank") is not None else f"{vol_label} {vix_state['state']}"
             )
         reasons.append(f"{int(pct_50 * 100)}% of sectors above 50-day SMA")
         reasons.append(f"Growth leadership ({', '.join(sorted(top_tickers & GROWTH_SECTORS))})")
@@ -311,8 +371,8 @@ def _compute_composite_regime(
     if is_down and vix_elevated_or_stressed and breadth_narrow and defensive_leads:
         reasons.append(f"SPY {trend}")
         reasons.append(
-            f"VIX {vix_state['state']} at {vix_state['percentile_rank']}th %ile"
-            if vix_state.get("percentile_rank") is not None else f"VIX {vix_state['state']}"
+            f"{vol_label} {vix_state['state']} at {vix_state['percentile_rank']}th %ile"
+            if vix_state.get("percentile_rank") is not None else f"{vol_label} {vix_state['state']}"
         )
         reasons.append(f"{int(pct_50 * 100)}% of sectors above 50-day SMA")
         reasons.append(f"Defensive leadership ({', '.join(sorted(top_tickers & DEFENSIVE_SECTORS))})")
@@ -324,11 +384,11 @@ def _compute_composite_regime(
         if breadth_narrow:
             negatives.append(f"narrow breadth ({int(pct_50 * 100)}% above 50-day)")
         if vix_state and vix_state["state"] in ("elevated", "stressed"):
-            negatives.append(f"VIX {vix_state['state']}")
+            negatives.append(f"{vol_label} {vix_state['state']}")
         if defensive_leads:
             negatives.append("defensive leadership")
         if vix_unavailable:
-            negatives.append("VIX data unavailable")
+            negatives.append(f"{vol_label if vix_state else 'vol'} data unavailable")
         if negatives:
             reasons.append(f"but {'; '.join(negatives)}")
         elif not growth_leads:
@@ -343,7 +403,7 @@ def _compute_composite_regime(
         if breadth_broad:
             positives.append(f"broad breadth ({int(pct_50 * 100)}% above 50-day)")
         if vix_state and vix_state["state"] in ("quiet", "normal"):
-            positives.append(f"VIX {vix_state['state']}")
+            positives.append(f"{vol_label} {vix_state['state']}")
         if growth_leads:
             positives.append("growth leadership recovering")
         if positives:
@@ -354,7 +414,7 @@ def _compute_composite_regime(
 
     reasons.append(f"SPY in {trend}")
     if vix_state:
-        reasons.append(f"VIX {vix_state['state']}")
+        reasons.append(f"{vol_label} {vix_state['state']}")
     if pct_50 is not None:
         reasons.append(f"{int(pct_50 * 100)}% of sectors above 50-day SMA")
     return {"label": "neutral", "reasons": reasons}
@@ -389,14 +449,41 @@ def run(
     tier_caveats: list[str] = [
         "Breadth computed from 11 sector ETFs as a proxy; not the full advance/decline line. Sufficient for regime read, not for fine-grain breadth analysis."
     ]
-    if vix_source is None:
-        tier_caveats.append("VIX data unavailable; regime read computed without volatility component.")
 
     spy_trend = _compute_spy_trend(spy_aggs)
     vix_state = _compute_vix_state(vix_aggs, lookback_days, vix_source) if vix_aggs and vix_source else None
+
+    if vix_state is None:
+        vix_state = _compute_realized_vol_proxy(spy_aggs, lookback_days)
+        if vix_state is not None:
+            tier_caveats.append(
+                f"VIX unavailable (tried {vix_ticker} and I:{vix_ticker}); volatility "
+                f"pillar uses a realized-vol proxy: {benchmark} annualized 20d realized "
+                f"volatility, percentile-ranked vs the trailing year. This is REALIZED "
+                f"(backward-looking) volatility, not VIX's IMPLIED (forward-looking) "
+                f"reading; state buckets are set by percentile rank, not VIX's absolute "
+                f"15/22/30 levels."
+            )
+        else:
+            tier_caveats.append(
+                "VIX data unavailable and realized-vol proxy could not compute "
+                "(insufficient SPY history); regime read computed without volatility component."
+            )
+
     breadth = _compute_sector_breadth(sector_data)
     leadership = _compute_sector_leadership(sector_data, spy_aggs)
     composite = _compute_composite_regime(spy_trend, vix_state, breadth, leadership)
+
+    n_expected = breadth.get("n_expected_sector_etfs")
+    n_actual = breadth.get("n_sector_etfs")
+    missing = breadth.get("missing_sector_etfs") or []
+    if n_expected and n_actual is not None and n_actual < n_expected:
+        names = ", ".join(missing) if missing else "unknown"
+        tier_caveats.append(
+            f"Breadth computed on {n_actual} of {n_expected} sector ETFs ({names} missing "
+            f"or short history). Regime read is based on a partial universe; rerun once "
+            f"all sectors have >200 daily bars available."
+        )
 
     return {
         "skill": "market-regime",
@@ -432,18 +519,19 @@ def _render_take(
     label: str, spy_trend: Optional[dict], vix_state: Optional[dict],
     breadth: dict, leadership: Optional[dict],
 ) -> str:
+    vol_label = "VIX" if (vix_state and vix_state.get("type", "implied") == "implied") else "volatility"
     if label == "risk_on":
         line = "Risk-on regime. SPY uptrend with broad participation and growth sector leadership"
         if vix_state and vix_state.get("percentile_rank") is not None:
-            line += f"; VIX at the {format_rank_label(vix_state['percentile_rank'])} signals no immediate fear"
+            line += f"; {vol_label} at the {format_rank_label(vix_state['percentile_rank'])} signals no immediate fear"
         line += "."
-        return line + " Watch for VIX > 22 or breadth dropping below 50% as the first sign of regime change."
+        return line + f" Watch for {vol_label} elevated or breadth dropping below 50% as the first sign of regime change."
     if label == "risk_off":
         line = "Risk-off regime. SPY downtrend with thin participation and defensive leadership"
         if vix_state:
-            line += f"; VIX {vix_state['state']} confirms stress"
+            line += f"; {vol_label} {vix_state['state']} confirms stress"
         line += "."
-        return line + " Watch for VIX retreat below 22 or growth sectors returning to the top of the RS table for a regime turn."
+        return line + f" Watch for {vol_label} retreat toward normal or growth sectors returning to the top of the RS table for a regime turn."
     if label == "mixed_risk_on":
         line = "Mixed risk-on. SPY trend is up but confirmation is incomplete"
         gaps: list[str] = []
@@ -451,12 +539,12 @@ def _render_take(
         if pct_50 is not None and pct_50 < 0.50:
             gaps.append("breadth has thinned")
         if vix_state and vix_state["state"] in ("elevated", "stressed"):
-            gaps.append(f"VIX has lifted to {vix_state['state']}")
+            gaps.append(f"{vol_label} has lifted to {vix_state['state']}")
         if gaps:
-            line += " — " + ", ".join(gaps) + "."
+            line += ": " + ", ".join(gaps) + "."
         else:
             line += "."
-        return line + " Treat as constructive but reduce trust until breadth and VIX confirm."
+        return line + f" Treat as constructive but reduce trust until breadth and {vol_label} confirm."
     if label == "mixed_risk_off":
         line = "Mixed risk-off. SPY trend is down but at least one block is recovering"
         offsets: list[str] = []
@@ -464,13 +552,13 @@ def _render_take(
         if pct_50 is not None and pct_50 > 0.50:
             offsets.append("breadth still above 50%")
         if vix_state and vix_state["state"] in ("quiet", "normal"):
-            offsets.append(f"VIX {vix_state['state']}")
+            offsets.append(f"{vol_label} {vix_state['state']}")
         if offsets:
-            line += " — " + ", ".join(offsets) + "."
+            line += ": " + ", ".join(offsets) + "."
         else:
             line += "."
-        return line + " Treat as a defensive lean but watch for a confirmed bottom (breadth turning + VIX rolling over)."
-    return ("Neutral regime. No clear directional read across SPY trend, VIX, breadth, and sector leadership."
+        return line + f" Treat as a defensive lean but watch for a confirmed bottom (breadth turning + {vol_label} rolling over)."
+    return (f"Neutral regime. No clear directional read across SPY trend, {vol_label}, breadth, and sector leadership."
             " Wait for confirmation across two or more blocks before sizing up directional exposure.")
 
 
@@ -511,13 +599,22 @@ def render(payload: dict) -> str:
     if vix_state:
         pct_rank = vix_state.get("percentile_rank")
         rank_str = f"{pct_rank:.0f}th %ile" if pct_rank is not None else "rank n/a"
-        lines.append(f"VIX: {vix_state['current']:.1f} ({rank_str} of trailing year) — {vix_state['state']}")
+        vs_type = vix_state.get("type", "implied")
+        if vs_type == "realized":
+            lines.append(
+                f"Volatility (realized 20d, annualized): {vix_state['current']:.1f} "
+                f"({rank_str} of trailing year): {vix_state['state']}"
+            )
+        else:
+            lines.append(
+                f"VIX: {vix_state['current']:.1f} ({rank_str} of trailing year): {vix_state['state']}"
+            )
         avg = vix_state.get("avg_20d")
         if avg is not None:
             stress_note = " No stress signal." if vix_state["state"] in ("quiet", "normal") else " Stress signal active."
             lines.append(f"  20-day avg {avg:.1f}.{stress_note}")
     else:
-        lines.append("VIX: data unavailable; regime read computed without volatility component")
+        lines.append("Volatility: data unavailable; regime read computed without volatility component")
     lines.append("")
 
     if breadth.get("pct_above_sma_50") is not None:
