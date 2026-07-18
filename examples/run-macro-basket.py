@@ -480,7 +480,7 @@ def render(payload: dict) -> str:
     wins = payload["windows_days"]
     win_cols = "  ".join(f"{w}d".rjust(8) for w in wins)
     lines: list[str] = []
-    lines.append(f"Macro Basket vs {payload['benchmark']} — {payload['as_of']}")
+    lines.append(f"Macro Basket vs {payload['benchmark']} ({payload['as_of']})")
     lines.append("")
     lines.append(f"{'Instrument':<24}{win_cols}   {'Trend':<15}{'Range%':>7}")
     lines.append("-" * (24 + len(win_cols) + 25))

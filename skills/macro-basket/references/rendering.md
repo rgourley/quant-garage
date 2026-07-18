@@ -13,7 +13,7 @@ RS column per window in basis points (signed, `+250` / `-888`), the trend
 label, and the range-position percentile.
 
 ```
-Macro Basket vs SPY — 2026-07-18
+Macro Basket vs SPY (2026-07-18)
 
 Instrument                    5d       20d       60d      120d   Trend           Range%
 ---------------------------------------------------------------------------------------
