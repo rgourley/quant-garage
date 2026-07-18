@@ -79,3 +79,4 @@ from . import crypto_vol_scanner  # noqa: F401
 from . import earnings_drilldown  # noqa: F401
 from . import portfolio_macro_scenario  # noqa: F401
 from . import hedge_suggester  # noqa: F401
+from . import single_name_vs_sector  # noqa: F401
