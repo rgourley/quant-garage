@@ -1,0 +1,67 @@
+name: cash-secured-puts
+kind: skill
+interface: rest
+output_mode: table
+foundations:
+  - massive-api-patterns
+requires:
+  - product: stocks
+    tier: starter
+  - product: options
+    tier: developer
+realtime: preferred
+tick_history: no
+tiers:
+  A:
+    label: "Real-time (Options Business + Stocks Business)"
+    needs:
+      - product: options
+        tier: business
+      - product: stocks
+        tier: business
+    enables: [live_quotes, fresh_greeks, fresh_iv, actionable_bid_yields]
+  B:
+    label: "15-min delayed (Options Developer + Stocks Starter)"
+    needs:
+      - product: options
+        tier: developer
+      - product: stocks
+        tier: starter
+    enables: [put_chain, mid_and_bid_yields, greeks, oi, iv_context, empirical_base_rates]
+    loses: [live_actionable_fills]
+  C:
+    label: "Free Basic (not supported)"
+    needs:
+      - product: stocks
+        tier: basic
+    loses: [options_snapshot, greeks, oi, everything]
+endpoints:
+  - GET /v2/snapshot/locale/us/markets/stocks/tickers/{ticker}
+  - GET /v3/snapshot/options/{ticker}
+  - GET /v2/aggs/ticker/{ticker}/range/1/day/{from}/{to}
+  - GET /benzinga/v1/earnings
+  - GET /v3/reference/dividends
+auth: bearer
+notes: |
+  Screens cash-secured put candidates on one underlying. The put chain
+  (bid/ask, open interest, implied vol, greeks) needs the Options
+  Developer add-on exactly like options-flow and hedge-suggester; the
+  underlying snapshot, the two-year daily aggregates pull, and the
+  dividend reference ride on Stocks Starter. The earnings date comes
+  through earnings-blackout, which uses Benzinga when entitled and
+  falls back to EDGAR 8-K dates otherwise; without either the run says
+  the calendar was not fetched rather than guessing.
+
+  Per candidate: premium at mid and at bid, static and annualized yield
+  on strike x 100, breakeven, cushion, max loss, chain delta (or
+  Black-Scholes delta from the chain IV when greeks are empty), N(-d2),
+  and the empirical share of same-length historical windows that
+  finished below the strike, with expected P&L under that history.
+  Three stance picks from the expiry nearest the horizon. Not advice.
+
+  Chains with hedge-suggester (covered-call leg once assigned),
+  options-flow (positioning on the name), and preflight-trade (is now
+  a bad time to be long the stock at all).
+fallbacks:
+  - hedge-suggester
+  - options-structure-analyzer

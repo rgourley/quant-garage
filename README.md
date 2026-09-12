@@ -203,7 +203,7 @@ Concrete situations, mapped to the workflow that solves them.
 
 For the 42 individual primitives (compose your own workflow), scroll down.
 
-## The 46 building-block tools, with real use cases
+## The 47 building-block tools, with real use cases
 
 The workflows above are chains of these. If you're building your
 own workflow or agent, this is the shelf of primitives to compose
@@ -511,6 +511,19 @@ the stated risk tolerance. On an ALLO 90-day run: collar priced as
 a net credit at -1.4% of notional, IV at 1.76x realized (expensive),
 tail-risk flag on the ratio structure. Not investment advice.
 
+**[`cash-secured-puts`](skills/cash-secured-puts)**
+You want to get paid to buy a stock below where it trades. Which put,
+which strike, which expiry, and what are you actually being paid to
+take the shares? The tool pulls the put chain for the most liquid
+expiries in your window, picks one strike per delta target, and puts
+the yield next to the assignment odds three ways: chain delta,
+Black-Scholes N(-d2), and the share of same-length historical windows
+in which the stock finished below the strike (with n). Expected P&L
+under the stock's own history, earnings and ex-div dates flagged per
+expiry, thin OI and wide spreads flagged per strike. Three picks
+(conservative, balanced, aggressive) from the expiry nearest your
+horizon and a take that always ends "Not advice."
+
 ### Risk and operations
 
 **[`portfolio-mark`](skills/portfolio-mark)**
@@ -729,7 +742,7 @@ composite runs on Starter.
 
 Specific tools need specific add-ons:
 
-- **Options data** for `options-flow`, `options-structure-analyzer`,
+- **Options data** for `options-flow`, `options-structure-analyzer`, `cash-secured-puts`,
   and full-mode `earnings-drilldown`: Options Developer at $79/month
 - **Benzinga Earnings** (consensus EPS + surprise %) for full-fidelity
   `earnings-drilldown` and `event-study`: ~$99/month add-on. Without it,

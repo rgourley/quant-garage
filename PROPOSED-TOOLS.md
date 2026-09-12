@@ -352,6 +352,11 @@ reference points, not guarantees.
 
 ### `income-strategist`
 
+**Status (2026-09-12):** the cash-secured-put half shipped as
+`cash-secured-puts` (skills/cash-secured-puts). The covered-call half
+is still open; `hedge-suggester` prices a single covered call against
+a long but does not screen strikes for income.
+
 **Does:** a covered-call and cash-secured-put screener framed for income
 seekers. For a name (or a holding you already own), it surfaces
 reasonable strikes with the yield, the annualized return if unassigned,

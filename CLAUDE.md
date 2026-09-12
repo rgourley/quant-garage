@@ -176,6 +176,11 @@ existing skills' render layers as reference.
 
 ## Recent context
 
+- **2026-09-12**: added `cash-secured-puts` (put-chain income
+  screener: yield vs assignment odds three ways, empirical base
+  rates, earnings/ex-div flags). Composes `earnings_blackout.run()`
+  for the earnings date. First half of the `income-strategist`
+  backlog entry; covered-call side still open.
 - **2026-07-04**: added CLAUDE.md (this file). Scaffolded skill
   dirs for the 6 new tools. Fixed the resolve_price zero bug.
 - **2026-07-03**: shipped 6 new skills for portfolio decision-

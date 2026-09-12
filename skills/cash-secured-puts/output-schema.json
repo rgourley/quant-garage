@@ -1,0 +1,221 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "cash-secured-puts output",
+  "description": "Canonical structured output for the cash-secured-puts skill. Layer 1 (the data); Layer 2 (rendered per-expiry tables, picks, take) is described in references/rendering.md. Premiums and yields are at the chain mid unless the field name says at_bid.",
+  "type": "object",
+  "required": [
+    "skill",
+    "as_of",
+    "fetched_at",
+    "ticker",
+    "stance",
+    "params",
+    "spot",
+    "spot_source",
+    "expiries",
+    "candidates",
+    "picks",
+    "iv_context",
+    "events",
+    "take",
+    "tier_caveats",
+    "sources"
+  ],
+  "properties": {
+    "skill": { "type": "string", "const": "cash-secured-puts" },
+    "as_of": { "type": "string", "format": "date", "description": "Local as-of date the run was anchored to (QUANT_GARAGE_AS_OF overridable)." },
+    "fetched_at": { "type": "string", "format": "date-time", "description": "UTC timestamp when the run completed." },
+    "ticker": { "type": "string" },
+    "stance": { "type": "string", "enum": ["conservative", "balanced", "aggressive"] },
+    "error": { "type": "string", "description": "Present only when the run could not screen (no spot, chain not entitled)." },
+    "params": {
+      "type": "object",
+      "required": ["cash", "horizon_days", "min_dte", "max_dte", "expiries_requested", "risk_free_rate"],
+      "properties": {
+        "cash": { "type": ["number", "null"], "description": "Cash available to secure puts; null when not given." },
+        "horizon_days": { "type": "integer" },
+        "min_dte": { "type": "integer" },
+        "max_dte": { "type": "integer" },
+        "expiries_requested": { "type": "integer" },
+        "risk_free_rate": { "type": "number", "description": "Annual rate used only in the Black-Scholes fallback and N(-d2)." }
+      }
+    },
+    "spot": { "type": ["number", "null"] },
+    "spot_source": { "type": "string", "description": "Which price-fallback step won (lastTrade, min.c, day.c, prevDay.c, no_price)." },
+    "expiries": {
+      "type": "array",
+      "description": "Analyzed expiries in date order.",
+      "items": {
+        "type": "object",
+        "required": ["expiry", "days_to_expiry", "trading_days", "n_puts_in_chain", "n_candidates", "total_open_interest", "earnings_inside", "ex_dividends_inside"],
+        "properties": {
+          "expiry": { "type": "string", "format": "date" },
+          "days_to_expiry": { "type": "integer" },
+          "trading_days": { "type": "integer", "description": "round(days_to_expiry * 252 / 365); the empirical window length." },
+          "n_puts_in_chain": { "type": "integer" },
+          "n_candidates": { "type": "integer" },
+          "total_open_interest": { "type": "integer" },
+          "earnings_inside": { "type": "boolean" },
+          "ex_dividends_inside": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "ex_dividend_date": { "type": "string", "format": "date" },
+                "cash_amount": { "type": ["number", "null"] }
+              }
+            }
+          }
+        }
+      }
+    },
+    "n_candidates": { "type": "integer" },
+    "candidates": {
+      "type": "array",
+      "description": "One row per selected put, grouped by expiry and sorted by strike descending within each.",
+      "items": {
+        "type": "object",
+        "required": [
+          "expiry", "days_to_expiry", "strike", "occ_ticker", "mid", "premium_usd",
+          "cash_secured_usd", "static_yield", "annualized_yield", "breakeven",
+          "cushion_pct", "max_loss_usd", "empirical", "sizing", "caveats"
+        ],
+        "properties": {
+          "expiry": { "type": "string", "format": "date" },
+          "days_to_expiry": { "type": "integer" },
+          "strike": { "type": "number" },
+          "occ_ticker": { "type": "string" },
+          "bid": { "type": ["number", "null"] },
+          "ask": { "type": ["number", "null"] },
+          "mid": { "type": "number", "description": "Chain mid used to price the premium." },
+          "premium_source": { "type": ["string", "null"], "enum": ["quote_mid", "day_close", "fmv", null] },
+          "open_interest": { "type": ["integer", "null"] },
+          "volume": { "type": ["integer", "null"] },
+          "iv": { "type": ["number", "null"], "description": "Chain implied volatility (decimal)." },
+          "delta_abs": { "type": ["number", "null"], "description": "Absolute put delta." },
+          "delta_source": { "type": ["string", "null"], "enum": ["chain", "black_scholes", null] },
+          "theta_per_day_usd": { "type": ["number", "null"], "description": "Chain theta * 100; negative for a long put, so the seller collects its absolute value per day." },
+          "prob_itm_bs": { "type": ["number", "null"], "description": "Black-Scholes N(-d2) on chain IV and risk_free_rate." },
+          "otm_pct": { "type": "number", "description": "(spot - strike) / spot. Negative means slightly ITM." },
+          "premium_usd": { "type": "number", "description": "mid * 100." },
+          "premium_bid_usd": { "type": ["number", "null"], "description": "bid * 100; what a seller actually receives at the market." },
+          "cash_secured_usd": { "type": "number", "description": "strike * 100." },
+          "static_yield": { "type": "number", "description": "premium_usd / cash_secured_usd." },
+          "annualized_yield": { "type": ["number", "null"], "description": "static_yield * 365 / days_to_expiry. Simple scaling." },
+          "static_yield_at_bid": { "type": ["number", "null"] },
+          "annualized_yield_at_bid": { "type": ["number", "null"] },
+          "breakeven": { "type": "number", "description": "strike - mid." },
+          "cushion_pct": { "type": "number", "description": "(spot - breakeven) / spot." },
+          "max_loss_usd": { "type": "number", "description": "(strike - mid) * 100; stock to zero." },
+          "empirical": {
+            "type": "object",
+            "required": ["n_windows", "lookback", "p_below_strike", "p_below_breakeven", "expected_pnl_usd"],
+            "properties": {
+              "n_windows": { "type": "integer", "description": "Overlapping same-length windows in the lookback. Effective sample is smaller." },
+              "lookback": { "type": "string", "description": "Date range and close count of the history used." },
+              "p_below_strike": { "type": ["number", "null"], "description": "Share of windows whose return fell below strike/spot - 1." },
+              "p_below_breakeven": { "type": ["number", "null"] },
+              "expected_pnl_usd": { "type": ["number", "null"], "description": "Mean of (premium - intrinsic at window end) * 100 across windows." },
+              "avg_loss_when_assigned_usd": { "type": ["number", "null"] },
+              "worst_window_pnl_usd": { "type": ["number", "null"] }
+            }
+          },
+          "sizing": {
+            "type": "object",
+            "properties": {
+              "contracts_affordable": { "type": ["integer", "null"], "description": "floor(cash / cash_secured_usd); null when cash not given." },
+              "cash_used_usd": { "type": ["number", "null"] },
+              "total_premium_usd": { "type": ["number", "null"] }
+            }
+          },
+          "caveats": { "type": "array", "items": { "type": "string" }, "description": "Per-candidate liquidity and pricing-source flags." }
+        }
+      }
+    },
+    "picks": {
+      "type": "object",
+      "description": "Per stance, the candidate nearest the stance delta on the primary expiry; null when nothing is within 0.08 of the target.",
+      "properties": {
+        "primary_expiry": { "type": ["string", "null"], "format": "date", "description": "Analyzed expiry nearest horizon_days." },
+        "conservative": { "$ref": "#/definitions/pick" },
+        "balanced": { "$ref": "#/definitions/pick" },
+        "aggressive": { "$ref": "#/definitions/pick" }
+      }
+    },
+    "iv_context": {
+      "type": "object",
+      "required": ["atm_iv", "realized_vol_20d", "iv_to_realized_ratio", "label", "note"],
+      "properties": {
+        "atm_iv": { "type": ["number", "null"] },
+        "realized_vol_20d": { "type": ["number", "null"] },
+        "realized_vol_60d": { "type": ["number", "null"] },
+        "iv_to_realized_ratio": { "type": ["number", "null"] },
+        "label": { "type": "string", "enum": ["expensive", "fair", "cheap", "unknown"] },
+        "note": { "type": "string" }
+      }
+    },
+    "events": {
+      "type": "object",
+      "required": ["earnings", "dividends"],
+      "properties": {
+        "earnings": {
+          "type": ["object", "null"],
+          "properties": {
+            "next_earnings_date": { "type": ["string", "null"], "format": "date" },
+            "expected_release_time": { "type": ["string", "null"] },
+            "source": { "type": ["string", "null"], "description": "benzinga or edgar_8k." },
+            "fetched": { "type": "boolean", "description": "False when the calendar call failed; the caveat then says check manually." }
+          }
+        },
+        "dividends": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ex_dividend_date": { "type": "string", "format": "date" },
+              "cash_amount": { "type": ["number", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "take": { "type": "string", "description": "Composed take for the stated stance. Always ends with 'Not advice.'" },
+    "tier_caveats": { "type": "array", "items": { "type": "string" } },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["endpoint", "fetched_at", "context"],
+        "properties": {
+          "endpoint": { "type": "string" },
+          "fetched_at": { "type": "string" },
+          "context": { "type": "string" }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "pick": {
+      "type": ["object", "null"],
+      "properties": {
+        "expiry": { "type": "string", "format": "date" },
+        "days_to_expiry": { "type": "integer" },
+        "strike": { "type": "number" },
+        "occ_ticker": { "type": "string" },
+        "mid": { "type": "number" },
+        "premium_usd": { "type": "number" },
+        "static_yield": { "type": "number" },
+        "annualized_yield": { "type": ["number", "null"] },
+        "breakeven": { "type": "number" },
+        "cushion_pct": { "type": "number" },
+        "delta_abs": { "type": "number" },
+        "prob_itm_bs": { "type": ["number", "null"] },
+        "p_below_strike_hist": { "type": ["number", "null"] },
+        "n_windows": { "type": "integer" },
+        "expected_pnl_usd_hist": { "type": ["number", "null"] },
+        "contracts_affordable": { "type": ["integer", "null"] },
+        "caveats": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

@@ -79,6 +79,7 @@ A few things to know up front:
 | `options-structure-analyzer` | REST | Stocks Starter + Options Developer | Rank options structures for direction/vol/hedge views |
 | `portfolio-macro-scenario` | REST | Stocks Starter | Per-position OLS on TLT/UUP/USO/GLD; runs on free Basic with `sleep=13` |
 | `hedge-suggester` | REST | Stocks Starter + Options Developer | Prices 5 option overlays against a long; needs the chain with greeks + OI |
+| `cash-secured-puts` | REST | Stocks Starter + Options Developer | Put-chain screener: yield vs assignment odds (delta, N(-d2), empirical base rate) per strike and expiry; Benzinga earnings optional |
 | `single-name-vs-sector` | REST | Stocks Starter | 3 daily aggs pulls (name + sector ETF + benchmark); runs on Free Basic too |
 | `commodity-cycle` | REST | Stocks Starter | 5-6 daily ETF pulls (commodity + UUP/TIP/IEF + GDX/SLV or DBC); runs on Free Basic too |
 | `risk-factor-delta` | REST | Stocks Basic | 10-K Item 1A category diff via pre-parsed Massive taxonomy; free tier |
