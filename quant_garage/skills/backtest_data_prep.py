@@ -24,6 +24,7 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
+from ..client import resolve_s3_credentials
 from .. import (
     MassiveClient,
     FetchError,
@@ -37,40 +38,6 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 client = MassiveClient()
-
-
-def _resolve_s3_auth():
-    """Resolve S3 credentials lazily so the WARN only fires when flat-files
-    is actually touched, not on every skill import (Q6).
-
-    Flat-files S3 needs credentials distinct from MASSIVE_API_KEY, generated
-    in the dashboard under "Flat Files". The legacy pattern of passing the
-    API key as both halves returns 403 on most accounts (verified 2026-06-23
-    against a Stocks Business key). MASSIVE_S3_* is canonical; POLYGON_S3_*
-    is accepted for users following legacy docs.
-    """
-    access_key = (
-        os.environ.get("MASSIVE_S3_ACCESS_KEY")
-        or os.environ.get("POLYGON_S3_ACCESS_KEY")
-        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_ACCESS_KEY")
-    )
-    secret_key = (
-        os.environ.get("MASSIVE_S3_SECRET_KEY")
-        or os.environ.get("POLYGON_S3_SECRET_KEY")
-        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_SECRET_KEY")
-    )
-    if access_key and secret_key:
-        return (access_key, secret_key), "massive_s3_credentials"
-    key = client.api_key
-    print(
-        "WARN: flat-files S3 auth is falling back to MASSIVE_API_KEY as both "
-        "access_key_id and secret_access_key. This pattern usually returns 403. "
-        "Generate distinct S3 credentials in your Massive dashboard "
-        "(https://massive.com/dashboard → Flat Files) and export "
-        "MASSIVE_S3_ACCESS_KEY and MASSIVE_S3_SECRET_KEY to silence this.",
-        file=sys.stderr,
-    )
-    return (key, key), "massive_api_key_legacy_fallback"
 
 
 # ----- HTTP helpers -----
@@ -106,7 +73,15 @@ def probe_flat_files():
     Flat-files lives behind an S3-compatible boto3 client, not a REST host,
     so MassiveClient does not wrap it. The probe stays on raw boto3.
     """
-    s3_auth, s3_auth_source = _resolve_s3_auth()
+    s3_auth = resolve_s3_credentials()
+    if s3_auth is None:
+        print(
+            "INFO: no flat-files S3 credentials set. Generate them in the "
+            "Massive dashboard under 'Flat Files' and set MASSIVE_S3_ACCESS_KEY "
+            "and MASSIVE_S3_SECRET_KEY. Using REST grouped-daily for this run.",
+            file=sys.stderr,
+        )
+        return False, None
     try:
         import boto3
         from botocore.config import Config
@@ -127,24 +102,12 @@ def probe_flat_files():
     except Exception as e:
         msg = str(e)
         if "403" in msg or "Forbidden" in msg or "InvalidAccessKey" in msg:
-            if s3_auth_source == "massive_api_key_legacy_fallback":
-                print(
-                    "INFO: flat-files returned 403 with the legacy "
-                    "MASSIVE_API_KEY-as-S3-auth pattern (expected). Generate "
-                    "distinct S3 credentials in the Massive dashboard under "
-                    "'Flat Files' and export MASSIVE_S3_ACCESS_KEY + "
-                    "MASSIVE_S3_SECRET_KEY. Falling back to REST grouped-daily "
-                    "for this run.",
-                    file=sys.stderr,
-                )
-            else:
-                print(
-                    "INFO: flat-files returned 403 with MASSIVE_S3_ACCESS_KEY/"
-                    "MASSIVE_S3_SECRET_KEY. Verify the credentials are correct "
-                    "and your account is entitled to flat-files. Falling back "
-                    "to REST grouped-daily for this run.",
-                    file=sys.stderr,
-                )
+            print(
+                "INFO: flat-files returned 403 with the S3 credentials. Verify "
+                "them and your flat-files entitlement. Using REST grouped-daily "
+                "for this run.",
+                file=sys.stderr,
+            )
             return False, None
         print(f"WARN: flat-files probe failed: {msg[:200]}", file=sys.stderr)
         return False, None

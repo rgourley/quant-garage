@@ -78,6 +78,30 @@ class RateLimited(FetchError):
     """429 Too Many Requests after exhausted retries."""
 
 
+def resolve_s3_credentials() -> Optional[tuple[str, str]]:
+    """Return (access_key, secret_key) for Massive flat-files, or None.
+
+    Flat-files S3 needs credentials distinct from the REST API key. The
+    dashboard generates them under "Flat Files". The REST key does not work
+    as an S3 credential, so this function never falls back to it.
+    MASSIVE_S3_* is canonical. POLYGON_S3_* is accepted for legacy docs.
+    Claude Code exports plugin options as CLAUDE_PLUGIN_OPTION_*.
+    """
+    access_key = (
+        os.environ.get("MASSIVE_S3_ACCESS_KEY")
+        or os.environ.get("POLYGON_S3_ACCESS_KEY")
+        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_ACCESS_KEY")
+    )
+    secret_key = (
+        os.environ.get("MASSIVE_S3_SECRET_KEY")
+        or os.environ.get("POLYGON_S3_SECRET_KEY")
+        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_SECRET_KEY")
+    )
+    if access_key and secret_key:
+        return access_key, secret_key
+    return None
+
+
 class MassiveClient:
     """Thin Massive (Polygon.io) HTTP client with retry + pagination.
 

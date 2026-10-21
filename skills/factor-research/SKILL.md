@@ -27,8 +27,10 @@ and any internal quant team's signal review document already use.
 
 - A universe (defaults to top 500 by current market cap)
 - A window (defaults to 2021-06-01 to today)
-- `MASSIVE_API_KEY` exported in the environment (used as both S3 access
-  key and S3 secret key per the flat-files convention)
+- `MASSIVE_API_KEY` exported in the environment
+- Optional: `MASSIVE_S3_ACCESS_KEY` and `MASSIVE_S3_SECRET_KEY` (generated under
+  Flat Files in the Massive dashboard) for bulk daily bars. Without them the
+  skill uses REST.
 - Stocks Starter plan minimum (flat files included with any paid plan)
 
 ## Expected runtime
