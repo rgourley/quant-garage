@@ -171,6 +171,6 @@ paid FMV metric.
 
 ## Verifying
 
-Run `npm run audit:requires` to check every skill's `requires.yml`
+Run `python3 scripts/audit_requires.py` to check every skill's `requires.yml`
 against the endpoints it actually calls. Drift fails the build. Pricing
 and tier names should be re-verified before each release.

@@ -860,11 +860,11 @@ both layers (rendered + JSON).
 
 ### 3. Claude Code skills
 
-Clone into your Claude Code skills directory:
+Install it as a Claude Code plugin. Claude Code asks for your Massive API
+key at install time and stores it as a sensitive setting:
 
-```bash
-git clone https://github.com/rgourley/quant-garage.git \
-  ~/.claude/skills/quant-garage
+```text
+/plugin install quant-garage
 ```
 
 Then invoke any tool with `/<skill-name>` (for example,
@@ -920,5 +920,5 @@ For commercial licensing outside AGPL terms, contact Rob directly.
 See [CONTRIBUTING.md](./CONTRIBUTING.md). Open a PR with a new tool
 or an extension. Each tool needs a `SKILL.md`, a `requires.yml`, an
 `output-schema.json`, a `references/` folder with the methodology,
-and one working example. The audit script (`npm run audit:requires`)
+and one working example. The audit script (`python3 scripts/audit_requires.py`)
 enforces the shape; the methodology references are where the IP lives.
