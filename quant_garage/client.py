@@ -98,7 +98,13 @@ class MassiveClient:
         # Scripts that instantiate at import time (e.g., for argparse --help)
         # should still be runnable. The actual RuntimeError fires the moment
         # an HTTP call is attempted, via _headers(). Fixes N7.
-        self.api_key = api_key or os.environ.get("MASSIVE_API_KEY")
+        # Claude Code exports the plugin's `massive_api_key` user_config
+        # option as CLAUDE_PLUGIN_OPTION_MASSIVE_API_KEY.
+        self.api_key = (
+            api_key
+            or os.environ.get("MASSIVE_API_KEY")
+            or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_API_KEY")
+        )
         self.host = host.rstrip("/")
         self.user_agent = user_agent
         self.timeout_seconds = timeout_seconds
