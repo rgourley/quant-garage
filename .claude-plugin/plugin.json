@@ -2,12 +2,22 @@
   "name": "quant-garage",
   "version": "0.1.0",
   "description": "Analyst workflows on the Massive API: 42 tools and 13 workflows, every output cited to a live API call.",
-  "author": { "name": "Rob Gourley", "email": "rgourley@gmail.com" },
+  "author": {
+    "name": "Rob Gourley",
+    "email": "rgourley@gmail.com"
+  },
   "homepage": "https://github.com/rgourley/quant-garage",
   "repository": "https://github.com/rgourley/quant-garage",
   "license": "AGPL-3.0-or-later",
   "icon": ".claude-plugin/icon.png",
-  "keywords": ["finance", "market-data", "massive", "quant", "equities", "options"],
+  "keywords": [
+    "finance",
+    "market-data",
+    "massive",
+    "quant",
+    "equities",
+    "options"
+  ],
   "userConfig": {
     "massive_api_key": {
       "type": "string",
@@ -15,6 +25,20 @@
       "description": "Get a key at https://massive.com/pricing. The free Basic plan runs eighteen tools.",
       "sensitive": true,
       "required": true
+    },
+    "massive_s3_access_key": {
+      "type": "string",
+      "title": "Massive flat-files S3 access key",
+      "description": "Optional. Generate under Flat Files in the Massive dashboard. Used only by backtest-data-prep.",
+      "sensitive": true,
+      "required": false
+    },
+    "massive_s3_secret_key": {
+      "type": "string",
+      "title": "Massive flat-files S3 secret key",
+      "description": "Optional. Generate under Flat Files in the Massive dashboard. Used only by backtest-data-prep.",
+      "sensitive": true,
+      "required": false
     }
   }
 }
