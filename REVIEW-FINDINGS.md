@@ -1,7 +1,7 @@
 # Review findings
 
 Deep review of all 17 skills + 16 Python reference implementations,
-2026-06-26. `npm run audit:requires` passes; these are
+2026-06-26. `python3 scripts/audit_requires.py` passes; these are
 correctness/methodology issues the audit doesn't catch. Headline items
 (C1, C2, C8, D1) spot-verified against source. Live-data validation
 in progress on a Stocks/Options Business key.

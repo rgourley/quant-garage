@@ -52,10 +52,12 @@ def _resolve_s3_auth():
     access_key = (
         os.environ.get("MASSIVE_S3_ACCESS_KEY")
         or os.environ.get("POLYGON_S3_ACCESS_KEY")
+        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_ACCESS_KEY")
     )
     secret_key = (
         os.environ.get("MASSIVE_S3_SECRET_KEY")
         or os.environ.get("POLYGON_S3_SECRET_KEY")
+        or os.environ.get("CLAUDE_PLUGIN_OPTION_MASSIVE_S3_SECRET_KEY")
     )
     if access_key and secret_key:
         return (access_key, secret_key), "massive_s3_credentials"

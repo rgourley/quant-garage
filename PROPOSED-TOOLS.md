@@ -10,7 +10,7 @@ it takes in, what it returns, the methodology that would live in its
 `references/` folder, and the plan tier it needs. When one gets built it
 follows the standard skill shape (`SKILL.md`, `requires.yml`,
 `output-schema.json`, `references/rendering.md` + methodology, one
-working example) and must pass `npm run audit:requires`.
+working example) and must pass `python3 scripts/audit_requires.py`.
 
 No em-dashes in shipped output. Take plus evidence, not data dumps.
 Same methodology bar as the existing skills: percentile, z-score,

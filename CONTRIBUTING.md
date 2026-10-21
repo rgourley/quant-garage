@@ -25,7 +25,7 @@ examples/
 
 ## What the audit checks
 
-`npm run audit:requires` validates every skill's metadata. It catches:
+`python3 scripts/audit_requires.py` validates every skill's metadata. It catches:
 
 - Missing `SKILL.md`, `requires.yml`, `output-schema.json`, or `references/rendering.md`
 - Invalid YAML or JSON
@@ -111,7 +111,7 @@ Three layers of test, in order of importance:
    The skill should be obviously better; if it's not, the skill's
    value-add isn't clear and probably needs sharpening.
 
-3. **Audit script.** `npm run audit:requires` validates the
+3. **Audit script.** `python3 scripts/audit_requires.py` validates the
    metadata shape.
 
 ## Style and tone
