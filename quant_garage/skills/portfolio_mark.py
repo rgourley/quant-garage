@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import csv
 import json
-import os
 import sys
 import threading
 import time
@@ -36,8 +35,6 @@ from .. import (
 
 
 # ----- Config -----
-
-KEY = os.environ.get("MASSIVE_API_KEY")
 
 WS_URL = "wss://business.polygon.io/stocks"
 
@@ -66,6 +63,7 @@ HIGH_ADV_SHARES = 10_000_000
 MEDIUM_ADV_SHARES = 500_000
 
 client = MassiveClient()
+KEY = client.api_key
 
 # ----- CSV loading -----
 
