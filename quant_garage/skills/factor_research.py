@@ -28,6 +28,7 @@ import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
+from ..client import resolve_s3_credentials
 from .. import (
     MassiveClient,
     FetchError,
@@ -44,9 +45,6 @@ os.makedirs(CACHE_DIR, exist_ok=True)
 
 
 client = MassiveClient()
-# Used for the flat-files S3 probe (which uses MASSIVE_API_KEY as the S3 key+secret).
-# Read here only to pass into boto3; routine HTTP goes through `client`.
-_KEY = client.api_key
 
 
 # ----- HTTP / S3 helpers -----
@@ -94,14 +92,22 @@ def probe_flat_files():
     Flat-files lives behind an S3-compatible boto3 client, not a REST host,
     so MassiveClient does not wrap it. The probe stays on raw boto3.
     """
+    s3_auth = resolve_s3_credentials()
+    if s3_auth is None:
+        print(
+            "INFO: no flat-files S3 credentials set (MASSIVE_S3_ACCESS_KEY and "
+            "MASSIVE_S3_SECRET_KEY). Using REST for this run.",
+            file=sys.stderr,
+        )
+        return False, None
     try:
         import boto3
         from botocore.config import Config
         s3 = boto3.client(
             "s3",
             endpoint_url="https://files.polygon.io",
-            aws_access_key_id=_KEY,
-            aws_secret_access_key=_KEY,
+            aws_access_key_id=s3_auth[0],
+            aws_secret_access_key=s3_auth[1],
             config=Config(signature_version="s3v4"),
         )
         # Pick a known-good recent weekday
