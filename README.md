@@ -905,6 +905,10 @@ Not a regulated advisor. None of the outputs are investment advice.
 
 ![Built in the garage, not the trading floor.](./assets/closing.png)
 
+## Privacy and network access
+
+Everything runs on your machine. The skills call `api.massive.com`, `api.polygon.io` and `files.polygon.io` with your Massive credentials, and `sec.gov` (no credentials) for EDGAR fallbacks. Nothing is sent to the author. See [PRIVACY.md](./PRIVACY.md).
+
 ## License
 
 AGPL v3. See [`LICENSE`](./LICENSE).

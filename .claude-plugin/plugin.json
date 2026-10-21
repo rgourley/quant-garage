@@ -40,5 +40,6 @@
       "sensitive": true,
       "required": false
     }
-  }
+  },
+  "privacyPolicyUrl": "https://github.com/rgourley/quant-garage/blob/main/PRIVACY.md"
 }
